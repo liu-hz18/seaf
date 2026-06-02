@@ -48,6 +48,13 @@ if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     flow = Flow()
 
+    # 多进程流式框架拓扑要求
+    # 1. 无重名节点
+    # 2. 无重名管道（同一管道被多个节点写入） 
+    # 3. 每个管道两端都连接了节点
+    # 4. 无孤立节点
+    # 5. 无环形链路
+
     flow.add_source(
         name='src1',
         gen_func=gen_src1_frames,
