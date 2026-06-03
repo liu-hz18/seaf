@@ -154,8 +154,10 @@ class Frame3D:
             if X.shape[1] > 0:
                 mask = mask & (~np.any(np.isnan(X), axis=1))
             if mask.sum() < max(3, len(by) + 2):
-                # 样本不足 → 返回 demean
-                return pd.Series(y - np.nanmean(y), index=grp.index)
+                # 样本不足 → 返回 demean；若全 NaN 则返回 NaN
+                with np.errstate(all='ignore'):
+                    m = np.nanmean(y) if np.any(~np.isnan(y)) else 0.0
+                return pd.Series(y - m, index=grp.index)
             y_clean = y[mask]
             X_clean = X[mask]
             # OLS: β = (X'X)^-1 X'y
