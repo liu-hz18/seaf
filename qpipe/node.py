@@ -1,7 +1,17 @@
+"""
+多进程节点 — MultiInputNode（多输入计算节点）和 SourceNode（数据源节点）。
+
+MultiInputNode: 多队列异步接收，按 time 合并多上游数据，滑动窗口计算。
+SourceNode: 迭代生成 Frame3D，按天广播到下游。
+
+v2 扩展：支持 context（有状态上下文）和 epilogue_fn（退出前回调）。
+pickle 兼容：不创建闭包，在 run() 中运行时动态检查 func 签名。
+"""
 import multiprocessing as mp
 import threading
 import logging
 import sys
+import inspect
 from typing import Callable, List, Union, Tuple, Dict, Any, Iterator, Optional
 import pandas as pd
 import time
@@ -12,7 +22,13 @@ from .frame3d import Frame3D
 
 class MultiInputNode(mp.Process):
     """
-    多队列异步抢收，窗口滑动处理。对所有上游同一个time合并后，历史按照 window 滑动，min_periods约束
+    多队列异步抢收，窗口滑动处理。对所有上游同一个time合并后，历史按照 window 滑动，min_periods约束。
+    
+    v2: func 签名支持 context：
+        - 新：func(name, f3d, context) -> Frame3D | (Frame3D, context)
+        - 旧：func(name, f3d) -> Frame3D（向后兼容，自动检测）
+        
+    epilogue_fn(name, context) 在进程退出前调用，用于汇总分析。
     """
 
     HEARTBEAT_TIMEOUT = 10.0
@@ -21,7 +37,7 @@ class MultiInputNode(mp.Process):
     def __init__(
         self,
         name: str,
-        func: Callable[[str, Frame3D], Frame3D],
+        func: Callable,
         input_queues: List[mp.Queue],
         output_queues: List[mp.Queue],
         window: int = 5,
@@ -29,10 +45,12 @@ class MultiInputNode(mp.Process):
         input_columns: Optional[List[str]] = None,
         output_columns: Optional[List[str]] = None,
         stop_signal=None,
+        context: Optional[Any] = None,
+        epilogue_fn: Optional[Callable[[str, Any], None]] = None,
     ):
         super().__init__()
         self.name = name
-        self.func = func
+        self.func = func  # 直接存储原始函数，不在 init 中包装
         self.input_queues = input_queues
         self.output_queues = output_queues
         self.window = window
@@ -40,8 +58,21 @@ class MultiInputNode(mp.Process):
         self.input_columns = input_columns if input_columns else []
         self.output_columns = output_columns if output_columns else []
         self.stop_signal = stop_signal
+        self.context = context
+        self.epilogue_fn = epilogue_fn
 
         self.buffers = [dict() for _ in input_queues]   # {time -> Frame3D}
+
+    def _call_func(self, name, f3d, ctx):
+        """运行时根据 func 签名动态选择调用方式。"""
+        try:
+            sig = inspect.signature(self.func)
+            if len(sig.parameters) >= 3:
+                return self.func(name, f3d, ctx)
+            else:
+                return self.func(name, f3d)
+        except (ValueError, TypeError):
+            return self.func(name, f3d)
 
     def receive_worker(
         self, 
@@ -106,9 +137,9 @@ class MultiInputNode(mp.Process):
         window_start_index = 0
         window_tail_index = 0
         round_time = 0
+        current_context = self.context  # 有状态上下文
         try:
             while True:
-                # round_start_time = time.time()
                 logging.debug(f"round_time: {round_time}")
                 # 接收心跳数据
                 alive_workers_to_wait = [i for i in range(num_workers) if i not in dead_workers]
@@ -198,8 +229,12 @@ class MultiInputNode(mp.Process):
                     window_df = pd.concat([f[-1].df for f in window_frames], axis=0)
                     window_df = window_df.sort_index(level=0)
                     run_input_f3d = Frame3D(window_df)
-                    # compute
-                    output_f3d = self.func(self.name, run_input_f3d)
+                    # compute — v2: pass context, handle return (dynamic signature check)
+                    result = self._call_func(self.name, run_input_f3d, current_context)
+                    if isinstance(result, tuple):
+                        output_f3d, current_context = result
+                    else:
+                        output_f3d = result
                     # check output
                     if self.output_columns:
                         miss_output = [col for col in self.output_columns if col not in output_f3d.df.columns]
@@ -228,6 +263,12 @@ class MultiInputNode(mp.Process):
         except Exception as e:
             logging.error(f"Exception in {self.name}: {e}", exc_info=True)
         finally:
+            # v2: 退出前调用 epilogue_fn
+            if self.epilogue_fn is not None:
+                try:
+                    self.epilogue_fn(self.name, current_context)
+                except Exception as e:
+                    logging.error(f"Epilogue error in {self.name}: {e}", exc_info=True)
             global_exit.set()
             for t in threads:
                 t.join(timeout=1)
@@ -237,18 +278,27 @@ class MultiInputNode(mp.Process):
 
 
 class SourceNode(mp.Process):
+    """数据源节点：迭代 gen_func() 生成 Frame3D，按天广播到下游。
+    
+    v2: 支持 context 和 epilogue_fn。
+    """
+
     def __init__(
         self,
         name: str,
         gen_func: Callable[[], Iterator[Frame3D]],
         output_queues: List[mp.Queue],
         stop_signal=None,
+        context: Optional[Any] = None,
+        epilogue_fn: Optional[Callable[[str, Any], None]] = None,
     ):
         super().__init__()
         self.name = name
         self.gen_func = gen_func
         self.output_queues = output_queues
         self.stop_signal = stop_signal
+        self.context = context
+        self.epilogue_fn = epilogue_fn
 
     def run(self):
         logging.basicConfig(
@@ -257,6 +307,7 @@ class SourceNode(mp.Process):
             stream=sys.stdout,
         )
         logging.info("SourceNode started.")
+        current_context = self.context
         try:
             for frame in self.gen_func():
                 # 只取最新 key 对应的数据
@@ -270,4 +321,10 @@ class SourceNode(mp.Process):
         except Exception as e:
             logging.error(f"Exception in SourceNode: {e}", exc_info=True)
         finally:
+            # v2: 退出前调用 epilogue_fn
+            if self.epilogue_fn is not None:
+                try:
+                    self.epilogue_fn(self.name, current_context)
+                except Exception as e:
+                    logging.error(f"Epilogue error in {self.name}: {e}", exc_info=True)
             logging.info("SourceNode stopped.")

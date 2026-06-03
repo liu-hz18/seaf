@@ -1,3 +1,7 @@
+"""
+Flow 编排器 — 管理节点拓扑、queue 创建、启停控制。
+拓扑验证保证 DAG、无重复写、无孤立节点等基本约束。
+"""
 import multiprocessing as mp
 import logging
 from typing import Callable, List, Union, Tuple, Dict, Any, Iterator, Optional
@@ -21,9 +25,19 @@ class Flow:
             self.queues[name] = mp.Queue()
         return self.queues[name]
 
-    def add_source(self, name: str, gen_func: Callable[[], Iterator[Frame3D]], output_to: List[str]):
+    def add_source(
+        self, 
+        name: str, 
+        gen_func: Callable[[], Iterator[Frame3D]], 
+        output_to: List[str],
+        context: Optional[Any] = None,
+        epilogue_fn: Optional[Callable[[str, Any], None]] = None,
+    ):
         output_queues = [self.create_queue(qname) for qname in output_to]
-        node = SourceNode(name, gen_func, output_queues, self.stop_signal)
+        node = SourceNode(
+            name, gen_func, output_queues, self.stop_signal,
+            context=context, epilogue_fn=epilogue_fn,
+        )
         self.nodes.append(node)
         # 记录拓扑
         self._node_specs.append({'name': name, 'type': 'source', 'inputs': [], 'outputs': list(output_to)})
@@ -35,13 +49,15 @@ class Flow:
     def add_node(
         self,
         name: str,
-        func: Callable[[str, Frame3D], Frame3D],
+        func: Callable,
         input_from: Union[str, List[str]],
         output_to: List[str],
         window: int = 1,
         min_periods: int = 1,
         input_columns: Optional[List[str]] = None,
-        output_columns: Optional[List[str]] = None
+        output_columns: Optional[List[str]] = None,
+        context: Optional[Any] = None,
+        epilogue_fn: Optional[Callable[[str, Any], None]] = None,
     ):
         if isinstance(input_from, str):
             input_from = [input_from]
@@ -51,7 +67,8 @@ class Flow:
             name, func, input_queues, output_queues,
             window=window, min_periods=min_periods,
             input_columns=input_columns, output_columns=output_columns,
-            stop_signal=self.stop_signal
+            stop_signal=self.stop_signal,
+            context=context, epilogue_fn=epilogue_fn,
         )
         self.nodes.append(node)
         # 记录拓扑
