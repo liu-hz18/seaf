@@ -31,7 +31,7 @@ class MultiInputNode(mp.Process):
     epilogue_fn(name, context) 在进程退出前调用，用于汇总分析。
     """
 
-    HEARTBEAT_TIMEOUT = 10.0
+    HEARTBEAT_TIMEOUT = 3.0  # 缩短以便快速测试
     THREAD_ROUND_MAX_TIME = 3
 
     def __init__(
@@ -168,14 +168,15 @@ class MultiInputNode(mp.Process):
                     thread_round_time += 1
 
                 # 接收子线程收集到的数据
-                nonempty_times = []
                 submitted_workers = []
                 for i in range(num_workers):
                     if ready_event[i].is_set():
-                        with data_lock:
-                            nonempty_times.append(set(self.buffers[i].keys()))
                         submitted_workers.append(i)
-                shared_times = set.intersection(*nonempty_times) if nonempty_times else set()
+                
+                # 所有 buffer 的共有时间交集（包括未就绪的 worker）
+                with data_lock:
+                    all_times_sets = [set(self.buffers[i].keys()) for i in range(num_workers)]
+                shared_times = set.intersection(*all_times_sets) if all_times_sets else set()
 
                 # 没有新数据则进入下一轮循环
                 frame_lists = []
@@ -223,6 +224,9 @@ class MultiInputNode(mp.Process):
                     window_length = window_tail_index - window_start_index
                     if window_length < self.min_periods:
                         continue
+                    # 确保 buffer 有足够条目
+                    if len(time_order_buffer) < window_length:
+                        break
                     # get window data
                     window_frames = list(time_order_buffer)[:window_length]
                     logging.debug(f"window_frames: {window_frames}")
@@ -255,8 +259,11 @@ class MultiInputNode(mp.Process):
                         outq.put(latest_f3d)
 
                 if len(dead_workers) == num_workers:
-                    logging.info(f"All workers dead. Main process exited.")
-                    break
+                    # 所有上游已死：耗尽缓冲区后退出
+                    buf_empty = all(len(self.buffers[i]) == 0 for i in range(num_workers))
+                    if buf_empty and len(time_order_buffer) < self.min_periods:
+                        logging.info(f"All workers dead, insufficient data. Exiting.")
+                        break
 
                 round_time += 1
 
