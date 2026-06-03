@@ -102,11 +102,9 @@ class EpilogueFileWriter:
                 elif isinstance(v, dict):
                     simple_ctx[k] = {str(sk): sv for sk, sv in v.items() 
                                      if isinstance(sv, (int, float, str, bool, list, type(None)))}
-        try:
-            with open(self.filepath, 'w') as f:
-                json.dump({'name': name, 'context': simple_ctx}, f)
-        except Exception:
-            pass  # epilogue 写入失败不应影响节点退出
+        with open(self.filepath, 'w', encoding='utf-8') as f:
+            json.dump({'name': name, 'context': simple_ctx}, f)
+            f.flush()
 
 
 def gen_source_frames():
