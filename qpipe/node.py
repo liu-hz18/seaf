@@ -45,7 +45,7 @@ class MultiInputNode(mp.Process):
         except (ValueError, TypeError):
             return self.func(name, f3d)
 
-    def receive_worker(self, queue_idx, input_queue, ready_event, global_exit,
+    def receive_worker(self, queue_idx, input_queue: mp.Queue, ready_event, global_exit,
                        data_lock, heartbeat_timestamp, heartbeat_lock):
         while not global_exit.is_set():
             with heartbeat_lock:
@@ -60,6 +60,8 @@ class MultiInputNode(mp.Process):
                 break
             time_value = obj.df.index.get_level_values(0)[0]
             with data_lock:
+                # TODO: push too fast
+                logging.info(f"[queue-{queue_idx}] push {time_value}. queue size={input_queue.qsize()}. buffer size={len(self.buffers[queue_idx])}")
                 self.buffers[queue_idx][time_value] = obj
                 ready_event.set()
 
@@ -167,9 +169,13 @@ class MultiInputNode(mp.Process):
                     if len(time_order_buffer) < window_length:
                         break
                     window_frames = list(time_order_buffer)[:window_length]
+
+                    # 开始进行节点计算
+                    start_time = time.time()
                     window_df = pd.concat([f[-1].df for f in window_frames], axis=0)
                     window_df = window_df.sort_index(level=0)
                     run_input_f3d = Frame3D(window_df)
+                    # logging.info(f"input frame: {run_input_f3d}")
                     result = self._call_func(self.name, run_input_f3d, current_context)
                     if isinstance(result, tuple):
                         output_f3d, current_context = result
@@ -186,6 +192,30 @@ class MultiInputNode(mp.Process):
                     max_key = result_f3d.df.index.get_level_values(0).max()
                     latest_df = result_f3d.df[result_f3d.df.index.get_level_values(0) == max_key]
                     latest_f3d = Frame3D(latest_df.copy())
+                    logging.info(f"window_start_index:{window_start_index}, window_tail_index={window_tail_index}\ntime_order_buffer: {len(time_order_buffer)}\noutput frame: {latest_f3d}")
+                    end_time = time.time()
+                    time_elapsed = end_time - start_time
+
+                    # 将耗时记录到 context（区分 node 内部字段与用户字段）
+                    if current_context is None:
+                        current_context = {}
+                    if not isinstance(current_context, dict):
+                        # 用户传入非 dict context → 包装为 dict
+                        current_context = {'_user_context': current_context}
+                    timings = current_context.setdefault('_node_timings', [])
+                    timings.append(time_elapsed)
+                    if len(timings) > 10:
+                        timings.pop(0)  # 保持最近 10 次
+                    avg_time = sum(timings) / len(timings)
+                    total_calls = current_context.setdefault('_node_call_count', 0) + 1
+                    current_context['_node_call_count'] = total_calls
+                    if total_calls % 10 == 0 or total_calls == 1:
+                        logging.info(
+                            f"[{self.name}] call#{total_calls}: "
+                            f"elapsed={time_elapsed:.3f}s, "
+                            f"rolling_avg10={avg_time:.3f}s"
+                        )
+
                     window_tail_index += 1
                     for outq in self.output_queues:
                         outq.put(latest_f3d)

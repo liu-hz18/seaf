@@ -7,7 +7,7 @@ SEAF 量化回测框架主入口 — Pipeline 组装与执行。
   src_data ──→ model (close 数据) ──→ pred_signal ──→ ic_analysis
   src_data ──→ ic_analysis (close 数据)
 
-运行：python pipeline.py --noise-ratio 0.3 --n-times 1000 --n-stocks 500
+运行：python pipeline.py --noise-ratio 0.3 --n-times 1000 --n-stocks 500 --start-date 2020-01-02
 """
 import argparse
 import logging
@@ -32,11 +32,13 @@ from seafquant.ic_analysis import ic_analysis_fn, ic_epilogue
 
 class DataSourceCallable:
     """模块级可调用类，用于 pickle 安全的 SourceNode gen_func。"""
-    def __init__(self, n_times: int, n_stocks: int, noise_ratio: float, seed: int):
+    def __init__(self, n_times: int, n_stocks: int, noise_ratio: float, seed: int,
+                 start_date: str = None):
         self.n_times = n_times
         self.n_stocks = n_stocks
         self.noise_ratio = noise_ratio
         self.seed = seed
+        self.start_date = start_date
 
     def __call__(self):
         return generate_synthetic_data(
@@ -44,6 +46,7 @@ class DataSourceCallable:
             n_stocks=self.n_stocks,
             noise_ratio=self.noise_ratio,
             seed=self.seed,
+            start_date=self.start_date,
         )
 
 
@@ -57,6 +60,8 @@ def main():
                         help='Number of stocks')
     parser.add_argument('--seed', type=int, default=42,
                         help='Random seed for reproducibility')
+    parser.add_argument('--start-date', type=str, default='2020-01-02',
+                        help='Start date for trading day index (YYYY-MM-DD)')
     parser.add_argument('--log-level', default='INFO',
                         choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
                         help='Logging level')
@@ -95,7 +100,9 @@ def main():
     flow = Flow()
 
     # ===== 1. 数据源节点 =====
-    gen_callable = DataSourceCallable(args.n_times, args.n_stocks, args.noise_ratio, args.seed)
+    gen_callable = DataSourceCallable(
+        args.n_times, args.n_stocks, args.noise_ratio, args.seed, args.start_date,
+    )
 
     # Source 输出到 10 个队列：8 因子 + model_close + ic_close
     src_output_queues = [f'q_ohlc_to_{name}' for name, _ in factor_nodes]
@@ -143,7 +150,7 @@ def main():
     # ===== 启动 =====
     logging.info("=" * 50)
     logging.info(f"SEAF Pipeline: n_times={args.n_times}, n_stocks={args.n_stocks}, "
-                 f"noise_ratio={args.noise_ratio}, seed={args.seed}")
+                 f"noise_ratio={args.noise_ratio}, seed={args.seed}, start_date={args.start_date}")
     logging.info(f"Topology: 1 source → 8 factor nodes → model → ic_analysis")
     logging.info("=" * 50)
 

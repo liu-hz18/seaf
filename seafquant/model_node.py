@@ -11,6 +11,7 @@
 输出：pred_signal（截面标准化后的预测值）。
 """
 import numpy as np
+import pandas as pd
 import logging
 from typing import Tuple, Any
 from lightgbm import LGBMRegressor

@@ -24,7 +24,18 @@ class Frame3D:
         return Frame3D(self._df.copy(deep=True))
 
     def __repr__(self):
-        return f"Frame3D({repr(self._df)})"
+        df = self._df
+        n_times = df.index.get_level_values('key').nunique()
+        n_stocks = df.index.get_level_values('name').nunique()
+        n_cols = len(df.columns)
+        # 有效数据占比（非 NaN 单元格比例）
+        total_cells = len(df) * n_cols
+        valid_cells = df.notna().sum().sum() if total_cells > 0 else 0
+        valid_pct = valid_cells / total_cells * 100 if total_cells > 0 else 0.0
+        return (
+            f"Frame3D[{len(df)} rows, {n_times}t x {n_stocks}s x {n_cols}c, "
+            f"valid_data={valid_pct:.1f}%](\n{repr(self._df)}\n)"
+        )
 
     # ========================================================================
     # 时序 API — 沿 key（时间）层计算，每个 stock 独立
