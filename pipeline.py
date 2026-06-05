@@ -1,7 +1,7 @@
 """
 SEAF 量化回测框架主入口 — Pipeline 组装与执行。
 
-拓扑：1 source → 20 factor nodes → model → ic_analysis
+拓扑：1 source → 11 factor nodes → model → ic_analysis
 
 运行：python pipeline.py --noise-ratio 0.3 --n-times 1000 --n-stocks 500 --start-date 2020-01-02 --fwd 20
 """
@@ -14,23 +14,15 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from qpipe.flow import Flow
 from seafquant.data_generator import generate_synthetic_data
+from seafquant.factor.factors_trend import compute_trend_factors
 from seafquant.factor.factors_momentum import compute_momentum_factors
-from seafquant.factor.factors_reversal import compute_reversal_factors
 from seafquant.factor.factors_volatility import compute_volatility_factors
 from seafquant.factor.factors_liquidity import compute_liquidity_factors
 from seafquant.factor.factors_value import compute_value_factors
 from seafquant.factor.factors_quality_basic import compute_quality_basic_factors
-from seafquant.factor.factors_quality_advanced import compute_quality_advanced_factors
-from seafquant.factor.factors_quality_autocorr import compute_quality_autocorr_factors
 from seafquant.factor.factors_quality_pattern import compute_quality_pattern_factors
-from seafquant.factor.factors_quality_sign import compute_quality_sign_factors
-from seafquant.factor.factors_trend import compute_trend_factors
-from seafquant.factor.factors_trend_macd import compute_trend_macd_factors
-from seafquant.factor.factors_size import compute_size_factors
+from seafquant.factor.factors_quality_autocorr import compute_quality_autocorr_factors
 from seafquant.factor.factors_counting import compute_counting_factors
-from seafquant.factor.factors_counting_streak import compute_counting_streak_factors
-from seafquant.factor.factors_counting_nh import compute_counting_nh_factors
-from seafquant.factor.factors_intraday import compute_intraday_factors
 from seafquant.factor.factors_interaction import compute_interaction_factors
 from seafquant.factor.factors_cross_section import compute_cross_section_factors
 from seafquant.factor.factors_cross_section_neut import compute_cross_section_neut_factors
@@ -72,37 +64,29 @@ def main():
 
     logging.basicConfig(level=getattr(logging, args.log_level), format='%(message)s', stream=sys.stdout)
 
-    # ===== 因子节点注册（20 个并行节点） =====
+    # ===== 因子节点注册（11 个并行节点，已合并耗时匹配） =====
     factor_nodes = [
-        ('factor_momentum', compute_momentum_factors),
-        ('factor_reversal', compute_reversal_factors),
-        ('factor_volatility', compute_volatility_factors),
-        ('factor_liquidity', compute_liquidity_factors),
-        ('factor_value', compute_value_factors),
-        ('factor_quality_basic', compute_quality_basic_factors),
-        ('factor_quality_advanced', compute_quality_advanced_factors),
-        ('factor_quality_autocorr', compute_quality_autocorr_factors),
-        ('factor_quality_pattern', compute_quality_pattern_factors),
-        ('factor_quality_sign', compute_quality_sign_factors),
-        ('factor_trend', compute_trend_factors),
-        ('factor_trend_macd', compute_trend_macd_factors),
-        ('factor_size', compute_size_factors),
-        ('factor_counting', compute_counting_factors),
-        ('factor_counting_streak', compute_counting_streak_factors),
-        ('factor_counting_nh', compute_counting_nh_factors),
-        ('factor_intraday', compute_intraday_factors),
-        ('factor_interaction', compute_interaction_factors),
-        ('factor_cross_section', compute_cross_section_factors),
-        ('factor_cross_section_neut', compute_cross_section_neut_factors),
+        ('factor_trend', compute_trend_factors),           # 趋势 (MA+MACD) 16cols≈1.14s
+        ('factor_momentum', compute_momentum_factors),     # 动量+反转 32cols≈1.04s
+        ('factor_volatility', compute_volatility_factors), # 波动+日内 33cols≈0.90s
+        ('factor_liquidity', compute_liquidity_factors),   # 流动+规模 32cols≈1.05s
+        ('factor_value', compute_value_factors),           # 价值 16cols≈0.84s
+        ('factor_quality_basic', compute_quality_basic_factors),   # 质量基础+符号 19cols≈0.76s
+        ('factor_quality_pattern', compute_quality_pattern_factors), # 质量形态+高级 9cols≈1.17s
+        ('factor_quality_autocorr', compute_quality_autocorr_factors), # 自相关 4cols≈1.20s
+        ('factor_counting', compute_counting_factors),     # 计数 16cols≈0.99s
+        ('factor_cross_section', compute_cross_section_factors),     # 截面排名 10cols≈1.15s
+        ('factor_cross_section_neut', compute_cross_section_neut_factors), # 截面中性化 6cols≈0.36s
+        ('factor_interaction', compute_interaction_factors), # 交互 16cols≈0.88s
     ]
 
     # 窗口参数（基于 fwd 动态计算）
     fwd = args.fwd
     FACTOR_WINDOW = 130
     FACTOR_MIN_PERIODS = 2
-    MODEL_WINDOW = FACTOR_WINDOW + fwd          # factor window + forward horizon
+    MODEL_WINDOW = FACTOR_WINDOW + fwd
     MODEL_MIN_PERIODS = MODEL_WINDOW
-    IC_WINDOW = fwd + 1                         # need fwd+1 close prices to compute fwd_ret
+    IC_WINDOW = fwd + 1
     IC_MIN_PERIODS = IC_WINDOW
 
     flow = Flow()
