@@ -60,8 +60,7 @@ class MultiInputNode(mp.Process):
                 break
             time_value = obj.df.index.get_level_values(0)[0]
             with data_lock:
-                # TODO: push too fast
-                logging.info(f"[queue-{queue_idx}] push {time_value}. queue size={input_queue.qsize()}. buffer size={len(self.buffers[queue_idx])}")
+                # logging.info(f"[queue-{queue_idx}] push {time_value}. queue size={input_queue.qsize()}. buffer size={len(self.buffers[queue_idx])}")
                 self.buffers[queue_idx][time_value] = obj
                 ready_event.set()
 
@@ -149,6 +148,9 @@ class MultiInputNode(mp.Process):
                     time_order_buffer.append((shared_times.pop() if shared_times else None,
                                               Frame3D(merged_df)))
 
+                if len(time_order_buffer) > 0:
+                    logging.info(f"time_order_buffer: {len(time_order_buffer)} [{time_order_buffer[0][0]}, {time_order_buffer[-1][0]}]")
+
                 if len(time_order_buffer) < self.min_periods:
                     if len(dead_workers) == num_workers:
                         logging.info(f"All workers dead, insufficient data. Exiting.")
@@ -190,6 +192,7 @@ class MultiInputNode(mp.Process):
                         filtered = output_f3d.df
                     result_f3d = Frame3D(filtered.copy())
                     max_key = result_f3d.df.index.get_level_values(0).max()
+                    # NOTE: 框架约束：只取最后一个时间片的截面向量，保证数据是流式向前处理的
                     latest_df = result_f3d.df[result_f3d.df.index.get_level_values(0) == max_key]
                     latest_f3d = Frame3D(latest_df.copy())
                     logging.info(f"window_start_index:{window_start_index}, window_tail_index={window_tail_index}\ntime_order_buffer: {len(time_order_buffer)}\noutput frame: {latest_f3d}")
@@ -211,7 +214,7 @@ class MultiInputNode(mp.Process):
                     current_context['_node_call_count'] = total_calls
                     if total_calls % 10 == 0 or total_calls == 1:
                         logging.info(
-                            f"[{self.name}] call#{total_calls}: "
+                            f"call#{total_calls}: "
                             f"elapsed={time_elapsed:.3f}s, "
                             f"rolling_avg10={avg_time:.3f}s"
                         )

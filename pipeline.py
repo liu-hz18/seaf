@@ -1,13 +1,9 @@
 """
 SEAF 量化回测框架主入口 — Pipeline 组装与执行。
 
-拓扑：
-  src_data ──→ 8 个因子节点 (momentum, reversal, volatility, liquidity,
-               value, quality, trend, size) → 各输出 16 个因子列
-  src_data ──→ model (close 数据) ──→ pred_signal ──→ ic_analysis
-  src_data ──→ ic_analysis (close 数据)
+拓扑：1 source → 20 factor nodes → model → ic_analysis
 
-运行：python pipeline.py --noise-ratio 0.3 --n-times 1000 --n-stocks 500 --start-date 2020-01-02
+运行：python pipeline.py --noise-ratio 0.3 --n-times 1000 --n-stocks 500 --start-date 2020-01-02 --fwd 20
 """
 import argparse
 import logging
@@ -18,14 +14,26 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from qpipe.flow import Flow
 from seafquant.data_generator import generate_synthetic_data
-from seafquant.factors_momentum import compute_momentum_factors
-from seafquant.factors_reversal import compute_reversal_factors
-from seafquant.factors_volatility import compute_volatility_factors
-from seafquant.factors_liquidity import compute_liquidity_factors
-from seafquant.factors_value import compute_value_factors
-from seafquant.factors_quality import compute_quality_factors
-from seafquant.factors_trend import compute_trend_factors
-from seafquant.factors_size import compute_size_factors
+from seafquant.factor.factors_momentum import compute_momentum_factors
+from seafquant.factor.factors_reversal import compute_reversal_factors
+from seafquant.factor.factors_volatility import compute_volatility_factors
+from seafquant.factor.factors_liquidity import compute_liquidity_factors
+from seafquant.factor.factors_value import compute_value_factors
+from seafquant.factor.factors_quality_basic import compute_quality_basic_factors
+from seafquant.factor.factors_quality_advanced import compute_quality_advanced_factors
+from seafquant.factor.factors_quality_autocorr import compute_quality_autocorr_factors
+from seafquant.factor.factors_quality_pattern import compute_quality_pattern_factors
+from seafquant.factor.factors_quality_sign import compute_quality_sign_factors
+from seafquant.factor.factors_trend import compute_trend_factors
+from seafquant.factor.factors_trend_macd import compute_trend_macd_factors
+from seafquant.factor.factors_size import compute_size_factors
+from seafquant.factor.factors_counting import compute_counting_factors
+from seafquant.factor.factors_counting_streak import compute_counting_streak_factors
+from seafquant.factor.factors_counting_nh import compute_counting_nh_factors
+from seafquant.factor.factors_intraday import compute_intraday_factors
+from seafquant.factor.factors_interaction import compute_interaction_factors
+from seafquant.factor.factors_cross_section import compute_cross_section_factors
+from seafquant.factor.factors_cross_section_neut import compute_cross_section_neut_factors
 from seafquant.model_node import model_train_predict
 from seafquant.ic_analysis import ic_analysis_fn, ic_epilogue
 
@@ -33,7 +41,7 @@ from seafquant.ic_analysis import ic_analysis_fn, ic_epilogue
 class DataSourceCallable:
     """模块级可调用类，用于 pickle 安全的 SourceNode gen_func。"""
     def __init__(self, n_times: int, n_stocks: int, noise_ratio: float, seed: int,
-                 start_date: str = None):
+                 start_date: str | None = None):
         self.n_times = n_times
         self.n_stocks = n_stocks
         self.noise_ratio = noise_ratio
@@ -42,73 +50,67 @@ class DataSourceCallable:
 
     def __call__(self):
         return generate_synthetic_data(
-            n_times=self.n_times,
-            n_stocks=self.n_stocks,
-            noise_ratio=self.noise_ratio,
-            seed=self.seed,
+            n_times=self.n_times, n_stocks=self.n_stocks,
+            noise_ratio=self.noise_ratio, seed=self.seed,
             start_date=self.start_date,
         )
 
 
 def main():
     parser = argparse.ArgumentParser(description='SEAF Quantitative Backtest Framework')
-    parser.add_argument('--noise-ratio', type=float, default=0.3,
-                        help='Noise ratio for synthetic data (0=clean, 1=pure noise)')
-    parser.add_argument('--n-times', type=int, default=1000,
-                        help='Number of time steps (trading days)')
-    parser.add_argument('--n-stocks', type=int, default=500,
-                        help='Number of stocks')
-    parser.add_argument('--seed', type=int, default=42,
-                        help='Random seed for reproducibility')
-    parser.add_argument('--start-date', type=str, default='2020-01-02',
-                        help='Start date for trading day index (YYYY-MM-DD)')
+    parser.add_argument('--noise-ratio', type=float, default=0.3)
+    parser.add_argument('--n-times', type=int, default=1000)
+    parser.add_argument('--n-stocks', type=int, default=500)
+    parser.add_argument('--seed', type=int, default=42)
+    parser.add_argument('--start-date', type=str, default='2020-01-02')
+    parser.add_argument('--model-type', type=str, default='lgbm', choices=['lgbm', 'ridge'])
+    parser.add_argument('--fwd', type=int, default=20,
+                        help='Forward prediction horizon in days (controls model/IC windows)')
     parser.add_argument('--log-level', default='INFO',
-                        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
-                        help='Logging level')
+                        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'])
     args = parser.parse_args()
 
-    logging.basicConfig(
-        level=getattr(logging, args.log_level),
-        format='%(message)s',
-        stream=sys.stdout,
-    )
+    logging.basicConfig(level=getattr(logging, args.log_level), format='%(message)s', stream=sys.stdout)
 
-    # ===== 因子节点注册 =====
+    # ===== 因子节点注册（20 个并行节点） =====
     factor_nodes = [
         ('factor_momentum', compute_momentum_factors),
         ('factor_reversal', compute_reversal_factors),
         ('factor_volatility', compute_volatility_factors),
         ('factor_liquidity', compute_liquidity_factors),
         ('factor_value', compute_value_factors),
-        ('factor_quality', compute_quality_factors),
+        ('factor_quality_basic', compute_quality_basic_factors),
+        ('factor_quality_advanced', compute_quality_advanced_factors),
+        ('factor_quality_autocorr', compute_quality_autocorr_factors),
+        ('factor_quality_pattern', compute_quality_pattern_factors),
+        ('factor_quality_sign', compute_quality_sign_factors),
         ('factor_trend', compute_trend_factors),
+        ('factor_trend_macd', compute_trend_macd_factors),
         ('factor_size', compute_size_factors),
+        ('factor_counting', compute_counting_factors),
+        ('factor_counting_streak', compute_counting_streak_factors),
+        ('factor_counting_nh', compute_counting_nh_factors),
+        ('factor_intraday', compute_intraday_factors),
+        ('factor_interaction', compute_interaction_factors),
+        ('factor_cross_section', compute_cross_section_factors),
+        ('factor_cross_section_neut', compute_cross_section_neut_factors),
     ]
 
-    # 因子窗口：最长周期 120，加缓冲 = 130
+    # 窗口参数（基于 fwd 动态计算）
+    fwd = args.fwd
     FACTOR_WINDOW = 130
     FACTOR_MIN_PERIODS = 2
-
-    # 模型窗口：200 天因子 + 20 天前瞻 close
-    MODEL_WINDOW = 220
-    MODEL_MIN_PERIODS = 220
-
-    # IC 窗口：需要 21 天数据（20 日前瞻）
-    IC_WINDOW = 21
-    IC_MIN_PERIODS = 21
+    MODEL_WINDOW = FACTOR_WINDOW + fwd          # factor window + forward horizon
+    MODEL_MIN_PERIODS = MODEL_WINDOW
+    IC_WINDOW = fwd + 1                         # need fwd+1 close prices to compute fwd_ret
+    IC_MIN_PERIODS = IC_WINDOW
 
     flow = Flow()
 
     # ===== 1. 数据源节点 =====
-    gen_callable = DataSourceCallable(
-        args.n_times, args.n_stocks, args.noise_ratio, args.seed, args.start_date,
-    )
-
-    # Source 输出到 10 个队列：8 因子 + model_close + ic_close
+    gen_callable = DataSourceCallable(args.n_times, args.n_stocks, args.noise_ratio, args.seed, args.start_date)
     src_output_queues = [f'q_ohlc_to_{name}' for name, _ in factor_nodes]
-    src_output_queues.append('q_close_to_model')
-    src_output_queues.append('q_close_to_ic')
-
+    src_output_queues.extend(['q_close_to_model', 'q_close_to_ic'])
     flow.add_source('src_data', gen_callable, src_output_queues)
 
     # ===== 2. 因子计算节点 =====
@@ -116,47 +118,43 @@ def main():
     for fname, ffunc in factor_nodes:
         q_out = f'q_{fname}_out'
         factor_output_queues.append(q_out)
-        flow.add_node(
-            name=fname,
-            func=ffunc,
-            input_from=f'q_ohlc_to_{fname}',
-            output_to=[q_out],
-            window=FACTOR_WINDOW,
-            min_periods=FACTOR_MIN_PERIODS,
-        )
+        flow.add_node(name=fname, func=ffunc,
+                      input_from=f'q_ohlc_to_{fname}',
+                      output_to=[q_out],
+                      window=FACTOR_WINDOW, min_periods=FACTOR_MIN_PERIODS)
 
     # ===== 3. 模型训练预测节点 =====
-    model_input_queues = factor_output_queues + ['q_close_to_model']
-    flow.add_node(
-        name='model',
-        func=model_train_predict,
-        input_from=model_input_queues,
-        output_to=['q_signal'],
-        window=MODEL_WINDOW,
-        min_periods=MODEL_MIN_PERIODS,
-    )
+    model_context = {
+        'model_type': args.model_type,
+        'fwd': fwd,
+        'model_window': MODEL_WINDOW,
+    }
+    flow.add_node(name='model', func=model_train_predict,
+                  input_from=factor_output_queues + ['q_close_to_model'],
+                  output_to=['q_signal'],
+                  window=MODEL_WINDOW, min_periods=MODEL_MIN_PERIODS,
+                  context=model_context)
 
     # ===== 4. IC 分析节点 =====
-    flow.add_node(
-        name='ic_analysis',
-        func=ic_analysis_fn,
-        input_from=['q_signal', 'q_close_to_ic'],
-        output_to=[],  # 终端节点
-        window=IC_WINDOW,
-        min_periods=IC_MIN_PERIODS,
-        epilogue_fn=ic_epilogue,
-    )
+    ic_context = {'fwd': fwd}
+    flow.add_node(name='ic_analysis', func=ic_analysis_fn,
+                  input_from=['q_signal', 'q_close_to_ic'],
+                  output_to=[],
+                  window=IC_WINDOW, min_periods=IC_MIN_PERIODS,
+                  epilogue_fn=ic_epilogue,
+                  context=ic_context)
 
     # ===== 启动 =====
     logging.info("=" * 50)
     logging.info(f"SEAF Pipeline: n_times={args.n_times}, n_stocks={args.n_stocks}, "
-                 f"noise_ratio={args.noise_ratio}, seed={args.seed}, start_date={args.start_date}")
-    logging.info(f"Topology: 1 source → 8 factor nodes → model → ic_analysis")
+                 f"noise_ratio={args.noise_ratio}, seed={args.seed}, start_date={args.start_date}, "
+                 f"fwd={fwd}, model_type={args.model_type}")
+    logging.info(f"Topology: 1 source -> {len(factor_nodes)} factor nodes -> model -> ic_analysis")
+    logging.info(f"Windows: factor={FACTOR_WINDOW}, model={MODEL_WINDOW}, ic={IC_WINDOW}")
     logging.info("=" * 50)
 
     flow.start()
     flow.join()
-
     logging.info("Pipeline completed.")
 
 

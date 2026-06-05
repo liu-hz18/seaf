@@ -9,6 +9,7 @@
 5. 所有随机数使用 np.random.default_rng(seed)，确保可复现。
 6. 若提供 start_date，time index 使用真实交易日（跳过周末）；否则使用整数索引。
 """
+import time
 import numpy as np
 import pandas as pd
 import logging
@@ -155,3 +156,4 @@ def generate_synthetic_data(
         if t % 100 == 0:
             logging.info(f"[DataGen] Generated day {t}/{n_times}, noise_ratio={noise_ratio}")
         yield Frame3D(df)
+        time.sleep(0.2)

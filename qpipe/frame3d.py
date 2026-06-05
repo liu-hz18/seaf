@@ -41,47 +41,87 @@ class Frame3D:
     # 时序 API — 沿 key（时间）层计算，每个 stock 独立
     # ========================================================================
 
-    def ts_delay(self, col: str, periods: int) -> 'Frame3D':
+    def ts_delay(self, col: str, periods: int, cp: bool = True) -> 'Frame3D':
         """时序滞后：将指定列在每个 stock 内部向下平移 periods 个时间单位。
-        NaN 填充缺失值。"""
-        df = self._df.copy()
+        NaN 填充缺失值。cp=False 时原地操作，避免深拷贝。"""
+        df = self._df.copy() if cp else self._df
         df[col] = df.groupby('name')[col].shift(periods)
         return Frame3D(df)
 
-    def ts_delta(self, col: str, periods: int) -> 'Frame3D':
-        """时序差分：col(t) - col(t-periods)，每个 stock 独立。"""
+    def ts_delta(self, col: str, periods: int, cp: bool = True) -> 'Frame3D':
+        """时序差分：col(t) - col(t-periods)，每个 stock 独立。
+        cp=False 时原地操作。"""
         delayed = self.ts_delay(col, periods)
-        df = self._df.copy()
+        df = self._df.copy() if cp else self._df
         df[col] = df[col] - delayed.df[col]
         return Frame3D(df)
 
-    def ts_pct_change(self, col: str, periods: int) -> 'Frame3D':
-        """时序百分比变化：(col(t) - col(t-periods)) / col(t-periods)。"""
+    def ts_pct_change(self, col: str, periods: int, cp: bool = True) -> 'Frame3D':
+        """时序百分比变化：(col(t) - col(t-periods)) / col(t-periods)。
+        cp=False 时原地操作。"""
         delayed = self.ts_delay(col, periods)
-        df = self._df.copy()
+        df = self._df.copy() if cp else self._df
         denom = delayed.df[col]
         with np.errstate(divide='ignore', invalid='ignore'):
             df[col] = (df[col] - denom) / denom.replace(0, np.nan)
         return Frame3D(df)
 
-    def ts_rolling(self, col: str, window: int, agg_fn: str) -> 'Frame3D':
+    def ts_pct_change_multi(self, col: str, periods: List[int],
+                            prefix: str = '', cp: bool = True) -> 'Frame3D':
+        """批量时序百分比变化：一次 GroupBy 完成多周期计算。
+
+        对每个 period in periods，生成列 '{prefix}_{period}d'（若 prefix 非空）
+        或 '{col}_pct_{period}d'（默认列名）。
+
+        相比多次调用 ts_pct_change，大幅减少深拷贝和 GroupBy 开销。
+        """
+        df = self._df.copy() if cp else self._df
+        grp = df.groupby('name')[col]
+        for p in periods:
+            col_name = f'{prefix}_{p}d' if prefix else f'{col}_pct_{p}d'
+            shifted = grp.shift(p)
+            with np.errstate(divide='ignore', invalid='ignore'):
+                df[col_name] = (df[col] - shifted) / shifted.replace(0, np.nan)
+        return Frame3D(df)
+
+    def ts_rolling(self, col: str, window: int, agg_fn: str, cp: bool = True) -> 'Frame3D':
         """时序滚动聚合，每个 stock 独立计算。
-        
+
         agg_fn 支持: 'mean', 'std', 'min', 'max', 'sum', 'skew', 'kurt'。
         min_periods = max(1, window // 2)。
+        cp=False 时原地操作。
         """
         min_periods = max(1, window // 2)
-        df = self._df.copy()
+        df = self._df.copy() if cp else self._df
         df[col] = df.groupby('name')[col].transform(
             lambda x: x.rolling(window=window, min_periods=min_periods).agg(agg_fn)
         )
         return Frame3D(df)
 
-    def ts_zscore(self, col: str, window: int) -> 'Frame3D':
+    def ts_rolling_multi(self, col: str, windows: List[int], agg_fn: str,
+                         prefix: str = '', cp: bool = True) -> 'Frame3D':
+        """批量时序滚动聚合：在一次 GroupBy 循环中完成多个窗口计算。
+
+        对每个 w in windows，生成列 '{prefix}_{w}d'（若 prefix 非空）
+        或 '{col}_{agg_fn}_{w}d'（默认列名）。
+
+        相比多次调用 ts_rolling，减少深拷贝和 GroupBy 重复扫描。
+        """
+        df = self._df.copy() if cp else self._df
+        for w in windows:
+            col_name = f'{prefix}_{w}d' if prefix else f'{col}_{agg_fn}_{w}d'
+            min_periods = max(1, w // 2)
+            df[col_name] = df.groupby('name')[col].transform(
+                lambda x, ww=w, mp=min_periods:
+                    x.rolling(window=ww, min_periods=mp).agg(agg_fn)
+            )
+        return Frame3D(df)
+
+    def ts_zscore(self, col: str, window: int, cp: bool = True) -> 'Frame3D':
         """时序标准化：(x - rolling_mean) / rolling_std，每个 stock 独立。
-        min_periods = max(1, window // 2)。"""
+        min_periods = max(1, window // 2)。cp=False 时原地操作。"""
         min_periods = max(1, window // 2)
-        df = self._df.copy()
+        df = self._df.copy() if cp else self._df
         grp = df.groupby('name')[col]
         roll_mean = grp.transform(
             lambda x: x.rolling(window=window, min_periods=min_periods).mean()
@@ -93,9 +133,10 @@ class Frame3D:
             df[col] = (df[col] - roll_mean) / roll_std.replace(0, np.nan)
         return Frame3D(df)
 
-    def ts_rank(self, col: str, window: int) -> 'Frame3D':
-        """时序排名：滚动窗口内当前值的百分位排名（0~1），每个 stock 独立。"""
-        df = self._df.copy()
+    def ts_rank(self, col: str, window: int, cp: bool = True) -> 'Frame3D':
+        """时序排名：滚动窗口内当前值的百分位排名（0~1），每个 stock 独立。
+        cp=False 时原地操作。"""
+        df = self._df.copy() if cp else self._df
         df[col] = df.groupby('name')[col].transform(
             lambda x: x.rolling(window=window, min_periods=2).apply(
                 lambda w: (w.rank().iloc[-1] - 1) / (len(w) - 1) if len(w) > 1 else np.nan,
@@ -108,10 +149,10 @@ class Frame3D:
     # 截面 API — 沿 name（股票）层计算，每个 time 独立
     # ========================================================================
 
-    def cs_zscore(self, col: str) -> 'Frame3D':
+    def cs_zscore(self, col: str, cp: bool = True) -> 'Frame3D':
         """截面标准化：(x - cross_sectional_mean) / cross_sectional_std。
-        对每个 time 独立计算。std=0 时返回 0。"""
-        df = self._df.copy()
+        对每个 time 独立计算。std=0 时返回 0。cp=False 时原地操作。"""
+        df = self._df.copy() if cp else self._df
         grp = df.groupby('key')[col]
         cs_mean = grp.transform('mean')
         cs_std = grp.transform('std')
@@ -120,11 +161,24 @@ class Frame3D:
             df[col] = z.fillna(0.0)
         return Frame3D(df)
 
-    def cs_rank(self, col: str) -> 'Frame3D':
+    def cs_zscore_batch(self, cols: list, cp: bool = True) -> 'Frame3D':
+        """批量截面标准化：对多个列一次性做 (x-mean)/std。
+        避免逐列调用的重复深拷贝和 groupby 开销。
+        std=0 时返回 0。cp=False 时原地操作。"""
+        df = self._df.copy() if cp else self._df
+        grp = df.groupby('key')[cols]
+        cs_mean = grp.transform('mean')
+        cs_std = grp.transform('std')
+        with np.errstate(divide='ignore', invalid='ignore'):
+            z = (df[cols] - cs_mean) / cs_std.replace(0, np.nan)
+            df[cols] = z.fillna(0.0)
+        return Frame3D(df)
+
+    def cs_rank(self, col: str, cp: bool = True) -> 'Frame3D':
         """截面排名百分位（0~1），对每个 time 独立计算。
         使用 (rank-1)/(N-1) 公式，使得 min=0, max=1。
-        单股票截面返回 0.5。"""
-        df = self._df.copy()
+        单股票截面返回 0.5。cp=False 时原地操作。"""
+        df = self._df.copy() if cp else self._df
         def _rank_pct(x):
             n = len(x)
             if n <= 1:
@@ -133,27 +187,42 @@ class Frame3D:
         df[col] = df.groupby('key')[col].transform(_rank_pct)
         return Frame3D(df)
 
-    def cs_demean(self, col: str) -> 'Frame3D':
-        """截面去均值：x - cross_sectional_mean。"""
-        df = self._df.copy()
+    def cs_rank_batch(self, cols: list, cp: bool = True) -> 'Frame3D':
+        """批量截面排名百分位：一次 GroupBy 完成多列截面排名。
+        cp=False 时原地操作。"""
+        df = self._df.copy() if cp else self._df
+        def _rank_pct(x):
+            n = len(x)
+            if n <= 1:
+                return pd.Series(0.5, index=x.index)
+            return (x.rank() - 1) / (n - 1)
+        # 对每列分别做 rank（pandas 不支持多列 rank）
+        for c in cols:
+            df[c] = df.groupby('key')[c].transform(_rank_pct)
+        return Frame3D(df)
+
+    def cs_demean(self, col: str, cp: bool = True) -> 'Frame3D':
+        """截面去均值：x - cross_sectional_mean。cp=False 时原地操作。"""
+        df = self._df.copy() if cp else self._df
         cs_mean = df.groupby('key')[col].transform('mean')
         df[col] = df[col] - cs_mean
         return Frame3D(df)
 
-    def cs_neutralize(self, col: str, by: List[str]) -> 'Frame3D':
+    def cs_neutralize(self, col: str, by: List[str], cp: bool = True) -> 'Frame3D':
         """截面中性化：对 col 按 by 中的列做截面回归，取残差。
         回归前自动对 by 做 cs_zscore。
-        
+
         对每个 time 独立做 OLS 回归，返回残差。
         如果某一天的数据不足以做回归（如 by 全 NaN 或样本过少），
         则返回 cs_demean 结果作为降级处理。
+        cp=False 时原地操作。
         """
-        df = self._df.copy()
-        # 先对中性化变量做截面标准化
-        f3d_tmp = Frame3D(df.copy())
+        df = self._df.copy() if cp else self._df
+        # 先对中性化变量做截面标准化（原地）
+        f3d_tmp = Frame3D(df)
         for b in by:
-            f3d_tmp = f3d_tmp.cs_zscore(b)
-        df = f3d_tmp.df
+            f3d_tmp = f3d_tmp.cs_zscore(b, cp=False)
+        # df 已被 f3d_tmp 修改（共享 self._df）
 
         # 对每个 time 做回归取残差
         def _ols_residual(grp):
@@ -181,7 +250,6 @@ class Frame3D:
             return pd.Series(residual, index=grp.index)
 
         result = df.groupby('key', group_keys=False).apply(_ols_residual)
-        # result 的 index 结构与原始一致
         df[col] = result
         return Frame3D(df)
 
@@ -199,13 +267,15 @@ class Frame3D:
         mask = self._df.index.get_level_values('name') == stock
         return self._df.loc[mask, col].droplevel('name')
 
-    def add_column(self, name: str, values: Union[pd.Series, np.ndarray]) -> 'Frame3D':
+    def add_column(self, name: str, values: Union[pd.Series, np.ndarray],
+                   cp: bool = True) -> 'Frame3D':
         """安全添加列，自动对齐索引。
-        
+
         - 若 values 为 Series，会与内部 df 按 index 对齐。
         - 若 values 为 np.ndarray，要求长度等于 df 行数。
+        cp=False 时原地操作。
         """
-        df = self._df.copy()
+        df = self._df.copy() if cp else self._df
         if isinstance(values, pd.Series):
             df[name] = values.reindex(df.index)
         else:
@@ -214,13 +284,14 @@ class Frame3D:
             df[name] = values
         return Frame3D(df)
 
-    def filter_stocks(self, mask: pd.Series) -> 'Frame3D':
+    def filter_stocks(self, mask: pd.Series, cp: bool = True) -> 'Frame3D':
         """按布尔 mask 过滤股票（截面维度）。
-        
+
         mask: index 为 stock name，值为 bool 的 Series。
         返回只保留 mask 中为 True 的 stock 的新 Frame3D。
+        cp=False 时原地操作。
         """
-        df = self._df.copy()
+        df = self._df.copy() if cp else self._df
         valid_stocks = mask[mask].index
         df = df[df.index.get_level_values('name').isin(valid_stocks)]
         return Frame3D(df)

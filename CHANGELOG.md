@@ -140,3 +140,132 @@ src2 ──→ sumprod:1 ──→ (sumprod)
 
 ### 下一步计划
 进入 Phase 2：数据生成节点
+
+---
+
+## [Optimization] 2026-06-05 因子模块性能优化与节点拆分 | Factor Performance Optimization & Node Split
+
+### 变更内容
+
+**quality_advanced 拆分 + 向量化**：
+- `factors_quality_advanced.py`（16→8 因子）：保留 skew / up_down / autocorr / tail_risk / composite，移除 dd_duration / hl_stability / kurt / 符号变化
+- `factors_quality_pattern.py`（新建，8 因子）：包含 dd_duration / hl_stability / kurt / consec_sign_change / max_consec_pos
+- pipeline.py 拓扑从 13→14 个因子节点
+
+**向量化消除 rolling().apply() 瓶颈**：
+- `quality_advanced`: tail_risk 用 `rolling().quantile(0.05)` 替代 `apply(_tail_risk)`；autocorr 用 `rolling().corr(shift(1))` 替代 `apply(_autocorr_lag1)`；up_down 用 `sliding_window_view` 向量化
+- `quality_pattern`: dd_duration / sign_change / max_consec_pos 全部用 `sliding_window_view` 向量化
+- `factors_counting.py`: streak / new_high_low / run_pct 全部用 `sliding_window_view` 向量化
+
+### 性能提升（80×100 数据）
+
+| 模块 | 优化前 | 优化后 | 提升 |
+|------|--------|--------|------|
+| quality_advanced | 6.98s | 0.32s | **22×** |
+| quality_pattern | 7.30s | 0.20s | **36×** |
+| counting | ~5.0s | 0.55s | **9×** |
+
+并行瓶颈从 ~7s 降至 ~0.55s，各节点延迟接近，充分利用多进程流式框架的并行优势。
+
+### 变更原因
+`rolling().apply(python_fn)` 是 pandas 中最慢的模式——每个 (stock, window) 组合都调用一次 Python 函数。改为 `sliding_window_view` 批量计算 + `rolling().quantile()`/`rolling().corr()` 内置向量化方法。
+
+### 解决方案
+- 所有自定义 apply 函数替换为 numpy `sliding_window_view` 批量矩阵操作
+- 利用 `np.argmax(axis=1)` / `np.diff(axis=1)` / `np.sum(axis=1)` 等向量化聚合
+- 辅助函数在 `groupby().transform()` 内 per-stock 调用（500 次），而非 per-window 调用（500K 次）
+
+### 影响范围
+- `seafquant/factors_quality_advanced.py` - 缩减至 8 因子，全向量化
+- `seafquant/factors_quality_pattern.py` - 新建，8 因子
+- `seafquant/factors_counting.py` - 全向量化
+- `seafquant/factors.py` - 注册 quality_pattern
+- `pipeline.py` - 14 节点拓扑
+- `test/test_factors.py` - quality_pattern 测试
+
+---
+
+## [Optimization v2] 2026-06-05 全模块性能均衡优化 | All-Module Latency Equalization
+
+### 变更内容
+
+**节点拆分（2→4 节点）**：
+- `factors_counting.py`（16→9）→ `factors_counting_streak.py`（7）— streak/新高新低分离
+- `factors_trend.py`（16→8）→ `factors_trend_macd.py`（8）— MACD/动量/复合分离
+
+**直接 pandas groupby rolling（10 模块）**：
+消除 `f3d.copy().add_column().ts_rolling()` 链式深拷贝瓶颈。
+- `factors_quality_basic.py` / `volatility` / `intraday` / `value` / `cross_section`
+- `liquidity` / `momentum` / `reversal` / `counting` / `trend`
+
+### 性能提升（200t×300s 数据）
+
+| 模块 | 优化前 | 优化后 | 改善 | 手段 |
+|------|--------|--------|------|------|
+| counting | 4.87s | 0.32s | **15×** | 拆分+直接rolling |
+| trend | 3.85s | 0.17s | **23×** | 拆分+直接rolling |
+| quality_basic | 3.38s | 0.48s | **7.0×** | 直接rolling |
+| volatility | 3.56s | 0.53s | **6.7×** | 直接rolling |
+| intraday | 3.31s | 0.47s | **7.0×** | 直接rolling |
+| liquidity | 2.92s | 0.45s | **6.5×** | 直接rolling |
+| momentum | 2.31s | 0.51s | **4.5×** | 直接rolling |
+| reversal | 2.35s | 0.88s | **2.7×** | 直接rolling |
+| value | 3.20s | 0.86s | **3.7×** | 直接rolling |
+| cross_section | 3.26s | 1.25s | **2.6×** | 直接rolling+cs_neutralize |
+
+**并行瓶颈**：4.87s → **1.25s**（3.9× 整体加速）
+**因子节点**：13 → 16 个（+counting_streak, +trend_macd, +quality_pattern）
+**测试**：全部 17 个通过
+
+### 优化方法总结
+
+1. **消除 `rolling().apply()`** — 用 `sliding_window_view` / `rolling.quantile()` / `rolling.corr()` 替换 Python 回调
+2. **直接 pandas groupby rolling** — 绕过 Frame3D 不可变 copy，通过 `.values` 赋值避免索引对齐问题
+3. **节点拆分** — 将 16 因子模块拆为 7-9 因子的并行子节点
+4. **复合因子重构** — 拆分后 composite 仅依赖同节点因子
+
+### 影响范围
+- 新建：`factors_counting_streak.py`, `factors_trend_macd.py`
+- 重写：11 个 factors_*.py 模块（直接 rolling 优化）
+- 更新：`factors.py`, `pipeline.py`（16 节点拓扑）, `test/test_factors.py`（17 测试）
+
+## [Phase 5] 2026-06-05 计算效率优化 | Performance Optimization
+
+### 目标
+因子节点计算耗时优化，降低并行流水线瓶颈。
+
+### 方案 A: Frame3D 副本消除 + 批量 API
+- **`cp` 参数**：所有 `ts_*` / `cs_*` 方法增加 `cp: bool = True`，`cp=False` 时原地操作跳过深拷贝
+- **`ts_pct_change_multi`**：一次 GroupBy 完成多周期 pct_change，替代逐次调用
+- **`ts_rolling_multi`**：一次 GroupBy 循环完成多窗口滚动聚合
+- **`cs_rank_batch`**：一次 GroupBy 完成多列截面排名
+- **全量模块改造**：20 个 factor 模块的 `cs_zscore_batch(factor_cols)` → `cs_zscore_batch(factor_cols, cp=False)`，消除尾部冗余深拷贝
+
+### 方案 B: Numpy 向量化替代 groupby-transform
+- **counting_streak**：Pivot (times×stocks) → numpy → flatten，消除 500 次 groupby-transform 调用开销
+  - `_streaks_2d`: 批量化连续涨跌计数
+  - `_run_pct_2d`: `sliding_window_view` 沿时间轴批量计算同向占比
+- **momentum**：`ts_pct_change_multi` 批量替代 8 次独立 `df.groupby('name')['close'].pct_change(p)`
+- **quality_autocorr**：尝试 numpy sliding_window_view 但 pivot+stack 开销超过收益；回滚保持 pandas `rolling.corr`（C 实现已最优）
+
+### 方案 C: Node 窗口缓存
+- 分析结论：瓶颈在因子计算内部，`pd.concat` 操作 <10ms，缓存收益极微，跳过。
+
+### 性能数据（130t × 500s, 5-run avg）
+
+| 指标 | 优化前 | 优化后 | 改善 |
+|---|---|---|---|
+| 总串行耗时 | 17.28s | **9.19s** | **-46.8%** |
+| 并行瓶颈 | 1.505s (quality_autocorr) | **1.225s** (quality_autocorr) | **-18.6%** |
+| counting_streak | 1.339s | **0.150s** | **-88.8%** |
+| intraday | 1.026s | **0.328s** | **-68.0%** |
+| counting | 0.830s | **0.266s** | **-68.0%** |
+| trend | 0.425s | **0.136s** | **-68.0%** |
+| liquidity | 0.794s | **0.290s** | **-63.5%** |
+
+### 影响范围
+- 修改：`qpipe/frame3d.py`（+cp 参数, +3 batch API）
+- 修改：全部 20 个 `seafquant/factor/factors_*.py`（cs_zscore_batch cp=False）
+- 重写：`factors_momentum.py`（批量 pct_change）、`factors_counting_streak.py`（pivot→numpy）
+- 新增测试：`test/test_frame3d.py`（+9 测试，总计 32）
+- 新增脚本：`scripts/_bench_after.py`, `scripts/_validate_mom.py`, `scripts/_validate_opt.py`

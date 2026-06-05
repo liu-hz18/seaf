@@ -288,5 +288,114 @@ class TestEdgeCases:
         assert (f3d.df['col_d'] == original_vals).all()
 
 
+# ========== 批量 API + cp=False 测试 ==========
+
+class TestTsPctChangeMulti:
+    def test_vs_individual(self):
+        """批量 pct_change 应与逐次 ts_pct_change 结果一致。"""
+        f3d = make_test_frame3d()
+        periods = [1, 2]
+        prefix = 'test_pct'
+        multi = f3d.ts_pct_change_multi('col_d', periods, prefix=prefix)
+        # 逐次验证
+        for p in periods:
+            single = f3d.ts_pct_change('col_d', p)
+            col_name = f'{prefix}_{p}d'
+            assert col_name in multi.df.columns
+            np.testing.assert_allclose(
+                multi.df[col_name].values, single.df['col_d'].values,
+                rtol=1e-10, equal_nan=True,
+            )
+
+    def test_default_prefix(self):
+        """默认列名应为 '{col}_pct_{p}d'。"""
+        f3d = make_test_frame3d()
+        result = f3d.ts_pct_change_multi('col_d', [1])
+        assert 'col_d_pct_1d' in result.df.columns
+
+    def test_cp_false_mutates(self):
+        """cp=False 应原地修改原始 df。"""
+        f3d = make_test_frame3d()
+        periods = [1, 2]
+        result = f3d.ts_pct_change_multi('col_d', periods, prefix='x', cp=False)
+        # result 与 f3d 共享内部 df
+        assert 'x_1d' in f3d.df.columns  # 原始被修改
+        assert 'x_2d' in f3d.df.columns
+
+
+class TestTsRollingMulti:
+    def test_vs_individual(self):
+        """批量 rolling 应与逐次 ts_rolling 结果一致。"""
+        f3d = make_test_frame3d()
+        windows = [2, 3]
+        prefix = 'test_roll'
+        multi = f3d.ts_rolling_multi('col_d', windows, 'mean', prefix=prefix)
+        for w in windows:
+            single = f3d.ts_rolling('col_d', w, 'mean')
+            col_name = f'{prefix}_{w}d'
+            assert col_name in multi.df.columns
+            np.testing.assert_allclose(
+                multi.df[col_name].values, single.df['col_d'].values,
+                rtol=1e-10, equal_nan=True,
+            )
+
+    def test_default_prefix(self):
+        """默认列名应为 '{col}_{agg_fn}_{w}d'。"""
+        f3d = make_test_frame3d()
+        result = f3d.ts_rolling_multi('col_d', [2], 'mean')
+        assert 'col_d_mean_2d' in result.df.columns
+
+
+class TestCsRankBatch:
+    def test_vs_individual(self):
+        """批量 rank 应与逐次 cs_rank 结果一致。"""
+        f3d = make_test_frame3d()
+        multi = f3d.cs_rank_batch(['col_a', 'col_b'])
+        for col in ['col_a', 'col_b']:
+            single = f3d.cs_rank(col)
+            np.testing.assert_allclose(
+                multi.df[col].values, single.df[col].values,
+                rtol=1e-10, equal_nan=True,
+            )
+
+    def test_cp_false(self):
+        """cp=False 应原地修改。"""
+        f3d = make_test_frame3d()
+        result = f3d.cs_rank_batch(['col_a'], cp=False)
+        # 值已经变成 rank（0~1）
+        assert f3d.df['col_a'].iloc[0] <= 1.0
+
+
+class TestCpFalseEdgeCases:
+    def test_immutability_still_holds(self):
+        """默认 cp=True 时不应修改原始数据。"""
+        f3d = make_test_frame3d()
+        orig = f3d.df['col_d'].copy()
+        _ = f3d.ts_delay('col_d', 1)          # cp=True (默认)
+        _ = f3d.ts_delta('col_d', 1)
+        _ = f3d.ts_pct_change('col_d', 1)
+        _ = f3d.ts_rolling('col_d', 2, 'mean')
+        _ = f3d.ts_zscore('col_d', 2)
+        _ = f3d.cs_zscore('col_d')
+        _ = f3d.cs_zscore_batch(['col_d'])
+        _ = f3d.cs_rank('col_d')
+        _ = f3d.cs_demean('col_d')
+        _ = f3d.add_column('tmp', np.arange(9, dtype=float))
+        assert (f3d.df['col_d'] == orig).all()
+
+    def test_cp_false_modifies_self(self):
+        """cp=False 时，ts_pct_change 应修改原始数据。"""
+        f3d = make_test_frame3d()
+        orig_val = f3d.df.loc[(1, 'A'), 'col_d']
+        result = f3d.ts_pct_change('col_d', 1, cp=False)
+        # f3d 内部 df 已变：time=0 应为 NaN
+        assert pd.isna(f3d.df.loc[(0, 'A'), 'col_d'])
+        # time=1 的值已变为 pct_change
+        expected = (f3d.df.loc[(1, 'A'), 'col_d'] -
+                    orig_val) / orig_val
+        # 验证确实变了（不再等于原始值）
+        assert not np.isclose(f3d.df.loc[(1, 'A'), 'col_d'], orig_val)
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])
