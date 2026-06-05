@@ -354,3 +354,16 @@ src2 ──→ sumprod:1 ──→ (sumprod)
 ### 验证
 - 全部 55 个测试通过（pytest，149s）
 - `bench_all_factors.py` 10 模块全部跑通（瓶颈 quality_merged 1.23s）
+
+## [Refactor] 2026-06-06 pipeline.py 去冗余 — 消除 FACTOR_REGISTRY 双维护
+
+### 问题
+`pipeline.py` 中存在两处与 `seafquant/factors.py` 的 `FACTOR_REGISTRY` 重复：
+1. 10 行独立的 `from seafquant.factor.xxx import compute_xxx_factors` — 与 `factors.py` 中的相同 import 重复
+2. `factor_nodes` 列表 — 与 `FACTOR_REGISTRY` 键值对完全等价（仅前缀不同）
+
+### 变更
+- **import 精简**：10 行 → 1 行 (`from seafquant.factors import FACTOR_REGISTRY`)
+- **factor_nodes 派生**：`[(f'factor_{name}', func) for name, func in FACTOR_REGISTRY.items()]`
+  — 因子增删改只需维护 `FACTOR_REGISTRY` 一处，pipeline 自动同步
+- **pipeline.py**：144 行 → 122 行（-15%）

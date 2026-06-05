@@ -14,17 +14,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from qpipe.flow import Flow
 from seafquant.data_generator import generate_synthetic_data
-from seafquant.factor.trend import compute_trend_factors
-from seafquant.factor.momentum import compute_momentum_factors
-from seafquant.factor.volatility import compute_volatility_factors
-from seafquant.factor.liquidity import compute_liquidity_factors
-from seafquant.factor.value import compute_value_factors
-from seafquant.factor.quality_merged import compute_quality_merged_factors
-from seafquant.factor.quality_pattern import compute_quality_pattern_factors
-from seafquant.factor.quality_autocorr import compute_quality_autocorr_factors
-from seafquant.factor.counting import compute_counting_factors
-from seafquant.factor.interaction import compute_interaction_factors
-from seafquant.factor.cross_section import compute_cross_section_factors
+from seafquant.factors import FACTOR_REGISTRY
 from seafquant.model_node import model_train_predict
 from seafquant.ic_analysis import ic_analysis_fn, ic_epilogue
 
@@ -63,20 +53,8 @@ def main():
 
     logging.basicConfig(level=getattr(logging, args.log_level), format='%(message)s', stream=sys.stdout)
 
-    # ===== 因子节点注册（10 个并行节点，已合并耗时匹配） =====
-    factor_nodes = [
-        ('factor_trend', compute_trend_factors),             # 趋势 (MA+MACD) 16cols≈1.07s
-        ('factor_momentum', compute_momentum_factors),       # 动量+反转 32cols≈0.96s
-        ('factor_volatility', compute_volatility_factors),   # 波动+日内 33cols≈0.99s
-        ('factor_liquidity', compute_liquidity_factors),     # 流动+规模 32cols≈1.12s
-        ('factor_value', compute_value_factors),             # 价值 16cols≈0.76s
-        ('factor_quality_merged', compute_quality_merged_factors), # 质量合并(basic+cs_neut) 25cols≈1.02s
-        ('factor_quality_pattern', compute_quality_pattern_factors), # 质量形态+高级 9cols≈1.07s
-        ('factor_quality_autocorr', compute_quality_autocorr_factors), # 自相关 4cols≈1.18s
-        ('factor_counting', compute_counting_factors),       # 计数 16cols≈0.87s
-        ('factor_cross_section', compute_cross_section_factors), # 截面排名 10cols≈1.03s
-        ('factor_interaction', compute_interaction_factors), # 交互 16cols≈0.80s
-    ]
+    # ===== 因子节点注册（由 FACTOR_REGISTRY 派生，10 个并行节点） =====
+    factor_nodes = [(f'factor_{name}', func) for name, func in FACTOR_REGISTRY.items()]
 
     # 窗口参数（基于 fwd 动态计算）
     fwd = args.fwd
