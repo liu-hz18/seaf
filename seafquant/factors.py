@@ -1,18 +1,18 @@
 """
 因子计算主入口 — 聚合所有因子类别（合并后 11 个节点）。
 """
-from seafquant.factor.factors_momentum import compute_momentum_factors
-from seafquant.factor.factors_volatility import compute_volatility_factors
-from seafquant.factor.factors_liquidity import compute_liquidity_factors
-from seafquant.factor.factors_value import compute_value_factors
-from seafquant.factor.factors_quality_basic import compute_quality_basic_factors
-from seafquant.factor.factors_quality_autocorr import compute_quality_autocorr_factors
-from seafquant.factor.factors_quality_pattern import compute_quality_pattern_factors
-from seafquant.factor.factors_trend import compute_trend_factors
-from seafquant.factor.factors_counting import compute_counting_factors
-from seafquant.factor.factors_interaction import compute_interaction_factors
-from seafquant.factor.factors_cross_section import compute_cross_section_factors
-from seafquant.factor.factors_cross_section_neut import compute_cross_section_neut_factors
+from seafquant.factor.momentum import compute_momentum_factors
+from seafquant.factor.volatility import compute_volatility_factors
+from seafquant.factor.liquidity import compute_liquidity_factors
+from seafquant.factor.value import compute_value_factors
+from seafquant.factor.quality_basic import compute_quality_basic_factors
+from seafquant.factor.quality_autocorr import compute_quality_autocorr_factors
+from seafquant.factor.quality_pattern import compute_quality_pattern_factors
+from seafquant.factor.trend import compute_trend_factors
+from seafquant.factor.counting import compute_counting_factors
+from seafquant.factor.interaction import compute_interaction_factors
+from seafquant.factor.cross_section import compute_cross_section_factors
+from seafquant.factor.cross_section_neut import compute_cross_section_neut_factors
 
 FACTOR_REGISTRY = {
     'momentum': compute_momentum_factors,

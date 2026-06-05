@@ -269,3 +269,45 @@ src2 ──→ sumprod:1 ──→ (sumprod)
 - 重写：`factors_momentum.py`（批量 pct_change）、`factors_counting_streak.py`（pivot→numpy）
 - 新增测试：`test/test_frame3d.py`（+9 测试，总计 32）
 - 新增脚本：`scripts/_bench_after.py`, `scripts/_validate_mom.py`, `scripts/_validate_opt.py`
+
+## [Maintenance] 2026-06-05 因子文件重命名 + 基准脚本修复 | Factor Rename & Bench Fix
+
+### 概述
+清理代码库命名规范、修复基准测试脚本的路由错误。
+
+### 因子文件重命名（12 个文件）
+
+`seafquant/factor/factors_*.py` → `seafquant/factor/*.py`，去掉冗余 `factors_` 前缀：
+
+| 旧名 | 新名 |
+|------|------|
+| `factors_counting.py` | `counting.py` |
+| `factors_cross_section.py` | `cross_section.py` |
+| `factors_cross_section_neut.py` | `cross_section_neut.py` |
+| `factors_interaction.py` | `interaction.py` |
+| `factors_liquidity.py` | `liquidity.py` |
+| `factors_momentum.py` | `momentum.py` |
+| `factors_quality_autocorr.py` | `quality_autocorr.py` |
+| `factors_quality_basic.py` | `quality_basic.py` |
+| `factors_quality_pattern.py` | `quality_pattern.py` |
+| `factors_trend.py` | `trend.py` |
+| `factors_value.py` | `value.py` |
+| `factors_volatility.py` | `volatility.py` |
+
+### Import 路径更新
+- `pipeline.py`：12 行 import 路径同步更新
+- `seafquant/factors.py`：FACTOR_REGISTRY import 路径同步 + 注释修正（11→12 节点）
+
+### bench_all_factors.py 修复
+- **Bug**: `ACTIVE_MODULES` 硬编码了因子合并前的 20 个模块名（`reversal`、`quality_advanced`、`trend_macd` 等），因子合并重构后 FACTOR_REGISTRY 仅保留 12 个 key，导致 `KeyError: 'reversal'`
+- **修复**: `ACTIVE_MODULES = list(FACTOR_REGISTRY.keys())`，与注册表自动对齐，彻底消除漂移
+
+### 测试加速
+- `test_data_generator.py`：`n_times` 150 → 80，两个可预测性测试从 65s 降至 35s
+
+### 辅助工具
+- 新增 `scripts/_rename_imports.py`：批量更新所有 `.py` 文件中的 `factors_*` import 引用
+
+### 验证
+- 全部 56 个测试通过（pytest，149.79s）
+- `bench_all_factors.py` 12 模块全部跑通（瓶颈 quality_autocorr 1.26s，最快 cross_section_neut 0.33s）

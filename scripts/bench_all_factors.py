@@ -16,15 +16,8 @@ N_RUNS = 10
 NOISE_RATIO = 0.3
 SEED = 42
 
-# 活跃模块列表（与 pipeline.py 一致）
-ACTIVE_MODULES = [
-    'momentum', 'reversal', 'volatility', 'liquidity', 'value',
-    'quality_basic', 'quality_advanced', 'quality_autocorr',
-    'quality_pattern', 'quality_sign',
-    'trend', 'trend_macd', 'size',
-    'counting', 'counting_streak', 'counting_nh',
-    'intraday', 'interaction', 'cross_section', 'cross_section_neut',
-]
+# 活跃模块列表（与 FACTOR_REGISTRY 一致，合并后 12 个节点）
+ACTIVE_MODULES = list(FACTOR_REGISTRY.keys())
 
 # ---- 生成数据 ----
 print(f'生成数据: {N_TIMES}t x {N_STOCKS}s ...', end=' ', flush=True)

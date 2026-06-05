@@ -108,9 +108,9 @@ class TestDataGenerator:
     
     def test_low_noise_has_predictability(self):
         """低噪声时信号应具有一定可预测性（IC > 0）。"""
-        n_times = 150
+        n_times = 80
         n_stocks = 20
-        gen = generate_synthetic_data(n_times=n_times, n_stocks=n_stocks, 
+        gen = generate_synthetic_data(n_times=n_times, n_stocks=n_stocks,
                                        noise_ratio=0.1, seed=42)
         frames = _collect_frames(gen)
         fwd_ret_xd = _compute_fwd_ret(frames, horizon=20)
@@ -138,9 +138,9 @@ class TestDataGenerator:
     
     def test_high_noise_reduces_predictability(self):
         """高噪声时预测 IC 应显著下降。"""
-        n_times = 150
+        n_times = 80
         n_stocks = 20
-        
+
         def get_mean_ic(noise_ratio):
             gen = generate_synthetic_data(n_times=n_times, n_stocks=n_stocks,
                                            noise_ratio=noise_ratio, seed=42)

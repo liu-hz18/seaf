@@ -14,18 +14,18 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from qpipe.flow import Flow
 from seafquant.data_generator import generate_synthetic_data
-from seafquant.factor.factors_trend import compute_trend_factors
-from seafquant.factor.factors_momentum import compute_momentum_factors
-from seafquant.factor.factors_volatility import compute_volatility_factors
-from seafquant.factor.factors_liquidity import compute_liquidity_factors
-from seafquant.factor.factors_value import compute_value_factors
-from seafquant.factor.factors_quality_basic import compute_quality_basic_factors
-from seafquant.factor.factors_quality_pattern import compute_quality_pattern_factors
-from seafquant.factor.factors_quality_autocorr import compute_quality_autocorr_factors
-from seafquant.factor.factors_counting import compute_counting_factors
-from seafquant.factor.factors_interaction import compute_interaction_factors
-from seafquant.factor.factors_cross_section import compute_cross_section_factors
-from seafquant.factor.factors_cross_section_neut import compute_cross_section_neut_factors
+from seafquant.factor.trend import compute_trend_factors
+from seafquant.factor.momentum import compute_momentum_factors
+from seafquant.factor.volatility import compute_volatility_factors
+from seafquant.factor.liquidity import compute_liquidity_factors
+from seafquant.factor.value import compute_value_factors
+from seafquant.factor.quality_basic import compute_quality_basic_factors
+from seafquant.factor.quality_pattern import compute_quality_pattern_factors
+from seafquant.factor.quality_autocorr import compute_quality_autocorr_factors
+from seafquant.factor.counting import compute_counting_factors
+from seafquant.factor.interaction import compute_interaction_factors
+from seafquant.factor.cross_section import compute_cross_section_factors
+from seafquant.factor.cross_section_neut import compute_cross_section_neut_factors
 from seafquant.model_node import model_train_predict
 from seafquant.ic_analysis import ic_analysis_fn, ic_epilogue
 
