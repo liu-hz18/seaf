@@ -1,6 +1,6 @@
 """
 截面特征因子 — 10 个因子：截面排名/排名变化/排名Z-score/收益率分位数。
-动量/中性化/复合已拆分至 cross_section_neut 节点。
+动量/中性化/复合已合并至 quality_merged 节点。
 """
 import numpy as np
 import logging

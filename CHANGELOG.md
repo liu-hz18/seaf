@@ -311,3 +311,46 @@ src2 ──→ sumprod:1 ──→ (sumprod)
 ### 验证
 - 全部 56 个测试通过（pytest，149.79s）
 - `bench_all_factors.py` 12 模块全部跑通（瓶颈 quality_autocorr 1.26s，最快 cross_section_neut 0.33s）
+
+## [Optimization] 2026-06-05 节点合并: quality_basic + cross_section_neut → quality_merged
+
+### 动机
+因子节点并行效率不均——`cross_section_neut`（6cols / 0.33s）和 `quality_basic`（19cols / 0.69s）
+耗时远低于瓶颈模块（quality_autocorr 1.26s），浪费进程资源且不贡献并行加速。
+
+### 变更
+- **合并模块**: `quality_basic.py` + `cross_section_neut.py` → `quality_merged.py`（25 列因子）
+  - Part A: 质量基础+符号（19 cols, prefix `factor_qb_` / `factor_qa_`）
+  - Part B: 截面中性化（6 cols, prefix `factor_cs_`）
+  - 统一尾部 `cs_zscore_batch` 批处理
+- **节点数**: 12 → 10（-17% 进程资源）
+- **FACTOR_REGISTRY**: `quality_basic` + `cross_section_neut` → `quality_merged`
+
+### 效率提升
+
+合并前后 bench_all_factors 对比（200t×500s, 10-run avg）：
+
+| 模块 | 合并前 | 合并后 | 列数 |
+|------|--------|--------|------|
+| quality_basic | 0.69s | — | 19 |
+| cross_section_neut | 0.33s | — | 6 |
+| **quality_merged** | — | **1.23s** | 25 |
+
+并行瓶颈比变化：
+
+| 指标 | 合并前 | 合并后 | 改善 |
+|------|--------|--------|------|
+| 瓶颈 | quality_autocorr 1.26s | quality_merged 1.23s | -2.4% |
+| 最快 | cross_section_neut 0.33s | value 0.75s | — |
+| **瓶颈比** | **3.8x** | **1.6x** | **-57.9%** |
+
+### 受影响文件
+- 新增：`seafquant/factor/quality_merged.py`
+- 修改：`seafquant/factors.py`（import + registry + prefixes + docstring）
+- 修改：`pipeline.py`（12→10 nodes + import 替换 + 注释更新）
+- 修改：`test/test_factors.py`（2 tests→1 test, 25 cols, 总计 55 测试）
+- 修改：`seafquant/factor/cross_section.py`（注释同步）
+
+### 验证
+- 全部 55 个测试通过（pytest，149s）
+- `bench_all_factors.py` 10 模块全部跑通（瓶颈 quality_merged 1.23s）

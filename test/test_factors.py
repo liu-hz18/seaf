@@ -1,5 +1,5 @@
 """
-因子计算单元测试 — 12 个合并后节点。
+因子计算单元测试 — 10 个合并后节点。
 逐一测试所有因子类别的输出形状、列数、无全 NaN 列。
 """
 import pytest
@@ -25,7 +25,7 @@ def _make_small_data(n_times=80, n_stocks=20):
 
 
 class TestFactorModules:
-    """逐一测试 12 个合并后的因子模块。"""
+    """逐一测试 10 个合并后的因子模块。"""
 
     @pytest.fixture(scope='class')
     def f3d(self):
@@ -58,8 +58,8 @@ class TestFactorModules:
     def test_value(self, f3d):
         self._test_category(f3d, 'value', expected_cols=16)
 
-    def test_quality_basic(self, f3d):
-        self._test_category(f3d, 'quality_basic', expected_cols=19)
+    def test_quality_merged(self, f3d):
+        self._test_category(f3d, 'quality_merged', expected_cols=25)
 
     def test_quality_pattern(self, f3d):
         self._test_category(f3d, 'quality_pattern', expected_cols=9)
@@ -72,9 +72,6 @@ class TestFactorModules:
 
     def test_cross_section(self, f3d):
         self._test_category(f3d, 'cross_section', expected_cols=10)
-
-    def test_cross_section_neut(self, f3d):
-        self._test_category(f3d, 'cross_section_neut', expected_cols=6)
 
     def test_interaction(self, f3d):
         self._test_category(f3d, 'interaction', expected_cols=16)

@@ -1,7 +1,7 @@
 """
 SEAF 量化回测框架主入口 — Pipeline 组装与执行。
 
-拓扑：1 source → 11 factor nodes → model → ic_analysis
+拓扑：1 source → 10 factor nodes → model → ic_analysis
 
 运行：python pipeline.py --noise-ratio 0.3 --n-times 1000 --n-stocks 500 --start-date 2020-01-02 --fwd 20
 """
@@ -19,13 +19,12 @@ from seafquant.factor.momentum import compute_momentum_factors
 from seafquant.factor.volatility import compute_volatility_factors
 from seafquant.factor.liquidity import compute_liquidity_factors
 from seafquant.factor.value import compute_value_factors
-from seafquant.factor.quality_basic import compute_quality_basic_factors
+from seafquant.factor.quality_merged import compute_quality_merged_factors
 from seafquant.factor.quality_pattern import compute_quality_pattern_factors
 from seafquant.factor.quality_autocorr import compute_quality_autocorr_factors
 from seafquant.factor.counting import compute_counting_factors
 from seafquant.factor.interaction import compute_interaction_factors
 from seafquant.factor.cross_section import compute_cross_section_factors
-from seafquant.factor.cross_section_neut import compute_cross_section_neut_factors
 from seafquant.model_node import model_train_predict
 from seafquant.ic_analysis import ic_analysis_fn, ic_epilogue
 
@@ -64,20 +63,19 @@ def main():
 
     logging.basicConfig(level=getattr(logging, args.log_level), format='%(message)s', stream=sys.stdout)
 
-    # ===== 因子节点注册（11 个并行节点，已合并耗时匹配） =====
+    # ===== 因子节点注册（10 个并行节点，已合并耗时匹配） =====
     factor_nodes = [
-        ('factor_trend', compute_trend_factors),           # 趋势 (MA+MACD) 16cols≈1.14s
-        ('factor_momentum', compute_momentum_factors),     # 动量+反转 32cols≈1.04s
-        ('factor_volatility', compute_volatility_factors), # 波动+日内 33cols≈0.90s
-        ('factor_liquidity', compute_liquidity_factors),   # 流动+规模 32cols≈1.05s
-        ('factor_value', compute_value_factors),           # 价值 16cols≈0.84s
-        ('factor_quality_basic', compute_quality_basic_factors),   # 质量基础+符号 19cols≈0.76s
-        ('factor_quality_pattern', compute_quality_pattern_factors), # 质量形态+高级 9cols≈1.17s
-        ('factor_quality_autocorr', compute_quality_autocorr_factors), # 自相关 4cols≈1.20s
-        ('factor_counting', compute_counting_factors),     # 计数 16cols≈0.99s
-        ('factor_cross_section', compute_cross_section_factors),     # 截面排名 10cols≈1.15s
-        ('factor_cross_section_neut', compute_cross_section_neut_factors), # 截面中性化 6cols≈0.36s
-        ('factor_interaction', compute_interaction_factors), # 交互 16cols≈0.88s
+        ('factor_trend', compute_trend_factors),             # 趋势 (MA+MACD) 16cols≈1.07s
+        ('factor_momentum', compute_momentum_factors),       # 动量+反转 32cols≈0.96s
+        ('factor_volatility', compute_volatility_factors),   # 波动+日内 33cols≈0.99s
+        ('factor_liquidity', compute_liquidity_factors),     # 流动+规模 32cols≈1.12s
+        ('factor_value', compute_value_factors),             # 价值 16cols≈0.76s
+        ('factor_quality_merged', compute_quality_merged_factors), # 质量合并(basic+cs_neut) 25cols≈1.02s
+        ('factor_quality_pattern', compute_quality_pattern_factors), # 质量形态+高级 9cols≈1.07s
+        ('factor_quality_autocorr', compute_quality_autocorr_factors), # 自相关 4cols≈1.18s
+        ('factor_counting', compute_counting_factors),       # 计数 16cols≈0.87s
+        ('factor_cross_section', compute_cross_section_factors), # 截面排名 10cols≈1.03s
+        ('factor_interaction', compute_interaction_factors), # 交互 16cols≈0.80s
     ]
 
     # 窗口参数（基于 fwd 动态计算）
