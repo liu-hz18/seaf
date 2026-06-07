@@ -3,8 +3,13 @@
 优化：使用直接 pandas groupby rolling 减少 f3d.copy() 深拷贝开销；
 cs_neutralize 保留不变。
 """
-import numpy as np
+
+from __future__ import annotations
+
 import logging
+
+import numpy as np
+
 from qpipe.frame3d import Frame3D
 
 
@@ -17,7 +22,9 @@ def compute_value_factors(name: str, f3d: Frame3D, context) -> Frame3D:
     df = result.df
 
     def _roll(src, dst, window, agg):
-        df[dst] = df.groupby('name')[src].rolling(window, min_periods=max(1, window // 2)).agg(agg).values
+        df[dst] = (
+            df.groupby('name')[src].rolling(window, min_periods=max(1, window // 2)).agg(agg).values
+        )
 
     # ---- 1-3: 基础价值 ----
     df['factor_val_inv_price'] = 1.0 / close
@@ -77,6 +84,5 @@ def compute_value_factors(name: str, f3d: Frame3D, context) -> Frame3D:
     factor_cols = [c for c in df.columns if c.startswith('factor_val_')]
     result = result.cs_zscore_batch(factor_cols, cp=False)
 
-    logging.debug(f"[{name}] Value NaN: "
-                  f"{ {c: result.df[c].isna().sum() for c in factor_cols} }")
+    logging.debug(f'[{name}] Value NaN: { {c: result.df[c].isna().sum() for c in factor_cols} }')
     return Frame3D(result.df[factor_cols].copy())

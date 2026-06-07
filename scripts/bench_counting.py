@@ -1,7 +1,11 @@
 """快速性能对比：counting 向量化后耗时"""
-import time, sys, os
+
+import sys
+import time
+
 sys.path.insert(0, '.')
 import pandas as pd
+
 from qpipe.frame3d import Frame3D
 from seafquant.data_generator import generate_synthetic_data
 
@@ -16,4 +20,4 @@ from seafquant.factor.factors_counting import compute_counting_factors
 t0 = time.perf_counter()
 r = compute_counting_factors('counting', f3d, None)
 t1 = time.perf_counter()
-print(f'counting (16 cols): {t1-t0:.3f}s  cols={list(r.df.columns)}')
+print(f'counting (16 cols): {t1 - t0:.3f}s  cols={list(r.df.columns)}')

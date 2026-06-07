@@ -2,8 +2,13 @@
 交互特征因子 — 16 个因子，基于现有量价特征的乘积/比值/差分。
 捕捉因子间的非线性交互关系，与线性加权因子组合正交。
 """
-import numpy as np
+
+from __future__ import annotations
+
 import logging
+
+import numpy as np
+
 from qpipe.frame3d import Frame3D
 
 
@@ -11,9 +16,9 @@ def compute_interaction_factors(name: str, f3d: Frame3D, context) -> Frame3D:
     """计算 16 个交互类因子。"""
     result = f3d.copy()
     close = f3d.df['close']
-    volume = f3d.df['volume']
+    f3d.df['volume']
     turnover = f3d.df['turnover']
-    mcap = f3d.df['market_cap']
+    f3d.df['market_cap']
 
     ret1 = f3d.ts_pct_change('close', 1).df['close']
     ret5 = f3d.ts_pct_change('close', 5).df['close']
@@ -43,8 +48,7 @@ def compute_interaction_factors(name: str, f3d: Frame3D, context) -> Frame3D:
     # ---- 9-10: 日内振幅 × 成交量交互 ----
     hl_range = (f3d.df['high'] - f3d.df['low']) / close
     result = result.add_column('factor_inter_hl_vol_1d', hl_range * vol_rank)
-    result = result.add_column('factor_inter_hl_vol_5d',
-                                hl_range * vol_rank * ret5.fillna(0))
+    result = result.add_column('factor_inter_hl_vol_5d', hl_range * vol_rank * ret5.fillna(0))
 
     # ---- 11-12: 收益方向 × 振幅 —— 确认性交互 ----
     ret_sign = np.sign(ret5)
@@ -61,14 +65,17 @@ def compute_interaction_factors(name: str, f3d: Frame3D, context) -> Frame3D:
     result = result.add_column('factor_inter_to_chg_ret_20d', to_chg_20 * ret20)
 
     # ---- 15-16: 复合交互 + 规模交互 ----
-    result = result.add_column('factor_inter_mom_vol_conflict',
-                                ret20 * ret_vol_20)  # 动量×波动：趋势确认或反转信号
+    result = result.add_column(
+        'factor_inter_mom_vol_conflict', ret20 * ret_vol_20
+    )  # 动量×波动：趋势确认或反转信号
 
     # 复合
-    comp = (result.df['factor_inter_ret_vol_5d'] +
-            result.df['factor_inter_ret_mcap_20d'] +
-            result.df['factor_inter_direction_range_5d'] +
-            result.df['factor_inter_to_chg_ret_5d']) / 4
+    comp = (
+        result.df['factor_inter_ret_vol_5d']
+        + result.df['factor_inter_ret_mcap_20d']
+        + result.df['factor_inter_direction_range_5d']
+        + result.df['factor_inter_to_chg_ret_5d']
+    ) / 4
     result = result.add_column('factor_inter_composite', comp)
 
     # 截面标准化
@@ -76,6 +83,6 @@ def compute_interaction_factors(name: str, f3d: Frame3D, context) -> Frame3D:
     result = result.cs_zscore_batch(factor_cols, cp=False)
 
     nan_counts = {col: result.df[col].isna().sum() for col in factor_cols}
-    logging.debug(f"[{name}] Interaction NaN counts: {nan_counts}")
+    logging.debug(f'[{name}] Interaction NaN counts: {nan_counts}')
 
     return Frame3D(result.df[factor_cols].copy())

@@ -2,45 +2,65 @@
 Flow 编排器 — 管理节点拓扑、queue 创建、启停控制。
 拓扑验证保证 DAG、无重复写、无孤立节点等基本约束。
 """
-import multiprocessing as mp
-import logging
-from typing import Callable, List, Union, Tuple, Dict, Any, Iterator, Optional
 
-from .frame3d import Frame3D
-from .node import MultiInputNode, SourceNode
+from __future__ import annotations
+
+import logging
+import multiprocessing as mp
+from typing import Any
+
+from .node import (
+    EpilogueFunc,
+    FactorFunc,
+    GenFunc,
+    MultiInputNode,
+    SourceNode,
+)
 
 
 class Flow:
-    def __init__(self, stop_signal=None):
-        self.nodes: List[mp.Process] = []
-        self.stop_signal = stop_signal if stop_signal is not None else "__STOP__"
-        self.queues: Dict[str, mp.Queue] = {}
-        # 拓扑追踪
-        self._node_specs: List[Dict] = []
-        self._queue_writers: Dict[str, List[str]] = {}   # queue -> [producer nodes]
-        self._queue_readers: Dict[str, List[str]] = {}   # queue -> [consumer nodes]
+    """流式管线编排器：声明式构建因子流水线拓扑，自动验证 DAG 约束。"""
 
-    def create_queue(self, name: str) -> mp.Queue:
+    def __init__(self, stop_signal: Any = None) -> None:
+        self.nodes: list[mp.Process] = []
+        self.stop_signal: Any = stop_signal if stop_signal is not None else '__STOP__'
+        self.queues: dict[str, mp.Queue] = {}
+        self._node_specs: list[dict[str, Any]] = []
+        self._queue_writers: dict[str, list[str]] = {}
+        self._queue_readers: dict[str, list[str]] = {}
+
+    def create_queue(self, name: str) -> mp.Queue[Any]:
         if name not in self.queues:
             self.queues[name] = mp.Queue()
         return self.queues[name]
 
     def add_source(
-        self, 
-        name: str, 
-        gen_func: Callable[[], Iterator[Frame3D]], 
-        output_to: List[str],
-        context: Optional[Any] = None,
-        epilogue_fn: Optional[Callable[[str, Any], None]] = None,
-    ):
+        self,
+        name: str,
+        gen_func: GenFunc,
+        output_to: list[str],
+        context: Any = None,
+        epilogue_fn: EpilogueFunc | None = None,
+    ) -> SourceNode:
+        """添加数据源节点。gen_func 应为返回 Frame3D 迭代器的可调用对象。"""
         output_queues = [self.create_queue(qname) for qname in output_to]
         node = SourceNode(
-            name, gen_func, output_queues, self.stop_signal,
-            context=context, epilogue_fn=epilogue_fn,
+            name,
+            gen_func,
+            output_queues,
+            self.stop_signal,
+            context=context,
+            epilogue_fn=epilogue_fn,
         )
         self.nodes.append(node)
-        # 记录拓扑
-        self._node_specs.append({'name': name, 'type': 'source', 'inputs': [], 'outputs': list(output_to)})
+        self._node_specs.append(
+            {
+                'name': name,
+                'type': 'source',
+                'inputs': [],
+                'outputs': list(output_to),
+            }
+        )
         for qname in output_to:
             self._queue_writers.setdefault(qname, []).append(name)
             self._queue_readers.setdefault(qname, [])
@@ -49,30 +69,43 @@ class Flow:
     def add_node(
         self,
         name: str,
-        func: Callable,
-        input_from: Union[str, List[str]],
-        output_to: List[str],
+        func: FactorFunc,
+        input_from: str | list[str],
+        output_to: list[str],
         window: int = 1,
         min_periods: int = 1,
-        input_columns: Optional[List[str]] = None,
-        output_columns: Optional[List[str]] = None,
-        context: Optional[Any] = None,
-        epilogue_fn: Optional[Callable[[str, Any], None]] = None,
-    ):
+        input_columns: list[str] | None = None,
+        output_columns: list[str] | None = None,
+        context: Any = None,
+        epilogue_fn: EpilogueFunc | None = None,
+    ) -> MultiInputNode:
+        """添加因子/计算节点。func 接收 (name, f3d, context)，返回 Frame3D。"""
         if isinstance(input_from, str):
             input_from = [input_from]
         input_queues = [self.create_queue(qname) for qname in input_from]
         output_queues = [self.create_queue(qname) for qname in output_to] if output_to else []
         node = MultiInputNode(
-            name, func, input_queues, output_queues,
-            window=window, min_periods=min_periods,
-            input_columns=input_columns, output_columns=output_columns,
+            name,
+            func,
+            input_queues,
+            output_queues,
+            window=window,
+            min_periods=min_periods,
+            input_columns=input_columns,
+            output_columns=output_columns,
             stop_signal=self.stop_signal,
-            context=context, epilogue_fn=epilogue_fn,
+            context=context,
+            epilogue_fn=epilogue_fn,
         )
         self.nodes.append(node)
-        # 记录拓扑
-        self._node_specs.append({'name': name, 'type': 'node', 'inputs': list(input_from), 'outputs': list(output_to)})
+        self._node_specs.append(
+            {
+                'name': name,
+                'type': 'node',
+                'inputs': list(input_from),
+                'outputs': list(output_to),
+            }
+        )
         for qname in input_from:
             self._queue_readers.setdefault(qname, []).append(name)
         for qname in output_to:
@@ -80,11 +113,12 @@ class Flow:
             self._queue_readers.setdefault(qname, [])
         return node
 
-    def validate_topology(self) -> List[str]:
-        errors = []
+    def validate_topology(self) -> list[str]:
+        """验证拓扑约束：无重名、无多写、无孤立、无环。返回错误列表。"""
+        errors: list[str] = []
 
         # ---- 1. 无重名节点 ----
-        seen_names = set()
+        seen_names: set[str] = set()
         for spec in self._node_specs:
             if spec['name'] in seen_names:
                 errors.append(f"Duplicate node name: '{spec['name']}'")
@@ -110,15 +144,14 @@ class Flow:
             if spec['type'] == 'source':
                 if not spec['outputs']:
                     errors.append(f"Source node '{name}' has no output (isolated)")
-            else:
-                if not spec['inputs'] and not spec['outputs']:
-                    errors.append(f"Node '{name}' has no input and no output (isolated)")
-                elif not spec['inputs']:
-                    errors.append(f"Node '{name}' has no input (orphan node)")
+            elif not spec['inputs'] and not spec['outputs']:
+                errors.append(f"Node '{name}' has no input and no output (isolated)")
+            elif not spec['inputs']:
+                errors.append(f"Node '{name}' has no input (orphan node)")
 
-        # ---- 5. 无环形链路 ----
-        node_names = set(spec['name'] for spec in self._node_specs)
-        graph = {name: set() for name in node_names}
+        # ---- 5. 无环形链路 (DFS) ----
+        node_names = {spec['name'] for spec in self._node_specs}
+        graph: dict[str, set[str]] = {name: set() for name in node_names}
         for qname, writers in self._queue_writers.items():
             readers = self._queue_readers.get(qname, [])
             for w in writers:
@@ -126,15 +159,15 @@ class Flow:
                     graph[w].add(r)
 
         WHITE, GRAY, BLACK = 0, 1, 2
-        color = {name: WHITE for name in graph}
+        color: dict[str, int] = dict.fromkeys(graph, WHITE)
 
-        def dfs(node, path):
+        def dfs(node: str, path: list[str]) -> list[str] | None:
             color[node] = GRAY
             path.append(node)
             for neighbor in sorted(graph[node]):
                 if color[neighbor] == GRAY:
                     cycle_start = path.index(neighbor)
-                    return path[cycle_start:] + [neighbor]
+                    return [*path[cycle_start:], neighbor]
                 if color[neighbor] == WHITE:
                     result = dfs(neighbor, path)
                     if result:
@@ -147,26 +180,28 @@ class Flow:
             if color[name] == WHITE:
                 result = dfs(name, [])
                 if result:
-                    errors.append(f"Cycle detected: {' -> '.join(result)}")
+                    errors.append(f'Cycle detected: {" -> ".join(result)}')
                     break
 
         return errors
 
-    def start(self):
+    def start(self) -> None:
+        """验证拓扑后启动所有子进程。"""
         errors = self.validate_topology()
         if errors:
             for e in errors:
-                logging.error(f"[Topology] {e}")
-            raise RuntimeError(f"Topology validation failed with {len(errors)} error(s)")
+                logging.error(f'[Topology] {e}')
+            raise RuntimeError(f'Topology validation failed with {len(errors)} error(s)')
         for node in self.nodes:
             node.start()
         for queue in self.queues.values():
             queue.cancel_join_thread()
 
-    def join(self):
+    def join(self) -> None:
+        """等待所有子进程结束。"""
         for node in self.nodes:
             node.join(timeout=None)
             if node.is_alive():
-                logging.warning(f"Node {node.name} did not exit, terminating.")
+                logging.warning(f'Node {node.name} did not exit, terminating.')
                 node.terminate()
                 node.join(timeout=5)

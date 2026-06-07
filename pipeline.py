@@ -5,39 +5,51 @@ SEAF 量化回测框架主入口 — Pipeline 组装与执行。
 
 运行：python pipeline.py --noise-ratio 0.3 --n-times 1000 --n-stocks 500 --start-date 2020-01-02 --fwd 20
 """
+
+from __future__ import annotations
+
 import argparse
 import logging
-import sys
 import os
+import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
 
 from qpipe.flow import Flow
 from seafquant.data_generator import generate_synthetic_data
 from seafquant.factors import FACTOR_REGISTRY
-from seafquant.model_node import model_train_predict
 from seafquant.ic_analysis import ic_analysis_fn, ic_epilogue
+from seafquant.model_node import model_train_predict
 
 
 class DataSourceCallable:
     """模块级可调用类，用于 pickle 安全的 SourceNode gen_func。"""
-    def __init__(self, n_times: int, n_stocks: int, noise_ratio: float, seed: int,
-                 start_date: str | None = None):
+
+    def __init__(
+        self,
+        n_times: int,
+        n_stocks: int,
+        noise_ratio: float,
+        seed: int,
+        start_date: str | None = None,
+    ) -> None:
         self.n_times = n_times
         self.n_stocks = n_stocks
         self.noise_ratio = noise_ratio
         self.seed = seed
-        self.start_date = start_date
+        self.start_date: str | None = start_date
 
     def __call__(self):
         return generate_synthetic_data(
-            n_times=self.n_times, n_stocks=self.n_stocks,
-            noise_ratio=self.noise_ratio, seed=self.seed,
+            n_times=self.n_times,
+            n_stocks=self.n_stocks,
+            noise_ratio=self.noise_ratio,
+            seed=self.seed,
             start_date=self.start_date,
         )
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description='SEAF Quantitative Backtest Framework')
     parser.add_argument('--noise-ratio', type=float, default=0.3)
     parser.add_argument('--n-times', type=int, default=1000)
@@ -45,13 +57,20 @@ def main():
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--start-date', type=str, default='2020-01-02')
     parser.add_argument('--model-type', type=str, default='lgbm', choices=['lgbm', 'ridge'])
-    parser.add_argument('--fwd', type=int, default=20,
-                        help='Forward prediction horizon in days (controls model/IC windows)')
-    parser.add_argument('--log-level', default='INFO',
-                        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'])
+    parser.add_argument(
+        '--fwd',
+        type=int,
+        default=20,
+        help='Forward prediction horizon in days (controls model/IC windows)',
+    )
+    parser.add_argument(
+        '--log-level', default='INFO', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR']
+    )
     args = parser.parse_args()
 
-    logging.basicConfig(level=getattr(logging, args.log_level), format='%(message)s', stream=sys.stdout)
+    logging.basicConfig(
+        level=getattr(logging, args.log_level), format='%(message)s', stream=sys.stdout
+    )
 
     # ===== 因子节点注册（由 FACTOR_REGISTRY 派生，10 个并行节点） =====
     factor_nodes = [(f'factor_{name}', func) for name, func in FACTOR_REGISTRY.items()]
@@ -68,7 +87,9 @@ def main():
     flow = Flow()
 
     # ===== 1. 数据源节点 =====
-    gen_callable = DataSourceCallable(args.n_times, args.n_stocks, args.noise_ratio, args.seed, args.start_date)
+    gen_callable = DataSourceCallable(
+        args.n_times, args.n_stocks, args.noise_ratio, args.seed, args.start_date
+    )
     src_output_queues = [f'q_ohlc_to_{name}' for name, _ in factor_nodes]
     src_output_queues.extend(['q_close_to_model', 'q_close_to_ic'])
     flow.add_source('src_data', gen_callable, src_output_queues)
@@ -78,10 +99,14 @@ def main():
     for fname, ffunc in factor_nodes:
         q_out = f'q_{fname}_out'
         factor_output_queues.append(q_out)
-        flow.add_node(name=fname, func=ffunc,
-                      input_from=f'q_ohlc_to_{fname}',
-                      output_to=[q_out],
-                      window=FACTOR_WINDOW, min_periods=FACTOR_MIN_PERIODS)
+        flow.add_node(
+            name=fname,
+            func=ffunc,
+            input_from=f'q_ohlc_to_{fname}',
+            output_to=[q_out],
+            window=FACTOR_WINDOW,
+            min_periods=FACTOR_MIN_PERIODS,
+        )
 
     # ===== 3. 模型训练预测节点 =====
     model_context = {
@@ -89,33 +114,43 @@ def main():
         'fwd': fwd,
         'model_window': MODEL_WINDOW,
     }
-    flow.add_node(name='model', func=model_train_predict,
-                  input_from=factor_output_queues + ['q_close_to_model'],
-                  output_to=['q_signal'],
-                  window=MODEL_WINDOW, min_periods=MODEL_MIN_PERIODS,
-                  context=model_context)
+    flow.add_node(
+        name='model',
+        func=model_train_predict,
+        input_from=[*factor_output_queues, 'q_close_to_model'],
+        output_to=['q_signal'],
+        window=MODEL_WINDOW,
+        min_periods=MODEL_MIN_PERIODS,
+        context=model_context,
+    )
 
     # ===== 4. IC 分析节点 =====
     ic_context = {'fwd': fwd}
-    flow.add_node(name='ic_analysis', func=ic_analysis_fn,
-                  input_from=['q_signal', 'q_close_to_ic'],
-                  output_to=[],
-                  window=IC_WINDOW, min_periods=IC_MIN_PERIODS,
-                  epilogue_fn=ic_epilogue,
-                  context=ic_context)
+    flow.add_node(
+        name='ic_analysis',
+        func=ic_analysis_fn,
+        input_from=['q_signal', 'q_close_to_ic'],
+        output_to=[],
+        window=IC_WINDOW,
+        min_periods=IC_MIN_PERIODS,
+        epilogue_fn=ic_epilogue,
+        context=ic_context,
+    )
 
     # ===== 启动 =====
-    logging.info("=" * 50)
-    logging.info(f"SEAF Pipeline: n_times={args.n_times}, n_stocks={args.n_stocks}, "
-                 f"noise_ratio={args.noise_ratio}, seed={args.seed}, start_date={args.start_date}, "
-                 f"fwd={fwd}, model_type={args.model_type}")
-    logging.info(f"Topology: 1 source -> {len(factor_nodes)} factor nodes -> model -> ic_analysis")
-    logging.info(f"Windows: factor={FACTOR_WINDOW}, model={MODEL_WINDOW}, ic={IC_WINDOW}")
-    logging.info("=" * 50)
+    logging.info('=' * 50)
+    logging.info(
+        f'SEAF Pipeline: n_times={args.n_times}, n_stocks={args.n_stocks}, '
+        f'noise_ratio={args.noise_ratio}, seed={args.seed}, start_date={args.start_date}, '
+        f'fwd={fwd}, model_type={args.model_type}'
+    )
+    logging.info(f'Topology: 1 source -> {len(factor_nodes)} factor nodes -> model -> ic_analysis')
+    logging.info(f'Windows: factor={FACTOR_WINDOW}, model={MODEL_WINDOW}, ic={IC_WINDOW}')
+    logging.info('=' * 50)
 
     flow.start()
     flow.join()
-    logging.info("Pipeline completed.")
+    logging.info('Pipeline completed.')
 
 
 if __name__ == '__main__':

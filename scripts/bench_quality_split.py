@@ -1,7 +1,11 @@
 """快速性能对比：quality_advanced 向量化前后"""
-import time, sys, os
+
+import sys
+import time
+
 sys.path.insert(0, '.')
 import pandas as pd
+
 from qpipe.frame3d import Frame3D
 from seafquant.data_generator import generate_synthetic_data
 

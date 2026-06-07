@@ -1,17 +1,20 @@
-import pandas as pd
 import logging
-from typing import Iterator
+from collections.abc import Iterator
 
-from .frame3d import Frame3D
+import pandas as pd
+
 from .flow import Flow
+from .frame3d import Frame3D
 
 
 ##### --- 简单测试用的数据流与节点定义 ---
 def gen_src1_frames():
     return gen_source_frames('src1', price_base=10)
 
+
 def gen_src2_frames():
     return gen_source_frames('src2', price_base=100)
+
 
 def stat_node_fn(name: str, f3d: Frame3D) -> Frame3D:
     df = f3d.df.copy()
@@ -23,9 +26,11 @@ def stat_node_fn(name: str, f3d: Frame3D) -> Frame3D:
         df[f'{col}_std'] = df[col].std()
     return Frame3D(df)
 
+
 def printer_node(name: str, f3d: Frame3D) -> Frame3D:
-    print(f"\n[Printer][{name}] Frame3D:\n", f3d.df, "\n")
+    print(f'\n[Printer][{name}] Frame3D:\n', f3d.df, '\n')
     return f3d
+
 
 # NOTE: 只支持一次 put 一个 day 的数据。不要 put 多 day 的数据
 def gen_source_frames(name, price_base) -> Iterator[Frame3D]:
@@ -33,52 +38,38 @@ def gen_source_frames(name, price_base) -> Iterator[Frame3D]:
     days = 7
     for i in range(days):
         arrays = [
-            pd.to_datetime([f'2025-01-{i+1:02d}' for j in range(stocks_per_iter)]),
-            ['A', 'B']
+            pd.to_datetime([f'2025-01-{i + 1:02d}' for j in range(stocks_per_iter)]),
+            ['A', 'B'],
         ]
         mi = pd.MultiIndex.from_arrays(arrays, names=['key', 'name'])
-        df = pd.DataFrame({
-            f'{name}_price': [price_base + i, price_base + 2 + i],
-            f'{name}_vol': [price_base + 100 + i, price_base + 105 + i]
-        }, index=mi)
+        df = pd.DataFrame(
+            {
+                f'{name}_price': [price_base + i, price_base + 2 + i],
+                f'{name}_vol': [price_base + 100 + i, price_base + 105 + i],
+            },
+            index=mi,
+        )
         yield Frame3D(df)
 
 
 if __name__ == '__main__':
-    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    logging.basicConfig(level=logging.INFO, format='%(message)s')
     flow = Flow()
 
     # 多进程流式框架拓扑要求
     # 1. 无重名节点
-    # 2. 无重名管道（同一管道被多个节点写入） 
+    # 2. 无重名管道（同一管道被多个节点写入）
     # 3. 每个管道两端都连接了节点
     # 4. 无孤立节点
     # 5. 无环形链路
 
-    flow.add_source(
-        name='src1',
-        gen_func=gen_src1_frames,
-        output_to=[
-            'sumprod:0',
-            'printer:0'
-        ]
-    )
-    flow.add_source(
-        name='src2',
-        gen_func=gen_src2_frames,
-        output_to=[
-            'sumprod:1',
-            'printer:1'
-        ]
-    )
+    flow.add_source(name='src1', gen_func=gen_src1_frames, output_to=['sumprod:0', 'printer:0'])
+    flow.add_source(name='src2', gen_func=gen_src2_frames, output_to=['sumprod:1', 'printer:1'])
 
     flow.add_node(
         name='sumprod',  # node name
         func=stat_node_fn,
-        input_from=[
-            'sumprod:0',
-            'sumprod:1'
-        ],  # queue name
+        input_from=['sumprod:0', 'sumprod:1'],  # queue name
         output_to=['printer'],
         window=3,
         min_periods=2,
@@ -87,18 +78,10 @@ if __name__ == '__main__':
     )
 
     flow.add_node(
-        name='printer-src',
-        func=printer_node,
-        input_from=['printer:0', 'printer:1'],
-        output_to=[]
+        name='printer-src', func=printer_node, input_from=['printer:0', 'printer:1'], output_to=[]
     )
 
-    flow.add_node(
-        name='printer-final',
-        func=printer_node,
-        input_from='printer',
-        output_to=[]
-    )
+    flow.add_node(name='printer-final', func=printer_node, input_from='printer', output_to=[])
 
     flow.start()
     flow.join()

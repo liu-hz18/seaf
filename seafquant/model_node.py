@@ -13,30 +13,41 @@ context 配置（从 pipeline 传入）：
   - model_window: 模型节点总窗口大小 (factor_window + fwd)
   - retrain_every: 重训练间隔 (默认 20)
 """
+
+from __future__ import annotations
+
+import logging
+from typing import Any
+
 import numpy as np
 import pandas as pd
-import logging
-from typing import Tuple, Any
-from qpipe.frame3d import Frame3D
 from sklearn.model_selection import TimeSeriesSplit
 
+from qpipe.frame3d import Frame3D
 
-def _build_model(model_type: str = 'lgbm'):
+
+def _build_model(model_type: str = 'lgbm') -> Any:
     """根据类型构建模型。"""
     if model_type == 'lgbm':
         from lightgbm import LGBMRegressor
+
         return LGBMRegressor(
-            n_estimators=100, max_depth=6, num_leaves=31,
-            reg_alpha=0.1, reg_lambda=0.1, random_state=42, verbose=-1,
+            n_estimators=100,
+            max_depth=6,
+            num_leaves=31,
+            reg_alpha=0.1,
+            reg_lambda=0.1,
+            random_state=42,
+            verbose=-1,
         )
-    elif model_type == 'ridge':
+    if model_type == 'ridge':
         from sklearn.linear_model import Ridge
+
         return Ridge(alpha=1.0, random_state=42)
-    else:
-        raise ValueError(f"Unknown model_type: {model_type}")
+    raise ValueError(f'Unknown model_type: {model_type}')
 
 
-def model_train_predict(name: str, f3d: Frame3D, context: Any) -> Tuple[Frame3D, Any]:
+def model_train_predict(name: str, f3d: Frame3D, context: Any) -> tuple[Frame3D, Any]:
     """模型训练与预测主函数。
 
     f3d 包含 window 天的数据（因子列 + close 列）。
@@ -61,7 +72,9 @@ def model_train_predict(name: str, f3d: Frame3D, context: Any) -> Tuple[Frame3D,
     # 识别因子列
     raw_cols = {'open', 'high', 'low', 'close', 'turnover', 'volume', 'market_cap'}
     if context['feature_cols'] is None:
-        context['feature_cols'] = [c for c in df.columns if c not in raw_cols and not c.startswith('_')]
+        context['feature_cols'] = [
+            c for c in df.columns if c not in raw_cols and not c.startswith('_')
+        ]
 
     feature_cols = context['feature_cols']
 
@@ -75,26 +88,36 @@ def model_train_predict(name: str, f3d: Frame3D, context: Any) -> Tuple[Frame3D,
     # 需要至少 fwd 天才能计算 label，再加至少 1 个训练样本
     min_required = fwd + 1
     if n_times < min_required:
-        logging.warning(f"[{name}] Insufficient data: {n_times} < {min_required} (fwd={fwd})")
-        empty_result = Frame3D(pd.DataFrame({'pred_signal': [0.0] * len(df.loc[times[-1]])},
-                                            index=df.loc[times[-1]].index))
+        logging.warning(f'[{name}] Insufficient data: {n_times} < {min_required} (fwd={fwd})')
+        empty_result = Frame3D(
+            pd.DataFrame(
+                {'pred_signal': [0.0] * len(df.loc[times[-1]])}, index=df.loc[times[-1]].index
+            )
+        )
         return empty_result, context
 
     # 检查是否需要训练
     context['days_since_train'] += 1
-    should_train = (not context['is_trained']) or (context['days_since_train'] >= context['retrain_every'])
+    should_train = (not context['is_trained']) or (
+        context['days_since_train'] >= context['retrain_every']
+    )
 
     if should_train:
-        logging.info(f"[{name}] Triggering retrain (model={context.get('model_type','lgbm')}, "
-                     f"fwd={fwd}). days_since_train={context['days_since_train']}")
+        logging.info(
+            f'[{name}] Triggering retrain (model={context.get("model_type", "lgbm")}, '
+            f'fwd={fwd}). days_since_train={context["days_since_train"]}'
+        )
 
         # 训练样本：time [0, n_times-fwd) — 每个样本在 t+fwd 有对应的 close
         n_train_times = n_times - fwd  # 可用于训练的时间点数
         if n_train_times < 10:
-            logging.warning(f"[{name}] Too few training times: {n_train_times} (fwd={fwd})")
+            logging.warning(f'[{name}] Too few training times: {n_train_times} (fwd={fwd})')
             context['days_since_train'] = 0
-            empty_result = Frame3D(pd.DataFrame({'pred_signal': [0.0] * len(df.loc[times[-1]])},
-                                                index=df.loc[times[-1]].index))
+            empty_result = Frame3D(
+                pd.DataFrame(
+                    {'pred_signal': [0.0] * len(df.loc[times[-1]])}, index=df.loc[times[-1]].index
+                )
+            )
             return empty_result, context
 
         # 构建特征矩阵 X：每个训练时间点的因子值
@@ -117,17 +140,20 @@ def model_train_predict(name: str, f3d: Frame3D, context: Any) -> Tuple[Frame3D,
         X = np.vstack(X_list)
         y = np.hstack(y_list)
 
-        print(f"[pre-validate] X.shape={X.shape}, y.shape={y.shape}")
+        print(f'[pre-validate] X.shape={X.shape}, y.shape={y.shape}')
         # 移除 NaN 样本
         valid = ~np.isnan(y) & ~np.any(np.isnan(X), axis=1)
         X, y = X[valid], y[valid]
-        print(f"[post-validate] X.shape={X.shape}, y.shape={y.shape}")
+        print(f'[post-validate] X.shape={X.shape}, y.shape={y.shape}')
 
         if len(y) < 50:
-            logging.warning(f"[{name}] Insufficient training samples: {len(y)}")
+            logging.warning(f'[{name}] Insufficient training samples: {len(y)}')
             context['days_since_train'] = 0
-            empty_result = Frame3D(pd.DataFrame({'pred_signal': [0.0] * len(df.loc[times[-1]])},
-                                                index=df.loc[times[-1]].index))
+            empty_result = Frame3D(
+                pd.DataFrame(
+                    {'pred_signal': [0.0] * len(df.loc[times[-1]])}, index=df.loc[times[-1]].index
+                )
+            )
             return empty_result, context
 
         # 截面标准化 label
@@ -148,6 +174,7 @@ def model_train_predict(name: str, f3d: Frame3D, context: Any) -> Tuple[Frame3D,
             model.fit(X_tr, y_tr)
             pred = model.predict(X_val)
             from scipy.stats import spearmanr
+
             try:
                 ic = spearmanr(pred, y_val).correlation
                 cv_scores.append(ic)
@@ -164,8 +191,8 @@ def model_train_predict(name: str, f3d: Frame3D, context: Any) -> Tuple[Frame3D,
 
         cv_mean = np.mean(cv_scores) if cv_scores else 0.0
         logging.info(
-            f"[{name}] Training done ({model_type}, fwd={fwd}): "
-            f"samples={len(y)}, features={len(feature_cols)}, cv_ic_mean={cv_mean:.4f}"
+            f'[{name}] Training done ({model_type}, fwd={fwd}): '
+            f'samples={len(y)}, features={len(feature_cols)}, cv_ic_mean={cv_mean:.4f}'
         )
 
     # ===== 预测流程：对最后一天的截面因子做 predict =====
@@ -182,8 +209,8 @@ def model_train_predict(name: str, f3d: Frame3D, context: Any) -> Tuple[Frame3D,
     pred_signal = (pred_raw - pred_mean) / pred_std if pred_std > 0 else np.zeros_like(pred_raw)
 
     logging.info(
-        f"[{name}] Predict day t={latest_t} (fwd={fwd}), "
-        f"signal_mean={pred_signal.mean():.4f}, signal_std={pred_signal.std():.4f}"
+        f'[{name}] Predict day t={latest_t} (fwd={fwd}), '
+        f'signal_mean={pred_signal.mean():.4f}, signal_std={pred_signal.std():.4f}'
     )
 
     result_df = pd.DataFrame({'pred_signal': pred_signal}, index=df.loc[cs_mask_latest].index)

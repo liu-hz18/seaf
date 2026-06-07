@@ -2,15 +2,18 @@
 截面特征因子 — 10 个因子：截面排名/排名变化/排名Z-score/收益率分位数。
 动量/中性化/复合已合并至 quality_merged 节点。
 """
-import numpy as np
+
+from __future__ import annotations
+
 import logging
+
 from qpipe.frame3d import Frame3D
 
 
 def compute_cross_section_factors(name: str, f3d: Frame3D, context) -> Frame3D:
     """计算 10 个截面排名因子。"""
     result = f3d.copy()
-    close = f3d.df['close']
+    f3d.df['close']
     df = result.df
 
     ret1 = f3d.ts_pct_change('close', 1).df['close']
@@ -40,6 +43,7 @@ def compute_cross_section_factors(name: str, f3d: Frame3D, context) -> Frame3D:
     factor_cols = [c for c in df.columns if c.startswith('factor_cs_')]
     result = result.cs_zscore_batch(factor_cols, cp=False)
 
-    logging.debug(f"[{name}] CrossSection NaN: "
-                  f"{ {c: result.df[c].isna().sum() for c in factor_cols} }")
+    logging.debug(
+        f'[{name}] CrossSection NaN: { {c: result.df[c].isna().sum() for c in factor_cols} }'
+    )
     return Frame3D(result.df[factor_cols].copy())

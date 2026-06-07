@@ -7,9 +7,14 @@
     振幅稳定性×2, 最大回撤×2, 复合×1, 回撤持续时间×2, 符号变化频次×1.
 截面中性化 (6): 截面动量×2, Z-score, 市值中性化, 量价残差, 复合×1.
 """
-import numpy as np
+
+from __future__ import annotations
+
 import logging
+
+import numpy as np
 from numpy.lib.stride_tricks import sliding_window_view
+
 from qpipe.frame3d import Frame3D
 
 
@@ -23,8 +28,9 @@ def compute_quality_merged_factors(name: str, f3d: Frame3D, context) -> Frame3D:
     grp = df.index.get_level_values('name')
 
     def _roll(src, dst, window, agg):
-        df[dst] = df.groupby('name')[src].rolling(
-            window, min_periods=max(1, window // 2)).agg(agg).values
+        df[dst] = (
+            df.groupby('name')[src].rolling(window, min_periods=max(1, window // 2)).agg(agg).values
+        )
 
     # ====================================================================
     # Part A: 质量基础 (quality_basic) — 19 cols (prefix factor_qb_ / factor_qa_)
@@ -46,10 +52,12 @@ def compute_quality_merged_factors(name: str, f3d: Frame3D, context) -> Frame3D:
         _roll('_pos', f'factor_qb_pos_days_{p}d', p, 'mean')
 
     # ----- 衰减比 (2 cols) -----
-    df['factor_qb_stability_decay'] = (
-        df['factor_qb_ret_stability_20d'] / df['factor_qb_ret_stability_120d'].replace(0, np.nan))
-    df['factor_qb_sharpe_decay'] = (
-        df['factor_qb_sharpe_20d'] / df['factor_qb_sharpe_120d'].replace(0, np.nan))
+    df['factor_qb_stability_decay'] = df['factor_qb_ret_stability_20d'] / df[
+        'factor_qb_ret_stability_120d'
+    ].replace(0, np.nan)
+    df['factor_qb_sharpe_decay'] = df['factor_qb_sharpe_20d'] / df['factor_qb_sharpe_120d'].replace(
+        0, np.nan
+    )
 
     # ----- 振幅稳定性 (2 cols) -----
     df['_amp'] = (high - low) / close
@@ -64,8 +72,11 @@ def compute_quality_merged_factors(name: str, f3d: Frame3D, context) -> Frame3D:
 
     # ----- 基础复合 (1 col) -----
     df['factor_qb_composite'] = (
-        df['factor_qb_sharpe_60d'] + df['factor_qb_pos_days_60d'] +
-        df['factor_qb_maxdd_60d'] + df['factor_qb_ret_stability_60d']) / 4
+        df['factor_qb_sharpe_60d']
+        + df['factor_qb_pos_days_60d']
+        + df['factor_qb_maxdd_60d']
+        + df['factor_qb_ret_stability_60d']
+    ) / 4
 
     # ----- 回撤持续时间 (2 cols, prefix factor_qa_) -----
     def _dd_duration_vec(series, window):
@@ -79,13 +90,11 @@ def compute_quality_merged_factors(name: str, f3d: Frame3D, context) -> Frame3D:
         peak_val = win[np.arange(len(win)), peak_idx]
         ddd = np.where(last < peak_val, window - 1 - peak_idx, 0.0)
         out = np.full(n, np.nan)
-        out[window - 1:] = ddd
+        out[window - 1 :] = ddd
         return out
 
-    df['factor_qa_ddd_60d'] = close.groupby(grp).transform(
-        lambda x: _dd_duration_vec(x, 60))
-    df['factor_qa_ddd_120d'] = close.groupby(grp).transform(
-        lambda x: _dd_duration_vec(x, 120))
+    df['factor_qa_ddd_60d'] = close.groupby(grp).transform(lambda x: _dd_duration_vec(x, 60))
+    df['factor_qa_ddd_120d'] = close.groupby(grp).transform(lambda x: _dd_duration_vec(x, 120))
 
     # ----- 符号变化频次 (1 col, prefix factor_qa_) -----
     def _sign_change_vec(series, window):
@@ -96,11 +105,12 @@ def compute_quality_merged_factors(name: str, f3d: Frame3D, context) -> Frame3D:
         win = sliding_window_view(arr, window)
         changes = np.count_nonzero(np.diff(win, axis=1), axis=1)
         out = np.full(n, np.nan)
-        out[window - 1:] = changes.astype(float) / window
+        out[window - 1 :] = changes.astype(float) / window
         return out
 
     df['factor_qa_consec_sign_change_60d'] = ret.groupby(grp).transform(
-        lambda x: _sign_change_vec(x, 60))
+        lambda x: _sign_change_vec(x, 60)
+    )
 
     # ====================================================================
     # Part B: 截面中性化 (cross_section_neut) — 6 cols (prefix factor_cs_)
@@ -130,18 +140,20 @@ def compute_quality_merged_factors(name: str, f3d: Frame3D, context) -> Frame3D:
 
     # ---- 6: 复合 ----
     df['factor_cs_composite'] = (
-        df['factor_cs_momentum_20d'] + df['factor_cs_close_zscore'] +
-        df['factor_cs_close_neut_mcap'] + df['factor_cs_ret_neut_volume']
+        df['factor_cs_momentum_20d']
+        + df['factor_cs_close_zscore']
+        + df['factor_cs_close_neut_mcap']
+        + df['factor_cs_ret_neut_volume']
     ) / 4
 
     # ====================================================================
     # 联合截面标准化（三种 prefix 统一批处理）
     # ====================================================================
     result = Frame3D(df.copy())
-    factor_cols = [c for c in df.columns
-                   if c.startswith('factor_')]
+    factor_cols = [c for c in df.columns if c.startswith('factor_')]
     result = result.cs_zscore_batch(factor_cols, cp=False)
 
-    logging.debug(f"[{name}] quality_merged NaN: "
-                  f"{ {c: result.df[c].isna().sum() for c in factor_cols} }")
+    logging.debug(
+        f'[{name}] quality_merged NaN: { {c: result.df[c].isna().sum() for c in factor_cols} }'
+    )
     return Frame3D(result.df[factor_cols].copy())

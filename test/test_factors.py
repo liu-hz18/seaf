@@ -2,12 +2,13 @@
 因子计算单元测试 — 10 个合并后节点。
 逐一测试所有因子类别的输出形状、列数、无全 NaN 列。
 """
-import pytest
-import pandas as pd
-import numpy as np
-import sys
-import os
+
 import logging
+import os
+import sys
+
+import pandas as pd
+import pytest
 
 logging.basicConfig(level=logging.WARNING)
 
@@ -21,6 +22,7 @@ def _make_small_data(n_times=80, n_stocks=20):
     frames = [f3d.df for f3d in gen]
     big_df = pd.concat(frames, axis=0).sort_index(level=0)
     from qpipe.frame3d import Frame3D
+
     return Frame3D(big_df)
 
 
@@ -34,14 +36,15 @@ class TestFactorModules:
     def _test_category(self, f3d, category, expected_cols):
         func = FACTOR_REGISTRY[category]
         result = func(category, f3d, None)
-        assert isinstance(result, type(f3d)), f"{category}: output must be Frame3D"
+        assert isinstance(result, type(f3d)), f'{category}: output must be Frame3D'
         cols = [c for c in result.df.columns if not c.startswith('_')]
-        assert len(cols) == expected_cols, \
-            f"{category}: expected {expected_cols} cols, got {len(cols)}: {cols}"
+        assert len(cols) == expected_cols, (
+            f'{category}: expected {expected_cols} cols, got {len(cols)}: {cols}'
+        )
         for col in cols:
             nan_pct = result.df[col].isna().mean()
-            assert nan_pct < 0.95, f"{category}/{col}: {nan_pct:.1%} NaN (too high)"
-        assert len(result.df) == len(f3d.df), f"{category}: row count mismatch"
+            assert nan_pct < 0.95, f'{category}/{col}: {nan_pct:.1%} NaN (too high)'
+        assert len(result.df) == len(f3d.df), f'{category}: row count mismatch'
 
     def test_trend(self, f3d):
         self._test_category(f3d, 'trend', expected_cols=16)

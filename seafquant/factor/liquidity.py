@@ -6,21 +6,29 @@
       非线性变换 ×2, 对数股本 ×1, 五分位 ×1, 小市值交互 ×1,
       规模中性化收益 ×1, 复合 ×1。
 """
+
+from __future__ import annotations
+
 import numpy as np
-import logging
+
 from qpipe.frame3d import Frame3D
 
 
 def compute_liquidity_factors(name: str, f3d: Frame3D, context) -> Frame3D:
     """计算 32 个流动性+规模因子。"""
     result = f3d.copy()
-    turnover, volume, close, mcap = (f3d.df['turnover'], f3d.df['volume'],
-                                      f3d.df['close'], f3d.df['market_cap'])
+    turnover, volume, close, mcap = (
+        f3d.df['turnover'],
+        f3d.df['volume'],
+        f3d.df['close'],
+        f3d.df['market_cap'],
+    )
     df = result.df
 
     def _roll(src, dst, window, agg):
-        df[dst] = df.groupby('name')[src].rolling(
-            window, min_periods=max(1, window // 2)).agg(agg).values
+        df[dst] = (
+            df.groupby('name')[src].rolling(window, min_periods=max(1, window // 2)).agg(agg).values
+        )
 
     # ===== 流动性：16 cols (prefix factor_liq_) =====
     for p in [5, 10, 20, 60]:
@@ -28,11 +36,14 @@ def compute_liquidity_factors(name: str, f3d: Frame3D, context) -> Frame3D:
         _roll(f'_to{p}', f'factor_liq_turnover_{p}d', p, 'mean')
     for p in [5, 10, 20, 60]:
         df[f'factor_liq_turnover_chg_{p}d'] = (
-            turnover / df[f'factor_liq_turnover_{p}d'].replace(0, np.nan) - 1)
+            turnover / df[f'factor_liq_turnover_{p}d'].replace(0, np.nan) - 1
+        )
 
-    df['_vol5'] = volume; _roll('_vol5', '_vol5_mean', 5, 'mean')
+    df['_vol5'] = volume
+    _roll('_vol5', '_vol5_mean', 5, 'mean')
     df['factor_liq_volume_chg_5d'] = volume / df['_vol5_mean'].replace(0, np.nan) - 1
-    df['_vol20'] = volume; _roll('_vol20', '_vol20_mean', 20, 'mean')
+    df['_vol20'] = volume
+    _roll('_vol20', '_vol20_mean', 20, 'mean')
     df['factor_liq_volume_chg_20d'] = volume / df['_vol20_mean'].replace(0, np.nan) - 1
 
     ret = f3d.ts_pct_change('close', 1).df['close']
@@ -46,8 +57,7 @@ def compute_liquidity_factors(name: str, f3d: Frame3D, context) -> Frame3D:
     df['factor_liq_dollar_vol_chg'] = df.groupby('name')['_dv'].pct_change(20)
     df['_to_vol'] = turnover
     _roll('_to_vol', 'factor_liq_turnover_vol_20d', 20, 'std')
-    df['factor_liq_composite'] = (
-        -df['factor_liq_amihud_20d'] - df['factor_liq_turnover_vol_20d'])
+    df['factor_liq_composite'] = -df['factor_liq_amihud_20d'] - df['factor_liq_turnover_vol_20d']
 
     # ===== 规模：16 cols (prefix factor_size_) =====
     df['factor_size_log_mcap'] = -np.log(mcap)
@@ -73,8 +83,11 @@ def compute_liquidity_factors(name: str, f3d: Frame3D, context) -> Frame3D:
     df['_mcap_raw'] = mcap
     # 复合必须在下一次 result 重建前计算
     df['factor_size_composite'] = (
-        df['factor_size_log_mcap'] + df['factor_size_cs_rank'] +
-        df['factor_size_mcap_vol_20d'] + df['factor_size_price']) / 4
+        df['factor_size_log_mcap']
+        + df['factor_size_cs_rank']
+        + df['factor_size_mcap_vol_20d']
+        + df['factor_size_price']
+    ) / 4
 
     # 中性化需要 Frame3D
     result = Frame3D(df.copy())
@@ -82,7 +95,6 @@ def compute_liquidity_factors(name: str, f3d: Frame3D, context) -> Frame3D:
     df['factor_size_residual_ret'] = neut.df['_ret20']
     result = Frame3D(df.copy())
     # 联合截面标准化
-    factor_cols = [c for c in df.columns
-                   if c.startswith('factor_liq_') or c.startswith('factor_size_')]
+    factor_cols = [c for c in df.columns if c.startswith(('factor_liq_', 'factor_size_'))]
     result = result.cs_zscore_batch(factor_cols, cp=False)
     return Frame3D(result.df[factor_cols].copy())

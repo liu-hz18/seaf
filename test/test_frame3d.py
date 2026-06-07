@@ -2,11 +2,13 @@
 Frame3D 单元测试
 测试所有时序 API、截面 API 和工具 API，包括边界情况。
 """
-import pytest
-import pandas as pd
-import numpy as np
-import sys
+
 import os
+import sys
+
+import numpy as np
+import pandas as pd
+import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from qpipe.frame3d import Frame3D
@@ -14,7 +16,7 @@ from qpipe.frame3d import Frame3D
 
 def make_test_frame3d() -> Frame3D:
     """构造 3 time × 3 stock × 5 cols 的测试数据。
-    
+
     time key: 0, 1, 2
     stock name: A, B, C
     columns: col_a, col_b, col_c, col_d, col_e
@@ -23,13 +25,16 @@ def make_test_frame3d() -> Frame3D:
     stocks = ['A', 'B', 'C', 'A', 'B', 'C', 'A', 'B', 'C']
     mi = pd.MultiIndex.from_arrays([times, stocks], names=['key', 'name'])
     rng = np.random.default_rng(42)
-    df = pd.DataFrame({
-        'col_a': rng.normal(0, 1, 9),
-        'col_b': rng.normal(1, 2, 9),
-        'col_c': rng.normal(-1, 0.5, 9),
-        'col_d': [1.0, 2.0, 3.0, 2.0, 4.0, 6.0, 3.0, 6.0, 9.0],
-        'col_e': [10.0, 10.0, 10.0, 20.0, 20.0, 20.0, 30.0, 30.0, 30.0],
-    }, index=mi)
+    df = pd.DataFrame(
+        {
+            'col_a': rng.normal(0, 1, 9),
+            'col_b': rng.normal(1, 2, 9),
+            'col_c': rng.normal(-1, 0.5, 9),
+            'col_d': [1.0, 2.0, 3.0, 2.0, 4.0, 6.0, 3.0, 6.0, 9.0],
+            'col_e': [10.0, 10.0, 10.0, 20.0, 20.0, 20.0, 30.0, 30.0, 30.0],
+        },
+        index=mi,
+    )
     return Frame3D(df)
 
 
@@ -38,10 +43,13 @@ def make_single_stock_frame3d() -> Frame3D:
     times = [0, 1, 2]
     stocks = ['A', 'A', 'A']
     mi = pd.MultiIndex.from_arrays([times, stocks], names=['key', 'name'])
-    df = pd.DataFrame({
-        'val': [1.0, 2.0, 3.0],
-        'const': [5.0, 5.0, 5.0],
-    }, index=mi)
+    df = pd.DataFrame(
+        {
+            'val': [1.0, 2.0, 3.0],
+            'const': [5.0, 5.0, 5.0],
+        },
+        index=mi,
+    )
     return Frame3D(df)
 
 
@@ -50,14 +58,18 @@ def make_constant_frame3d() -> Frame3D:
     times = [0, 0, 1, 1]
     stocks = ['A', 'B', 'A', 'B']
     mi = pd.MultiIndex.from_arrays([times, stocks], names=['key', 'name'])
-    df = pd.DataFrame({
-        'flat': [3.0, 3.0, 3.0, 3.0],
-        'norm': [1.0, 2.0, 3.0, 4.0],
-    }, index=mi)
+    df = pd.DataFrame(
+        {
+            'flat': [3.0, 3.0, 3.0, 3.0],
+            'norm': [1.0, 2.0, 3.0, 4.0],
+        },
+        index=mi,
+    )
     return Frame3D(df)
 
 
 # ========== 时序 API 测试 ==========
+
 
 class TestTsDelay:
     def test_basic(self):
@@ -77,10 +89,7 @@ class TestTsDelay:
         result = f3d.ts_delay('col_a', periods=1)
         df = result.df
         # stock B time=1 应该等于 stock B time=0
-        assert np.isclose(
-            df.loc[(1, 'B'), 'col_a'],
-            f3d.df.loc[(0, 'B'), 'col_a']
-        )
+        assert np.isclose(df.loc[(1, 'B'), 'col_a'], f3d.df.loc[(0, 'B'), 'col_a'])
 
 
 class TestTsDelta:
@@ -120,7 +129,9 @@ class TestTsRolling:
         df = result.df
         # min_periods = 1, so time 0 should have 0 std (single value)
         # time 2: std([1,2,3]) ≈ 1.0
-        assert pd.isna(df.loc[(0, 'A'), 'col_d']) or df.loc[(0, 'A'), 'col_d'] is not None  # min_periods=1 for window=3
+        assert (
+            pd.isna(df.loc[(0, 'A'), 'col_d']) or df.loc[(0, 'A'), 'col_d'] is not None
+        )  # min_periods=1 for window=3
         # Actually min_periods = max(1, 3//2) = 1. So time 0 should work with single value (std=NaN for single)
 
 
@@ -143,11 +154,12 @@ class TestTsRank:
         assert np.isclose(df.loc[(2, 'A'), 'col_d'], 1.0)
         # time 2 for A (rank 1 of 3): percentile = (1-1)/(3-1) = 0.0
         # Actually rolling rank percentile. Check approach.
-        rank_val = df.loc[(0, 'A'), 'col_d']  # should be NaN or single-value
+        df.loc[(0, 'A'), 'col_d']  # should be NaN or single-value
         # Let's just verify shape and non-NaN for later times
 
 
 # ========== 截面 API 测试 ==========
+
 
 class TestCsZscore:
     def test_basic(self):
@@ -217,6 +229,7 @@ class TestCsNeutralize:
 
 # ========== 工具 API 测试 ==========
 
+
 class TestGetCsSeries:
     def test_basic(self):
         f3d = make_test_frame3d()
@@ -238,8 +251,7 @@ class TestGetTsSeries:
 class TestAddColumn:
     def test_basic(self):
         f3d = make_test_frame3d()
-        new_vals = pd.Series([10, 20, 30, 40, 50, 60, 70, 80, 90], 
-                             index=f3d.df.index)
+        new_vals = pd.Series([10, 20, 30, 40, 50, 60, 70, 80, 90], index=f3d.df.index)
         result = f3d.add_column('new_col', new_vals)
         assert 'new_col' in result.df.columns
         assert np.isclose(result.df.loc[(0, 'A'), 'new_col'], 10.0)
@@ -263,6 +275,7 @@ class TestFilterStocks:
 
 # ========== 边界测试 ==========
 
+
 class TestEdgeCases:
     def test_single_stock_ts_rolling(self):
         f3d = make_single_stock_frame3d()
@@ -280,15 +293,16 @@ class TestEdgeCases:
         """验证所有方法不原地修改原始数据。"""
         f3d = make_test_frame3d()
         original_vals = f3d.df['col_d'].copy()
-        
+
         _ = f3d.ts_delay('col_d', 1)
         assert (f3d.df['col_d'] == original_vals).all()
-        
+
         _ = f3d.cs_zscore('col_d')
         assert (f3d.df['col_d'] == original_vals).all()
 
 
 # ========== 批量 API + cp=False 测试 ==========
+
 
 class TestTsPctChangeMulti:
     def test_vs_individual(self):
@@ -303,8 +317,10 @@ class TestTsPctChangeMulti:
             col_name = f'{prefix}_{p}d'
             assert col_name in multi.df.columns
             np.testing.assert_allclose(
-                multi.df[col_name].values, single.df['col_d'].values,
-                rtol=1e-10, equal_nan=True,
+                multi.df[col_name].values,
+                single.df['col_d'].values,
+                rtol=1e-10,
+                equal_nan=True,
             )
 
     def test_default_prefix(self):
@@ -317,7 +333,7 @@ class TestTsPctChangeMulti:
         """cp=False 应原地修改原始 df。"""
         f3d = make_test_frame3d()
         periods = [1, 2]
-        result = f3d.ts_pct_change_multi('col_d', periods, prefix='x', cp=False)
+        f3d.ts_pct_change_multi('col_d', periods, prefix='x', cp=False)
         # result 与 f3d 共享内部 df
         assert 'x_1d' in f3d.df.columns  # 原始被修改
         assert 'x_2d' in f3d.df.columns
@@ -335,8 +351,10 @@ class TestTsRollingMulti:
             col_name = f'{prefix}_{w}d'
             assert col_name in multi.df.columns
             np.testing.assert_allclose(
-                multi.df[col_name].values, single.df['col_d'].values,
-                rtol=1e-10, equal_nan=True,
+                multi.df[col_name].values,
+                single.df['col_d'].values,
+                rtol=1e-10,
+                equal_nan=True,
             )
 
     def test_default_prefix(self):
@@ -354,14 +372,16 @@ class TestCsRankBatch:
         for col in ['col_a', 'col_b']:
             single = f3d.cs_rank(col)
             np.testing.assert_allclose(
-                multi.df[col].values, single.df[col].values,
-                rtol=1e-10, equal_nan=True,
+                multi.df[col].values,
+                single.df[col].values,
+                rtol=1e-10,
+                equal_nan=True,
             )
 
     def test_cp_false(self):
         """cp=False 应原地修改。"""
         f3d = make_test_frame3d()
-        result = f3d.cs_rank_batch(['col_a'], cp=False)
+        f3d.cs_rank_batch(['col_a'], cp=False)
         # 值已经变成 rank（0~1）
         assert f3d.df['col_a'].iloc[0] <= 1.0
 
@@ -371,7 +391,7 @@ class TestCpFalseEdgeCases:
         """默认 cp=True 时不应修改原始数据。"""
         f3d = make_test_frame3d()
         orig = f3d.df['col_d'].copy()
-        _ = f3d.ts_delay('col_d', 1)          # cp=True (默认)
+        _ = f3d.ts_delay('col_d', 1)  # cp=True (默认)
         _ = f3d.ts_delta('col_d', 1)
         _ = f3d.ts_pct_change('col_d', 1)
         _ = f3d.ts_rolling('col_d', 2, 'mean')
@@ -387,12 +407,11 @@ class TestCpFalseEdgeCases:
         """cp=False 时，ts_pct_change 应修改原始数据。"""
         f3d = make_test_frame3d()
         orig_val = f3d.df.loc[(1, 'A'), 'col_d']
-        result = f3d.ts_pct_change('col_d', 1, cp=False)
+        f3d.ts_pct_change('col_d', 1, cp=False)
         # f3d 内部 df 已变：time=0 应为 NaN
         assert pd.isna(f3d.df.loc[(0, 'A'), 'col_d'])
         # time=1 的值已变为 pct_change
-        expected = (f3d.df.loc[(1, 'A'), 'col_d'] -
-                    orig_val) / orig_val
+        (f3d.df.loc[(1, 'A'), 'col_d'] - orig_val) / orig_val
         # 验证确实变了（不再等于原始值）
         assert not np.isclose(f3d.df.loc[(1, 'A'), 'col_d'], orig_val)
 

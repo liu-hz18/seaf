@@ -2,25 +2,51 @@
 Multi-process nodes: MultiInputNode and SourceNode.
 V2: context + epilogue_fn support, backward compatible.
 """
-import multiprocessing as mp
-import threading
-import logging
-import sys
+
+from __future__ import annotations
+
 import inspect
-from typing import Callable, List, Union, Tuple, Dict, Any, Iterator, Optional
-import pandas as pd
+import logging
+import multiprocessing as mp
+import sys
+import threading
 import time
 from collections import deque
+from collections.abc import Callable
+from typing import Any
+
+import pandas as pd
+
 from .frame3d import Frame3D
+
+# 因子节点函数签名：兼容 2 参数 (name, f3d) 和 3 参数 (name, f3d, context) 两种形式
+FactorFunc = Callable[..., Frame3D | tuple[Frame3D, Any]]
+# Epilogue 函数签名：接收 name, context，无返回值
+EpilogueFunc = Callable[[str, Any], None]
+# Source 生成器函数签名：无参，yield Frame3D
+GenFunc = Callable[[], Any]  # 实际是 Iterator[Frame3D]，但 pickle 兼容需要宽松类型
 
 
 class MultiInputNode(mp.Process):
-    HEARTBEAT_TIMEOUT = 10.0
-    THREAD_ROUND_MAX_TIME = 3
+    """多输入节点：从多个上游 queue 接收 Frame3D，滑动窗口计算，输出到下游。"""
 
-    def __init__(self, name, func, input_queues, output_queues,
-                 window=5, min_periods=3, input_columns=None, output_columns=None,
-                 stop_signal=None, context=None, epilogue_fn=None):
+    HEARTBEAT_TIMEOUT: float = 10.0
+    THREAD_ROUND_MAX_TIME: int = 3
+
+    def __init__(
+        self,
+        name: str,
+        func: FactorFunc,
+        input_queues: list[mp.Queue],
+        output_queues: list[mp.Queue],
+        window: int = 5,
+        min_periods: int = 3,
+        input_columns: list[str] | None = None,
+        output_columns: list[str] | None = None,
+        stop_signal: Any = None,
+        context: Any = None,
+        epilogue_fn: EpilogueFunc | None = None,
+    ) -> None:
         super().__init__()
         self.name = name
         self.func = func
@@ -33,20 +59,29 @@ class MultiInputNode(mp.Process):
         self.stop_signal = stop_signal
         self.context = context
         self.epilogue_fn = epilogue_fn
-        self.buffers = [dict() for _ in input_queues]
+        self.buffers: list[dict[Any, Frame3D]] = [{} for _ in input_queues]
 
-    def _call_func(self, name, f3d, ctx):
+    def _call_func(self, name: str, f3d: Frame3D, ctx: Any) -> Frame3D | tuple[Frame3D, Any]:
+        """调用节点函数，兼容 2 参数和 3 参数签名。"""
         try:
             sig = inspect.signature(self.func)
             if len(sig.parameters) >= 3:
                 return self.func(name, f3d, ctx)
-            else:
-                return self.func(name, f3d)
+            return self.func(name, f3d)
         except (ValueError, TypeError):
             return self.func(name, f3d)
 
-    def receive_worker(self, queue_idx, input_queue: mp.Queue, ready_event, global_exit,
-                       data_lock, heartbeat_timestamp, heartbeat_lock):
+    def receive_worker(
+        self,
+        queue_idx: int,
+        input_queue: mp.Queue,
+        ready_event: threading.Event,
+        global_exit: threading.Event,
+        data_lock: threading.Lock,
+        heartbeat_timestamp: list[float],
+        heartbeat_lock: threading.Lock,
+    ) -> None:
+        """接收线程：阻塞等待 queue 数据，存入 buffer。"""
         while not global_exit.is_set():
             with heartbeat_lock:
                 heartbeat_timestamp[queue_idx] = time.time()
@@ -55,20 +90,22 @@ class MultiInputNode(mp.Process):
             except Exception:
                 continue
             if obj == self.stop_signal:
-                logging.debug(f"[{self.name}][thread-{queue_idx}] stop signal.")
+                logging.debug(f'[{self.name}][thread-{queue_idx}] stop signal.')
                 ready_event.set()
                 break
             time_value = obj.df.index.get_level_values(0)[0]
             with data_lock:
-                # logging.info(f"[queue-{queue_idx}] push {time_value}. queue size={input_queue.qsize()}. buffer size={len(self.buffers[queue_idx])}")
                 self.buffers[queue_idx][time_value] = obj
                 ready_event.set()
 
-    def run(self):
-        logging.basicConfig(level=logging.INFO,
-                           format=f"[%(levelname)s][{self.name}][%(asctime)s]: %(message)s",
-                           stream=sys.stdout)
-        logging.info(f"Node {self.name} started, w={self.window}, mp={self.min_periods}.")
+    def run(self) -> None:
+        """子进程主入口：协调接收线程和窗口计算循环。"""
+        logging.basicConfig(
+            level=logging.INFO,
+            format=f'[%(levelname)s][{self.name}][%(asctime)s]: %(message)s',
+            stream=sys.stdout,
+        )
+        logging.info(f'Node {self.name} started, w={self.window}, mp={self.min_periods}.')
 
         num_workers = len(self.input_queues)
         data_lock = threading.Lock()
@@ -77,21 +114,30 @@ class MultiInputNode(mp.Process):
         heartbeat_timestamp = [time.time() for _ in range(num_workers)]
         global_exit = threading.Event()
 
-        threads = []
+        threads: list[threading.Thread] = []
         for i, inq in enumerate(self.input_queues):
-            t = threading.Thread(target=self.receive_worker,
-                                 args=(i, inq, ready_event[i], global_exit,
-                                       data_lock, heartbeat_timestamp, heartbeat_lock),
-                                 daemon=True)
+            t = threading.Thread(
+                target=self.receive_worker,
+                args=(
+                    i,
+                    inq,
+                    ready_event[i],
+                    global_exit,
+                    data_lock,
+                    heartbeat_timestamp,
+                    heartbeat_lock,
+                ),
+                daemon=True,
+            )
             t.start()
             threads.append(t)
 
-        dead_workers = set()
-        time_order_buffer = deque()
+        dead_workers: set[int] = set()
+        time_order_buffer: deque[tuple[Any, Frame3D]] = deque()
         window_start_index = 0
         window_tail_index = 0
         round_time = 0
-        current_context = self.context
+        current_context: Any = self.context
 
         try:
             while True:
@@ -100,7 +146,7 @@ class MultiInputNode(mp.Process):
                 while alive_workers_to_wait and thread_round_time < self.THREAD_ROUND_MAX_TIME:
                     ready_workers = [i for i in alive_workers_to_wait if ready_event[i].is_set()]
                     still_waiting = [i for i in alive_workers_to_wait if i not in ready_workers]
-                    newly_dead = []
+                    newly_dead: list[int] = []
                     for i in still_waiting:
                         with heartbeat_lock:
                             if time.time() - heartbeat_timestamp[i] > self.HEARTBEAT_TIMEOUT:
@@ -115,17 +161,16 @@ class MultiInputNode(mp.Process):
                     time.sleep(0.2)
                     thread_round_time += 1
 
-                submitted_workers = []
+                submitted_workers: list[int] = []
                 for i in range(num_workers):
                     if ready_event[i].is_set():
                         submitted_workers.append(i)
 
-                # All buffers intersection (including non-ready workers)
                 with data_lock:
                     all_times_sets = [set(self.buffers[i].keys()) for i in range(num_workers)]
                 shared_times = set.intersection(*all_times_sets) if all_times_sets else set()
 
-                frame_lists = []
+                frame_lists: list[list[Frame3D]] = []
                 if shared_times:
                     for tval in sorted(shared_times):
                         with data_lock:
@@ -143,24 +188,28 @@ class MultiInputNode(mp.Process):
                     if self.input_columns:
                         miss = [c for c in self.input_columns if c not in merged_df.columns]
                         if miss:
-                            raise ValueError(f"[{self.name}] Missing input cols: {miss}")
+                            raise ValueError(f'[{self.name}] Missing input cols: {miss}')
                         merged_df = merged_df[self.input_columns]
-                    time_order_buffer.append((shared_times.pop() if shared_times else None,
-                                              Frame3D(merged_df)))
+                    time_order_buffer.append(
+                        (shared_times.pop() if shared_times else None, Frame3D(merged_df))
+                    )
 
                 if len(time_order_buffer) > 0:
-                    logging.info(f"time_order_buffer: {len(time_order_buffer)} [{time_order_buffer[0][0]}, {time_order_buffer[-1][0]}]")
+                    logging.info(
+                        f'time_order_buffer: {len(time_order_buffer)} '
+                        f'[{time_order_buffer[0][0]}, {time_order_buffer[-1][0]}]'
+                    )
 
                 if len(time_order_buffer) < self.min_periods:
                     if len(dead_workers) == num_workers:
-                        logging.info(f"All workers dead, insufficient data. Exiting.")
+                        logging.info('All workers dead, insufficient data. Exiting.')
                         break
                     continue
 
-                # Window processing
                 while window_tail_index - window_start_index <= len(time_order_buffer):
-                    while window_tail_index - window_start_index < min(self.min_periods,
-                                                                        len(time_order_buffer)):
+                    while window_tail_index - window_start_index < min(
+                        self.min_periods, len(time_order_buffer)
+                    ):
                         window_tail_index += 1
                     while window_tail_index - window_start_index > self.window:
                         window_start_index += 1
@@ -172,12 +221,10 @@ class MultiInputNode(mp.Process):
                         break
                     window_frames = list(time_order_buffer)[:window_length]
 
-                    # 开始进行节点计算
                     start_time = time.time()
                     window_df = pd.concat([f[-1].df for f in window_frames], axis=0)
                     window_df = window_df.sort_index(level=0)
                     run_input_f3d = Frame3D(window_df)
-                    # logging.info(f"input frame: {run_input_f3d}")
                     result = self._call_func(self.name, run_input_f3d, current_context)
                     if isinstance(result, tuple):
                         output_f3d, current_context = result
@@ -186,37 +233,38 @@ class MultiInputNode(mp.Process):
                     if self.output_columns:
                         miss_o = [c for c in self.output_columns if c not in output_f3d.df.columns]
                         if miss_o:
-                            raise ValueError(f"[{self.name}] Missing output cols: {miss_o}")
+                            raise ValueError(f'[{self.name}] Missing output cols: {miss_o}')
                         filtered = output_f3d.df[self.output_columns]
                     else:
                         filtered = output_f3d.df
                     result_f3d = Frame3D(filtered.copy())
                     max_key = result_f3d.df.index.get_level_values(0).max()
-                    # NOTE: 框架约束：只取最后一个时间片的截面向量，保证数据是流式向前处理的
                     latest_df = result_f3d.df[result_f3d.df.index.get_level_values(0) == max_key]
                     latest_f3d = Frame3D(latest_df.copy())
-                    logging.info(f"window_start_index:{window_start_index}, window_tail_index={window_tail_index}\ntime_order_buffer: {len(time_order_buffer)}\noutput frame: {latest_f3d}")
-                    end_time = time.time()
-                    time_elapsed = end_time - start_time
+                    logging.info(
+                        f'window_start_index:{window_start_index}, '
+                        f'window_tail_index={window_tail_index}\n'
+                        f'time_order_buffer: {len(time_order_buffer)}\n'
+                        f'output frame: {latest_f3d}'
+                    )
+                    elapsed = time.time() - start_time
 
-                    # 将耗时记录到 context（区分 node 内部字段与用户字段）
                     if current_context is None:
                         current_context = {}
                     if not isinstance(current_context, dict):
-                        # 用户传入非 dict context → 包装为 dict
                         current_context = {'_user_context': current_context}
-                    timings = current_context.setdefault('_node_timings', [])
-                    timings.append(time_elapsed)
+                    timings: list[float] = current_context.setdefault('_node_timings', [])
+                    timings.append(elapsed)
                     if len(timings) > 10:
-                        timings.pop(0)  # 保持最近 10 次
+                        timings.pop(0)
                     avg_time = sum(timings) / len(timings)
                     total_calls = current_context.setdefault('_node_call_count', 0) + 1
                     current_context['_node_call_count'] = total_calls
                     if total_calls % 10 == 0 or total_calls == 1:
                         logging.info(
-                            f"call#{total_calls}: "
-                            f"elapsed={time_elapsed:.3f}s, "
-                            f"rolling_avg10={avg_time:.3f}s"
+                            f'call#{total_calls}: '
+                            f'elapsed={elapsed:.3f}s, '
+                            f'rolling_avg10={avg_time:.3f}s'
                         )
 
                     window_tail_index += 1
@@ -224,29 +272,38 @@ class MultiInputNode(mp.Process):
                         outq.put(latest_f3d)
 
                 if len(dead_workers) == num_workers:
-                    logging.info(f"All workers dead. Main process exited.")
+                    logging.info('All workers dead. Main process exited.')
                     break
                 round_time += 1
 
         except Exception as e:
-            logging.error(f"Exception in {self.name}: {e}", exc_info=True)
+            logging.error(f'Exception in {self.name}: {e}', exc_info=True)
         finally:
             if self.epilogue_fn is not None:
                 try:
                     self.epilogue_fn(self.name, current_context)
                 except Exception as e:
-                    logging.error(f"Epilogue error in {self.name}: {e}", exc_info=True)
+                    logging.error(f'Epilogue error in {self.name}: {e}', exc_info=True)
             global_exit.set()
             for t in threads:
                 t.join(timeout=1)
             for outq in self.output_queues:
                 outq.put(self.stop_signal)
-            logging.info(f"Node {self.name} stopped.")
+            logging.info(f'Node {self.name} stopped.')
 
 
 class SourceNode(mp.Process):
-    def __init__(self, name, gen_func, output_queues, stop_signal=None,
-                 context=None, epilogue_fn=None):
+    """数据源节点：迭代 gen_func，逐日输出 Frame3D 到下游 queue。"""
+
+    def __init__(
+        self,
+        name: str,
+        gen_func: GenFunc,
+        output_queues: list[mp.Queue],
+        stop_signal: Any = None,
+        context: Any = None,
+        epilogue_fn: EpilogueFunc | None = None,
+    ) -> None:
         super().__init__()
         self.name = name
         self.gen_func = gen_func
@@ -255,12 +312,15 @@ class SourceNode(mp.Process):
         self.context = context
         self.epilogue_fn = epilogue_fn
 
-    def run(self):
-        logging.basicConfig(level=logging.INFO,
-                           format=f"[%(levelname)s][{self.name}][%(asctime)s]: %(message)s",
-                           stream=sys.stdout)
-        logging.info("SourceNode started.")
-        current_context = self.context
+    def run(self) -> None:
+        """子进程主入口：迭代数据生成器，逐日输出最新截面。"""
+        logging.basicConfig(
+            level=logging.INFO,
+            format=f'[%(levelname)s][{self.name}][%(asctime)s]: %(message)s',
+            stream=sys.stdout,
+        )
+        logging.info('SourceNode started.')
+        current_context: Any = self.context
         try:
             for frame in self.gen_func():
                 max_key = frame.df.index.get_level_values(0).max()
@@ -271,11 +331,11 @@ class SourceNode(mp.Process):
             for outq in self.output_queues:
                 outq.put(self.stop_signal)
         except Exception as e:
-            logging.error(f"Exception in SourceNode: {e}", exc_info=True)
+            logging.error(f'Exception in SourceNode: {e}', exc_info=True)
         finally:
             if self.epilogue_fn is not None:
                 try:
                     self.epilogue_fn(self.name, current_context)
                 except Exception as e:
-                    logging.error(f"Epilogue error in {self.name}: {e}", exc_info=True)
-            logging.info("SourceNode stopped.")
+                    logging.error(f'Epilogue error in {self.name}: {e}', exc_info=True)
+            logging.info('SourceNode stopped.')

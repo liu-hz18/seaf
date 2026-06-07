@@ -367,3 +367,49 @@ src2 ──→ sumprod:1 ──→ (sumprod)
 - **factor_nodes 派生**：`[(f'factor_{name}', func) for name, func in FACTOR_REGISTRY.items()]`
   — 因子增删改只需维护 `FACTOR_REGISTRY` 一处，pipeline 自动同步
 - **pipeline.py**：144 行 → 122 行（-15%）
+
+## [Tooling] 2026-06-07 全局类型标注 + Lint 工具链配置
+
+### 动机
+项目缺少类型标注和自动化 lint 流程，代码可维护性不足。
+
+### 全局类型标注
+
+**基建层 (qpipe/)**：
+- `frame3d.py` — `from __future__ import annotations`，所有方法签名添加完整参数/返回类型，
+  `_df: pd.DataFrame` 实例属性声明，`Union`→`|`，`List`→`list`，新增 `Frame3D` 类文档
+- `node.py` — 类型别名 `FactorFunc` / `EpilogueFunc` / `GenFunc`，
+  `MultiInputNode.__init__` 完整参数类型，`receive_worker` 参数类型，
+  内部局部变量类型标注（`dead_workers`, `time_order_buffer`, `timings` 等）
+- `flow.py` — `Flow` 类实例属性 inline 类型标注，`add_source`/`add_node` 参数类型，
+  `validate_topology` 内部 DFS 变量类型，`create_queue` 返回 `mp.Queue[Any]`
+
+**业务层 (seafquant/)**：
+- `data_generator.py` — `_generate_stock_params` 返回类型 `dict[str, np.ndarray]`，
+  生成器参数 `start_date: str | None`
+- `factors.py` — `FACTOR_REGISTRY: dict[str, Callable[...]]`，`FACTOR_PREFIXES: dict[str, str]`
+- `model_node.py` — `from __future__ import annotations`，`Tuple`→`tuple`，`_build_model`→`Any`
+- `ic_analysis.py` — `from __future__ import annotations`，`ic_epilogue` 参数 `dict[str, Any] | None`
+- **10 个 factor 模块** — 统一添加 `from __future__ import annotations`，清理旧 typing 导入
+
+**入口 & 脚本**：
+- `pipeline.py` — `DataSourceCallable.__init__` 返回 `None`，`main() -> None`，
+  `start_date: str | None` 属性声明
+- `bench_all_factors.py` — `results` 字典类型标注
+
+### Lint 工具链配置
+
+**pyproject.toml**：
+- Ruff 19 条规则集（E/W/F/I/N/UP/B/C4/SIM/RUF/PT/RET/PIE/PL/PERF/FURB/RSE/TCH）
+- Mypy 类型检查配置，第三方库忽略（lightgbm/sklearn/scipy/mlflow）
+- Pytest 配置（timeout=300s）
+- CJK 全角标点豁免（RUF002/RUF003），测试/脚本目录宽松规则
+
+**scripts/pre_commit.py**：
+- 自动化提交前验证链：ruff check → ruff format → pytest → bench → git diff → commit
+- 支持交互式确认：`python scripts/pre_commit.py "msg"`
+
+### 验证
+- Ruff: 0 errors（全部自动修复 150 + auto-fix 41 条）
+- Pytest: 55 passed
+- 格式统一：ruff format 全量文件

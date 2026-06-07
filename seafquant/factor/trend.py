@@ -3,8 +3,11 @@
 趋势家族：price vs MA ×5, MA交叉 ×3, MACD ×2, 通道突破 ×2,
           时序动量 ×2, 成交量确认 ×1, 复合 ×1。
 """
+
+from __future__ import annotations
+
 import numpy as np
-import logging
+
 from qpipe.frame3d import Frame3D
 
 
@@ -16,8 +19,9 @@ def compute_trend_factors(name: str, f3d: Frame3D, context) -> Frame3D:
     grp = df.index.get_level_values('name')
 
     def _roll(src, dst, window, agg):
-        df[dst] = df.groupby('name')[src].rolling(
-            window, min_periods=max(1, window // 2)).agg(agg).values
+        df[dst] = (
+            df.groupby('name')[src].rolling(window, min_periods=max(1, window // 2)).agg(agg).values
+        )
 
     # ===== MA 偏离 + 交叉 (8 cols) =====
     for p in [5, 10, 20, 60, 120]:
@@ -25,16 +29,14 @@ def compute_trend_factors(name: str, f3d: Frame3D, context) -> Frame3D:
         _roll(f'_ma{p}', f'_ma{p}', p, 'mean')
         df[f'factor_trend_ma_{p}d'] = close / df[f'_ma{p}'].replace(0, np.nan) - 1
 
-    df['factor_trend_ma_cross_5_20'] = (
-        df['_ma5'] / df['_ma20'].replace(0, np.nan) - 1)
-    df['factor_trend_ma_cross_10_60'] = (
-        df['_ma10'] / df['_ma60'].replace(0, np.nan) - 1)
-    df['factor_trend_ma_cross_20_120'] = (
-        df['_ma20'] / df['_ma120'].replace(0, np.nan) - 1)
+    df['factor_trend_ma_cross_5_20'] = df['_ma5'] / df['_ma20'].replace(0, np.nan) - 1
+    df['factor_trend_ma_cross_10_60'] = df['_ma10'] / df['_ma60'].replace(0, np.nan) - 1
+    df['factor_trend_ma_cross_20_120'] = df['_ma20'] / df['_ma120'].replace(0, np.nan) - 1
 
     # ===== MACD (2 cols) =====
     def _ema(series, span):
         return series.ewm(span=span, adjust=False).mean()
+
     ema12 = close.groupby(grp).transform(lambda x: _ema(x, 12))
     ema26 = close.groupby(grp).transform(lambda x: _ema(x, 26))
     macd = ema12 - ema26
@@ -48,9 +50,9 @@ def compute_trend_factors(name: str, f3d: Frame3D, context) -> Frame3D:
         df[f'_max{p}'] = close
         _roll(f'_min{p}', f'_min{p}', p, 'min')
         _roll(f'_max{p}', f'_max{p}', p, 'max')
-        df[f'factor_trend_channel_{p}d'] = (
-            (close - df[f'_min{p}']) /
-            (df[f'_max{p}'] - df[f'_min{p}']).replace(0, np.nan))
+        df[f'factor_trend_channel_{p}d'] = (close - df[f'_min{p}']) / (
+            df[f'_max{p}'] - df[f'_min{p}']
+        ).replace(0, np.nan)
 
     # ===== 时序动量强度 (2 cols) =====
     df['factor_trend_mom_strength_20d'] = f3d.ts_zscore('close', 20).df['close']
@@ -60,15 +62,15 @@ def compute_trend_factors(name: str, f3d: Frame3D, context) -> Frame3D:
     vol_z = f3d.cs_zscore('volume').df['volume']
     df['_ma20'] = close
     _roll('_ma20', '_ma20', 20, 'mean')
-    df['factor_trend_vol_confirm'] = (
-        close / df['_ma20'].replace(0, np.nan) - 1) * vol_z
+    df['factor_trend_vol_confirm'] = (close / df['_ma20'].replace(0, np.nan) - 1) * vol_z
 
     # ===== 复合 (1 col) =====
     df['factor_trend_composite'] = (
-        df['factor_trend_macd_signal'] +
-        df['factor_trend_channel_20d'] +
-        df['factor_trend_mom_strength_20d'] +
-        df['factor_trend_vol_confirm']) / 4
+        df['factor_trend_macd_signal']
+        + df['factor_trend_channel_20d']
+        + df['factor_trend_mom_strength_20d']
+        + df['factor_trend_vol_confirm']
+    ) / 4
 
     factor_cols = [c for c in df.columns if c.startswith('factor_trend_')]
     result = result.cs_zscore_batch(factor_cols, cp=False)
