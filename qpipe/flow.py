@@ -51,6 +51,7 @@ class Flow:
             self.stop_signal,
             context=context,
             epilogue_fn=epilogue_fn,
+            output_queue_names=list(output_to),
         )
         self.nodes.append(node)
         self._node_specs.append(
@@ -96,6 +97,7 @@ class Flow:
             stop_signal=self.stop_signal,
             context=context,
             epilogue_fn=epilogue_fn,
+            output_queue_names=list(output_to),
         )
         self.nodes.append(node)
         self._node_specs.append(

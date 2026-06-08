@@ -9,9 +9,13 @@ SEAF 量化回测框架主入口 — Pipeline 组装与执行。
 from __future__ import annotations
 
 import argparse
+import datetime
 import logging
 import os
+import subprocess
 import sys
+
+import mlflow
 
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -72,6 +76,7 @@ def main() -> None:
     parser.add_argument(
         '--log-level', default='INFO', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR']
     )
+    parser.add_argument('--no-mlflow', action='store_true', help='Disable MLflow tracking')
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -89,6 +94,16 @@ def main() -> None:
     IC_WINDOW = fwd + 1
     IC_MIN_PERIODS = IC_WINDOW
 
+    # ===== MLflow 初始化 =====
+    experiment_name = datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+    if not args.no_mlflow:
+        mlflow.set_tracking_uri('sqlite:///mlruns.db')
+        mlflow.set_experiment(experiment_name)
+        mlflow_run = mlflow.start_run()
+        mlflow_run_id: str = mlflow_run.info.run_id
+    else:
+        mlflow_run_id = ''
+
     flow = Flow()
 
     # ===== 1. 数据源节点 =====
@@ -97,7 +112,12 @@ def main() -> None:
     )
     src_output_queues = [f'q_ohlc_to_{name}' for name, _ in factor_nodes]
     src_output_queues.extend(['q_close_to_model', 'q_close_to_ic'])
-    flow.add_source('src_data', gen_callable, src_output_queues)
+    flow.add_source(
+        'src_data',
+        gen_callable,
+        src_output_queues,
+        context={'mlflow_run_id': mlflow_run_id, 'start_date': args.start_date},
+    )
 
     # ===== 2. 因子计算节点 =====
     factor_output_queues = []
@@ -114,6 +134,7 @@ def main() -> None:
             output_to=[q_out],
             window=fw['window'],
             min_periods=fw['min_periods'],
+            context={'mlflow_run_id': mlflow_run_id, 'start_date': args.start_date},
         )
 
     # ===== 3. 模型训练预测节点 =====
@@ -124,6 +145,8 @@ def main() -> None:
         'model_type': args.model_type,
         'fwd': fwd,
         'model_window': MODEL_WINDOW,
+        'mlflow_run_id': mlflow_run_id,
+        'start_date': args.start_date,
         # 以下参数使用 model_node 默认值，此处仅为文档可读性显式列出
         # 'retrain_every': 20,
     }
@@ -140,7 +163,7 @@ def main() -> None:
     # ===== 4. IC 分析节点 =====
     # IC：(fwd-1)日截面超额收益的 Spearman rank 相关系数
     # 与 model 节点的 label 定义对齐（close[t+fwd]/close[t+1]-1）
-    ic_context = {'fwd': fwd}
+    ic_context = {'fwd': fwd, 'mlflow_run_id': mlflow_run_id, 'start_date': args.start_date}
     flow.add_node(
         name='ic_analysis',
         func=ic_analysis_fn,
@@ -152,8 +175,27 @@ def main() -> None:
         context=ic_context,
     )
 
+    # ===== 记录启动参数与 git 版本 =====
+    if not args.no_mlflow:
+        for key, val in vars(args).items():
+            mlflow.log_param(key, val)
+        try:
+            git_hash = subprocess.run(
+                ['git', 'rev-parse', '--short', 'HEAD'],
+                capture_output=True, text=True, timeout=5,
+            ).stdout.strip()
+            if git_hash:
+                mlflow.log_param('git_commit', git_hash)
+        except Exception:
+            pass
+
     # ===== 启动 =====
     logging.info('=' * 50)
+    if not args.no_mlflow:
+        logging.info(
+            f'MLflow experiment="{experiment_name}" run_id={mlflow_run_id}'
+            f' (tracking_uri=sqlite:///mlruns.db)'
+        )
     logging.info(
         f'SEAF Pipeline: n_times={args.n_times}, n_stocks={args.n_stocks}, '
         f'noise_ratio={args.noise_ratio}, seed={args.seed}, start_date={args.start_date}, '
@@ -169,6 +211,10 @@ def main() -> None:
 
     flow.start()
     flow.join()
+    if not args.no_mlflow:
+        mlflow.end_run()
+        mlflow.set_experiment(experiment_name)
+        mlflow.set_tracking_uri('')  # reset to avoid stale URI in parent process
     logging.info('Pipeline completed.')
 
 

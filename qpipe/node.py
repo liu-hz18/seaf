@@ -18,6 +18,7 @@ from typing import Any
 import pandas as pd
 
 from .frame3d import Frame3D
+from .utils import mlflow_log_metrics, trading_step
 
 # 因子节点函数签名：兼容 2 参数 (name, f3d) 和 3 参数 (name, f3d, context) 两种形式
 FactorFunc = Callable[..., Frame3D]
@@ -46,12 +47,14 @@ class MultiInputNode(mp.Process):
         stop_signal: Any = None,
         context: Any = None,
         epilogue_fn: EpilogueFunc | None = None,
+        output_queue_names: list[str] | None = None,
     ) -> None:
         super().__init__()
         self.name = name
         self.func = func
         self.input_queues = input_queues
         self.output_queues = output_queues
+        self.output_queue_names = output_queue_names if output_queue_names else []
         self.window = window
         self.min_periods = min_periods
         self.input_columns = input_columns if input_columns else []
@@ -267,6 +270,28 @@ class MultiInputNode(mp.Process):
                     for outq in self.output_queues:
                         outq.put(latest_f3d)
 
+                    # ---- MLflow: 记录本节点运行时间和输出队列大小 ----
+                    run_id: str = current_context.get('mlflow_run_id', '')
+                    if run_id:
+                        queue_sizes = {}
+                        for qi, q in enumerate(self.output_queues):
+                            qname = (
+                                self.output_queue_names[qi]
+                                if qi < len(self.output_queue_names)
+                                else f'q{qi}'
+                            )
+                            try:
+                                queue_sizes[f'queue_{qname}'] = float(q.qsize())
+                            except Exception:
+                                pass
+                        step = trading_step(current_context.get('start_date', ''), max_key)
+                        mlflow_log_metrics(
+                            run_id,
+                            self.name,
+                            {'elapsed_ms': elapsed * 1000, **queue_sizes},
+                            step=step,
+                        )
+
                 if len(dead_workers) == num_workers:
                     logging.info('All workers dead. Main process exited.')
                     break
@@ -299,11 +324,13 @@ class SourceNode(mp.Process):
         stop_signal: Any = None,
         context: Any = None,
         epilogue_fn: EpilogueFunc | None = None,
+        output_queue_names: list[str] | None = None,
     ) -> None:
         super().__init__()
         self.name = name
         self.gen_func = gen_func
         self.output_queues = output_queues
+        self.output_queue_names = output_queue_names if output_queue_names else []
         self.stop_signal = stop_signal
         self.context = context if context is not None else {}
         self.epilogue_fn = epilogue_fn
@@ -324,6 +351,19 @@ class SourceNode(mp.Process):
                 latest_f3d = Frame3D(latest_df.copy())
                 for outq in self.output_queues:
                     outq.put(latest_f3d)
+                # ---- MLflow: 记录源节点输出队列大小 ----
+                run_id = current_context.get('mlflow_run_id', '')
+                if run_id:
+                    qs = {}
+                    for qi, q in enumerate(self.output_queues):
+                        qname = (
+                            self.output_queue_names[qi]
+                            if qi < len(self.output_queue_names)
+                            else f'q{qi}'
+                        )
+                        qs[f'queue_{qname}'] = float(q.qsize())
+                    step = trading_step(current_context.get('start_date', ''), max_key)
+                    mlflow_log_metrics(run_id, self.name, qs, step=step)
             for outq in self.output_queues:
                 outq.put(self.stop_signal)
         except Exception as e:

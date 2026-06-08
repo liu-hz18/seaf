@@ -27,6 +27,7 @@ from scipy.stats import spearmanr
 from sklearn.model_selection import TimeSeriesSplit
 
 from qpipe.frame3d import Frame3D
+from qpipe.utils import mlflow_log_metrics, trading_step
 
 
 def _build_model(model_type: str = 'lgbm') -> Any:
@@ -59,7 +60,7 @@ def _cs_zscore(values: np.ndarray) -> np.ndarray:
     return np.zeros_like(values)
 
 
-def model_train_predict(name: str, f3d: Frame3D, context: Any) -> tuple[Frame3D, Any]:
+def model_train_predict(name: str, f3d: Frame3D, context: Any) -> Frame3D:
     """模型训练与预测主函数。
 
     f3d 包含 window 天的数据（因子列 + close 列）。
@@ -95,6 +96,9 @@ def model_train_predict(name: str, f3d: Frame3D, context: Any) -> tuple[Frame3D,
 
     if 'close' not in df.columns:
         raise ValueError(f'[{name}] Model node requires "close" column in input data')
+
+    mlflow_run_id = context.get('mlflow_run_id', '')
+    start_date = context.get('start_date', '')
 
     # ---- 提取时间维度 ----
     times = sorted(df.index.get_level_values('key').unique())
@@ -207,11 +211,19 @@ def model_train_predict(name: str, f3d: Frame3D, context: Any) -> tuple[Frame3D,
             f'avg cs_ret_mean={np.mean([cs["ret_mean"] for cs in cs_stats]):.6f}, '
             f'avg cs_ret_std={np.mean([cs["ret_std"] for cs in cs_stats]):.6f}'
         )
+        mlflow_log_metrics(mlflow_run_id, name, {
+            'label_mean': float(np.mean(y)),
+            'label_std': float(np.std(y)),
+            'label_min': float(np.min(y)),
+            'label_max': float(np.max(y)),
+        }, step=trading_step(start_date, times[n_train_times - 1]))
 
         # ---- 移除 NaN ----
         valid = ~np.isnan(y) & ~np.any(np.isnan(X), axis=1)
         nan_count = sum(~valid)
         X, y = X[valid], y[valid]
+        nan_total = nan_count + len(y)
+        nan_ratio = nan_count / nan_total if nan_total > 0 else 0.0
         logging.info(f'[{name}] NaN removal: {nan_count} removed, {len(y)} samples remain')
 
         if len(y) < 50:
@@ -253,6 +265,11 @@ def model_train_predict(name: str, f3d: Frame3D, context: Any) -> tuple[Frame3D,
         # ---- 全量训练 ----
         model = _build_model(model_type)
         model.fit(X, y)
+        # 训练集 MSE
+        with warnings.catch_warnings():
+            warnings.filterwarnings('ignore', message='X does not have valid feature names')
+            train_pred = model.predict(X)
+        train_mse = float(np.mean((train_pred - y) ** 2))
 
         # ---- 特征重要性（仅 LGBM） ----
         if model_type == 'lgbm':
@@ -268,6 +285,14 @@ def model_train_predict(name: str, f3d: Frame3D, context: Any) -> tuple[Frame3D,
         context['trained_model'] = model
         context['is_trained'] = True
         context['days_since_train'] = 0
+
+        mlflow_log_metrics(mlflow_run_id, name, {
+            'train_samples': float(len(y)),
+            'train_features': float(len(feature_cols)),
+            'train_nan_ratio': nan_ratio,
+            'train_mse': train_mse,
+            'cv_ic_mean': float(np.mean(cv_scores)) if cv_scores else 0.0,
+        }, step=trading_step(start_date, times[n_train_times - 1]))
 
         cv_mean = np.mean(cv_scores) if cv_scores else 0.0
         cv_std = np.std(cv_scores) if cv_scores else 0.0
@@ -304,6 +329,12 @@ def model_train_predict(name: str, f3d: Frame3D, context: Any) -> tuple[Frame3D,
 
     # 截面标准化预测信号（保持与训练 label 一致的处理方式）
     pred_signal = _cs_zscore(pred_raw)
+
+    mlflow_log_metrics(mlflow_run_id, name, {
+        'pred_signal_min': float(np.min(pred_signal)),
+        'pred_signal_max': float(np.max(pred_signal)),
+        'pred_signal_skew': float(pd.Series(pred_signal).skew()),
+    }, step=trading_step(start_date, latest_t))
 
     logging.info(
         f'[{name}] Predict signal_day={latest_t} '
