@@ -288,7 +288,11 @@ class MultiInputNode(mp.Process):
                         mlflow_log_metrics(
                             run_id,
                             self.name,
-                            {'elapsed_ms': elapsed * 1000, **queue_sizes},
+                            {
+                                'elapsed_ms': elapsed * 1000,
+                                'time_order_buffer_len': float(len(time_order_buffer)),
+                                **queue_sizes,
+                            },
                             step=step,
                         )
 
