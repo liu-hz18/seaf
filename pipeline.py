@@ -109,6 +109,8 @@ def main() -> None:
         )
 
     # ===== 3. 模型训练预测节点 =====
+    # Label: cs_zscore(close[t+fwd] / close[t+1] - 1) — (fwd-1)日截面超额收益
+    # t+1买入、t+fwd卖出，对齐实盘交易执行和IC指标
     model_context = {
         'model_type': args.model_type,
         'fwd': fwd,
@@ -125,6 +127,8 @@ def main() -> None:
     )
 
     # ===== 4. IC 分析节点 =====
+    # IC：(fwd-1)日截面超额收益的 Spearman rank 相关系数
+    # 与 model 节点的 label 定义对齐（close[t+fwd]/close[t+1]-1）
     ic_context = {'fwd': fwd}
     flow.add_node(
         name='ic_analysis',

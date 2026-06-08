@@ -16,6 +16,7 @@ SEAF Pre-commit 自动化验证链
     6. git diff --stat           — 展示改动摘要
     7. git add -A + commit       — 确认后提交
 """
+
 import os
 import subprocess
 import sys
@@ -23,15 +24,15 @@ import sys
 
 def run(cmd: list[str], desc: str) -> bool:
     """运行命令，打印结果，返回是否通过。"""
-    print(f"\n{'=' * 60}")
-    print(f"  [{desc}]")
-    print(f"  {' '.join(cmd)}")
-    print(f"{'=' * 60}")
+    print(f'\n{"=" * 60}')
+    print(f'  [{desc}]')
+    print(f'  {" ".join(cmd)}')
+    print(f'{"=" * 60}')
     result = subprocess.run(cmd, check=False, cwd=os.path.dirname(__file__) + '/..')
     if result.returncode != 0:
-        print(f"  FAILED: {desc} (exit {result.returncode})")
+        print(f'  FAILED: {desc} (exit {result.returncode})')
         return False
-    print(f"  PASS: {desc}")
+    print(f'  PASS: {desc}')
     return True
 
 
@@ -50,23 +51,29 @@ def main() -> None:
             sys.exit(1)
 
     # git diff summary
-    print(f"\n{'=' * 60}")
-    print("  [git diff --stat]")
-    print(f"{'=' * 60}")
+    print(f'\n{"=" * 60}')
+    print('  [git diff --stat]')
+    print(f'{"=" * 60}')
     subprocess.run(['git', 'diff', '--stat'], check=False, cwd=os.path.dirname(__file__) + '/..')
-    subprocess.run(['git', 'diff', '--cached', '--stat'], check=False, cwd=os.path.dirname(__file__) + '/..')
+    subprocess.run(
+        ['git', 'diff', '--cached', '--stat'], check=False, cwd=os.path.dirname(__file__) + '/..'
+    )
 
     if commit_msg:
-        print(f"\n  Commit message: {commit_msg}")
-        response = input("  Proceed with commit? [y/N]: ").strip().lower()
+        print(f'\n  Commit message: {commit_msg}')
+        response = input('  Proceed with commit? [y/N]: ').strip().lower()
         if response in ('y', 'yes'):
             subprocess.run(['git', 'add', '-A'], check=False, cwd=os.path.dirname(__file__) + '/..')
-            subprocess.run(['git', 'commit', '-m', commit_msg], check=False, cwd=os.path.dirname(__file__) + '/..')
-            print("  Commit complete.")
+            subprocess.run(
+                ['git', 'commit', '-m', commit_msg],
+                check=False,
+                cwd=os.path.dirname(__file__) + '/..',
+            )
+            print('  Commit complete.')
         else:
-            print("  Commit skipped.")
+            print('  Commit skipped.')
     else:
-        print("\n  No commit message provided. Skipping commit.")
+        print('\n  No commit message provided. Skipping commit.')
         print("  Usage: python scripts/pre_commit.py 'commit message'")
 
 

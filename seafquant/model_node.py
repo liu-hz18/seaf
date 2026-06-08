@@ -2,15 +2,16 @@
 模型训练与预测节点 — 支持 LGBM / Ridge 两种模型，滚动训练，预测每日截面信号。
 
 训练逻辑：
-- 每 retrain_every 天用最近 (window - fwd) 天因子数据重新训练模型。
-- Label：fwd 日后截面超额收益率（cs_zscore）。
-- 时间穿越防护：只用 time [0, n_times-fwd) 训练（每个样本 label 基于 t+fwd）。
-- 预测：对窗口内最后一天的因子做 predict，输出 pred_signal。
+- 每 retrain_every 天用最近窗口内因子数据重新训练模型。
+- Label：cs_zscore(close_{t+fwd} / close_{t+1} - 1) — 未来 (fwd-1) 日截面超额收益。
+  t+1 日买入、t+fwd 日卖出，排除信号日到买入日的隔夜收益，对齐实盘交易执行。
+- 损失函数：MSE on cs_zscore labels ≈ 最大化截面 Pearson IC（数学等价）。
+- 时间穿越防护：只用 time [0, n_times-fwd-1) 训练（每个样本需要 t+1 和 t+fwd 的 close）。
+- 预测：对窗口内最后一天的因子做 predict，输出 cs_zscore 后的 pred_signal。
 
 context 配置（从 pipeline 传入）：
   - model_type: 'lgbm' (默认) 或 'ridge'
   - fwd: 前向预测天数 (默认 20)
-  - model_window: 模型节点总窗口大小 (factor_window + fwd)
   - retrain_every: 重训练间隔 (默认 20)
 """
 
@@ -21,6 +22,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+from scipy.stats import spearmanr
 from sklearn.model_selection import TimeSeriesSplit
 
 from qpipe.frame3d import Frame3D
@@ -47,15 +49,24 @@ def _build_model(model_type: str = 'lgbm') -> Any:
     raise ValueError(f'Unknown model_type: {model_type}')
 
 
+def _cs_zscore(values: np.ndarray) -> np.ndarray:
+    """截面标准化：(x - mean) / std，std=0 时返回零向量。"""
+    mean = np.nanmean(values)
+    std = np.nanstd(values)
+    if std > 0:
+        return (values - mean) / std
+    return np.zeros_like(values)
+
+
 def model_train_predict(name: str, f3d: Frame3D, context: Any) -> tuple[Frame3D, Any]:
     """模型训练与预测主函数。
 
     f3d 包含 window 天的数据（因子列 + close 列）。
+    Label = cs_zscore(close[t+fwd] / close[t+1] - 1) — 截面超额收益。
     """
     if context is None:
         context = {}
 
-    # 默认值（向后兼容）
     context.setdefault('trained_model', None)
     context.setdefault('is_trained', False)
     context.setdefault('retrain_every', 20)
@@ -63,154 +74,217 @@ def model_train_predict(name: str, f3d: Frame3D, context: Any) -> tuple[Frame3D,
     context.setdefault('feature_cols', None)
     context.setdefault('model_type', 'lgbm')
     context.setdefault('fwd', 20)
-    context.setdefault('model_window', context['fwd'] + 200)  # 默认窗口
+    context.setdefault('model_window', context['fwd'] + 200)
 
     fwd = context['fwd']
-
     df = f3d.df.copy()
 
-    # 识别因子列
+    # ---- 识别因子列 ----
     raw_cols = {'open', 'high', 'low', 'close', 'turnover', 'volume', 'market_cap'}
     if context['feature_cols'] is None:
         context['feature_cols'] = [
             c for c in df.columns if c not in raw_cols and not c.startswith('_')
         ]
-
     feature_cols = context['feature_cols']
 
     if 'close' not in df.columns:
-        raise ValueError(f"[{name}] Model node requires 'close' column in input data")
+        raise ValueError(f'[{name}] Model node requires "close" column in input data')
 
-    # ===== 提取时间维度数据 =====
+    # ---- 提取时间维度 ----
     times = sorted(df.index.get_level_values('key').unique())
     n_times = len(times)
+    n_stocks = df.index.get_level_values('name').nunique()
 
-    # 需要至少 fwd 天才能计算 label，再加至少 1 个训练样本
-    min_required = fwd + 1
+    # 需要 fwd+1 天：t 时刻信号 + t+1 买入 + t+fwd 卖出
+    min_required = fwd + 2
     if n_times < min_required:
-        logging.warning(f'[{name}] Insufficient data: {n_times} < {min_required} (fwd={fwd})')
+        logging.warning(f'[{name}] Insufficient data: {n_times} < {min_required} (fwd={fwd}+2)')
         empty_result = Frame3D(
-            pd.DataFrame(
-                {'pred_signal': [0.0] * len(df.loc[times[-1]])}, index=df.loc[times[-1]].index
-            )
+            pd.DataFrame({'pred_signal': [0.0] * n_stocks}, index=df.loc[times[-1]].index)
         )
         return empty_result, context
 
-    # 检查是否需要训练
+    # ---- 检查是否需要重训练 ----
     context['days_since_train'] += 1
     should_train = (not context['is_trained']) or (
         context['days_since_train'] >= context['retrain_every']
     )
 
+    # ========================================================================
+    # 训练阶段
+    # ========================================================================
     if should_train:
+        model_type = context.get('model_type', 'lgbm')
         logging.info(
-            f'[{name}] Triggering retrain (model={context.get("model_type", "lgbm")}, '
-            f'fwd={fwd}). days_since_train={context["days_since_train"]}'
+            f'[{name}] ===== RETRAIN START ====='
+            f' model={model_type}, fwd={fwd}, retrain_every={context["retrain_every"]}, '
+            f'days_since_train={context["days_since_train"]}, '
+            f'window={n_times}d x {n_stocks}s, features={len(feature_cols)}'
         )
 
-        # 训练样本：time [0, n_times-fwd) — 每个样本在 t+fwd 有对应的 close
-        n_train_times = n_times - fwd  # 可用于训练的时间点数
+        # 训练样本范围：[0, n_times - fwd - 1)，每个样本需要 t+1 和 t+fwd
+        n_train_times = n_times - fwd - 1
         if n_train_times < 10:
-            logging.warning(f'[{name}] Too few training times: {n_train_times} (fwd={fwd})')
+            logging.warning(
+                f'[{name}] Too few training time points: {n_train_times} '
+                f'(n_times={n_times}, fwd={fwd})'
+            )
             context['days_since_train'] = 0
             empty_result = Frame3D(
-                pd.DataFrame(
-                    {'pred_signal': [0.0] * len(df.loc[times[-1]])}, index=df.loc[times[-1]].index
-                )
+                pd.DataFrame({'pred_signal': [0.0] * n_stocks}, index=df.loc[times[-1]].index)
             )
             return empty_result, context
 
-        # 构建特征矩阵 X：每个训练时间点的因子值
-        X_list, y_list = [], []
+        logging.info(
+            f'[{name}] Building training set: t ∈ [0, {n_train_times - 1}] → '
+            f'{n_train_times} cross-sections'
+        )
+
+        X_list: list[np.ndarray] = []
+        y_list: list[np.ndarray] = []
+        cs_stats: list[dict] = []
+
         for t_idx in range(n_train_times):
             t = times[t_idx]
-            cs_mask = df.index.get_level_values('key') == t
-            X_cs = df.loc[cs_mask, feature_cols].values.astype(float)
+            t_next = times[t_idx + 1]  # t+1（买入日）
+            t_fwd = times[t_idx + fwd]  # t+fwd（卖出日）
 
-            # Label：t+fwd 的前瞻收益
-            t_label = times[t_idx + fwd]
-            cs_mask_label = df.index.get_level_values('key') == t_label
-            close_fwd = df.loc[cs_mask_label, 'close'].values
-            close_t = df.loc[cs_mask, 'close'].values
-            fwd_ret = close_fwd / close_t - 1
+            # 特征：t 时刻截面因子
+            cs_mask_t = df.index.get_level_values('key') == t
+            X_cs = df.loc[cs_mask_t, feature_cols].values.astype(float)
+
+            # Label：t+1 → t+fwd 的截面超额收益
+            cs_mask_buy = df.index.get_level_values('key') == t_next
+            cs_mask_sell = df.index.get_level_values('key') == t_fwd
+            close_buy = df.loc[cs_mask_buy, 'close'].values
+            close_sell = df.loc[cs_mask_sell, 'close'].values
+            fwd_ret = close_sell / close_buy - 1
+
+            # 逐截面标准化 label（每个时间截面独立，无时间穿越）
+            label_xd = _cs_zscore(fwd_ret)
 
             X_list.append(X_cs)
-            y_list.append(fwd_ret)
+            y_list.append(label_xd)
+            cs_stats.append(
+                {
+                    't': t,
+                    'n': len(fwd_ret),
+                    'ret_mean': float(np.nanmean(fwd_ret)),
+                    'ret_std': float(np.nanstd(fwd_ret)),
+                }
+            )
 
         X = np.vstack(X_list)
         y = np.hstack(y_list)
 
-        print(f'[pre-validate] X.shape={X.shape}, y.shape={y.shape}')
-        # 移除 NaN 样本
+        # ---- 训练数据统计 ----
+        logging.info(
+            f'[{name}] Training set: {len(cs_stats)} cross-sections, '
+            f'{len(y)} total samples, {X.shape[1]} features, '
+            f'avg stocks/cs={np.mean([cs["n"] for cs in cs_stats]):.0f}'
+        )
+        logging.info(
+            f'[{name}] Label stats: mean={np.mean(y):.4f}, std={np.std(y):.4f}, '
+            f'min={np.min(y):.4f}, max={np.max(y):.4f}, '
+            f'avg cs_ret_mean={np.mean([cs["ret_mean"] for cs in cs_stats]):.6f}, '
+            f'avg cs_ret_std={np.mean([cs["ret_std"] for cs in cs_stats]):.6f}'
+        )
+
+        # ---- 移除 NaN ----
         valid = ~np.isnan(y) & ~np.any(np.isnan(X), axis=1)
+        nan_count = sum(~valid)
         X, y = X[valid], y[valid]
-        print(f'[post-validate] X.shape={X.shape}, y.shape={y.shape}')
+        logging.info(f'[{name}] NaN removal: {nan_count} removed, {len(y)} samples remain')
 
         if len(y) < 50:
-            logging.warning(f'[{name}] Insufficient training samples: {len(y)}')
+            logging.warning(f'[{name}] Insufficient training samples after NaN removal: {len(y)}')
             context['days_since_train'] = 0
             empty_result = Frame3D(
-                pd.DataFrame(
-                    {'pred_signal': [0.0] * len(df.loc[times[-1]])}, index=df.loc[times[-1]].index
-                )
+                pd.DataFrame({'pred_signal': [0.0] * n_stocks}, index=df.loc[times[-1]].index)
             )
             return empty_result, context
 
-        # 截面标准化 label
-        y_xd = (y - np.mean(y)) / (np.std(y) + 1e-10)
-
-        # 构建模型
-        model_type = context.get('model_type', 'lgbm')
+        # ---- 交叉验证（IC 导向） ----
         model = _build_model(model_type)
-
-        # TimeSeriesSplit 交叉验证
-        cv_scores = []
+        cv_scores: list[float] = []
         tscv = TimeSeriesSplit(n_splits=3)
-        for train_idx, val_idx in tscv.split(X):
+
+        logging.info(f'[{name}] CV (TimeSeriesSplit, 3 folds, IC metric):')
+        for fold, (train_idx, val_idx) in enumerate(tscv.split(X)):
             if len(val_idx) < 10:
                 continue
             X_tr, X_val = X[train_idx], X[val_idx]
-            y_tr, y_val = y_xd[train_idx], y_xd[val_idx]
+            y_tr, y_val = y[train_idx], y[val_idx]
             model.fit(X_tr, y_tr)
             pred = model.predict(X_val)
-            from scipy.stats import spearmanr
-
             try:
                 ic = spearmanr(pred, y_val).correlation
-                cv_scores.append(ic)
+                if not np.isnan(ic):
+                    cv_scores.append(ic)
+                    logging.info(
+                        f'  Fold {fold + 1}: IC={ic:.4f}, '
+                        f'n_train={len(y_tr):,}, n_val={len(y_val):,}'
+                    )
             except Exception:
                 pass
 
-        # Full training
+        # ---- 全量训练 ----
         model = _build_model(model_type)
-        model.fit(X, y_xd)
+        model.fit(X, y)
+
+        # ---- 特征重要性（仅 LGBM） ----
+        if model_type == 'lgbm':
+            try:
+                importances = model.feature_importances_
+                top_n = min(10, len(feature_cols))
+                top_idx = np.argsort(importances)[-top_n:][::-1]
+                top_features = [(feature_cols[i], f'{importances[i]:.4f}') for i in top_idx]
+                logging.info(f'[{name}] Feature importance top-{top_n}: {top_features}')
+            except Exception:
+                pass
 
         context['trained_model'] = model
         context['is_trained'] = True
         context['days_since_train'] = 0
 
         cv_mean = np.mean(cv_scores) if cv_scores else 0.0
+        cv_std = np.std(cv_scores) if cv_scores else 0.0
         logging.info(
-            f'[{name}] Training done ({model_type}, fwd={fwd}): '
-            f'samples={len(y)}, features={len(feature_cols)}, cv_ic_mean={cv_mean:.4f}'
+            f'[{name}] ===== RETRAIN DONE ====='
+            f' samples={len(y):,}, features={len(feature_cols)}, '
+            f'cv_ic_mean={cv_mean:.4f}±{cv_std:.4f}, '
+            f'n_folds={len(cv_scores)}'
         )
 
-    # ===== 预测流程：对最后一天的截面因子做 predict =====
+    # ========================================================================
+    # 预测阶段
+    # ========================================================================
     model = context['trained_model']
     latest_t = times[-1]
     cs_mask_latest = df.index.get_level_values('key') == latest_t
     X_latest = df.loc[cs_mask_latest, feature_cols].values.astype(float)
 
+    # 检查特征缺失
+    nan_rows = np.any(np.isnan(X_latest), axis=1)
+    if nan_rows.any():
+        logging.warning(
+            f'[{name}] Prediction: {nan_rows.sum()}/{len(X_latest)} stocks have NaN features, '
+            f'filling with 0'
+        )
+        X_latest = np.nan_to_num(X_latest, nan=0.0)
+
     pred_raw = model.predict(X_latest)
 
-    # 截面标准化
-    pred_mean = np.nanmean(pred_raw)
-    pred_std = np.nanstd(pred_raw)
-    pred_signal = (pred_raw - pred_mean) / pred_std if pred_std > 0 else np.zeros_like(pred_raw)
+    # 截面标准化预测信号（保持与训练 label 一致的处理方式）
+    pred_signal = _cs_zscore(pred_raw)
 
     logging.info(
-        f'[{name}] Predict day t={latest_t} (fwd={fwd}), '
-        f'signal_mean={pred_signal.mean():.4f}, signal_std={pred_signal.std():.4f}'
+        f'[{name}] Predict day t={latest_t} (fwd={fwd}): '
+        f'n_stocks={len(pred_signal)}, '
+        f'signal_mean={float(np.mean(pred_signal)):.4f}, '
+        f'signal_std={float(np.std(pred_signal)):.4f}, '
+        f'signal_min={float(np.min(pred_signal)):.4f}, '
+        f'signal_max={float(np.max(pred_signal)):.4f}'
     )
 
     result_df = pd.DataFrame({'pred_signal': pred_signal}, index=df.loc[cs_mask_latest].index)

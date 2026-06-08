@@ -413,3 +413,51 @@ src2 ──→ sumprod:1 ──→ (sumprod)
 - Ruff: 0 errors（全部自动修复 150 + auto-fix 41 条）
 - Pytest: 55 passed
 - 格式统一：ruff format 全量文件
+
+## [Model] 2026-06-08 Model 节点重构 — Label 对齐实盘 + IC 导向训练 + 充分日志
+
+### 动机
+原有 model_node.py 存在三个核心问题：
+1. **Label 计算含时间穿越**：`close[t+fwd] / close[t] - 1` 包含了 t→t+1 的隔夜收益，
+   但实盘交易在 t+1 买入、t+fwd 卖出，不应包含 t→t+1 这一段。
+2. **Label 全局标准化而非截面标准化**：`(y - mean(y)) / std(y)` 对所有时间混合计算，
+   引入了未来时间的均值/方差信息。
+3. **日志不充分**：缺少训练样本统计、CV 每折 IC、特征重要性等关键调试信息。
+
+### Label 修正
+
+**之前**：
+```python
+close_fwd = close[t+fwd]; close_t = close[t]
+fwd_ret = close_fwd / close_t - 1                    # 含 t→t+1 隔夜
+y_xd = (y - mean(y)) / std(y)                        # 全局标准化
+```
+
+**之后**：
+```python
+close_buy  = close[t+1]; close_sell = close[t+fwd]
+fwd_ret = close_sell / close_buy - 1                  # t+1→t+fwd 纯持有期
+label_xd = cs_zscore(fwd_ret)                         # 逐截面独立标准化
+```
+
+### 训练对齐实盘指标
+
+- **损失函数**：MSE on cs_zscore labels ≈ 最大化截面 Pearson IC（数学等价）
+  - 对于标准化向量：`||pred - y||² ∝ -cov(pred, y)`，MSE 最小化 ⇒ 协方差最大化 ⇒ IC 最大化
+- **验证指标**：CV 使用 Spearman rank IC（非 MSE），与 IC 分析节点统一
+- **预测输出**：`cs_zscore(model.predict(X_latest))`，截面标准化保证量纲一致
+
+### 日志增强
+
+| 阶段 | 日志内容 |
+|------|---------|
+| 训练开始 | 模型类型、fwd、窗口尺寸、因子数 |
+| 样本构建 | 截面数、总样本数、label mean/std/min/max、截面 ret_mean/ret_std |
+| NaN 清理 | 移除样本数、剩余样本数 |
+| CV | 每折 IC、训练/验证样本数 |
+| 特征重要性 | LGBM top-10 feature importance（仅 lgbm）|
+| 预测 | 股票数、signal mean/std/min/max、NaN 特征警告 |
+
+### IC 分析节点同步修正
+- `t_past` 从 `times[-(fwd+1)]` 改为 `times[-(fwd)]`
+  — 与 model label 对齐：close[t+fwd] / close[t+1] - 1

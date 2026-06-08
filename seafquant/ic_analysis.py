@@ -48,8 +48,9 @@ def ic_analysis_fn(name: str, f3d: Frame3D, context: Any) -> tuple[Frame3D, Any]
     cs_mask = df.index.get_level_values('key') == latest_t
     pred_signal = df.loc[cs_mask, 'pred_signal'].values.astype(float)
 
-    # 计算 fwd 日前瞻收益：close[latest] / close[t-fwd] - 1
-    t_past = times[-(fwd + 1)]  # fwd 天前
+    # 计算 (fwd-1) 日前瞻收益：close[t+fwd] / close[t+1] - 1
+    # pred_signal 产生于 times[0]，交易在 times[1]（t+1 买入），times[-1]（t+fwd 卖出）
+    t_past = times[-(fwd)]  # t+1 买入日
     cs_mask_past = df.index.get_level_values('key') == t_past
     close_now = df.loc[cs_mask, 'close'].values
     close_then = df.loc[cs_mask_past, 'close'].values
