@@ -17,7 +17,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from qpipe.flow import Flow
 from seafquant.data_generator import generate_synthetic_data
-from seafquant.factors import FACTOR_REGISTRY
+from seafquant.factors import FACTOR_REGISTRY, FACTOR_WINDOWS
 from seafquant.ic_analysis import ic_analysis_fn, ic_epilogue
 from seafquant.model_node import model_train_predict
 
@@ -61,7 +61,13 @@ def main() -> None:
         '--fwd',
         type=int,
         default=20,
-        help='Forward prediction horizon in days (controls model/IC windows)',
+        help='Forward prediction horizon in days (controls IC window)',
+    )
+    parser.add_argument(
+        '--model-window',
+        type=int,
+        default=200,
+        help='Model training window in days (factor history for training)',
     )
     parser.add_argument(
         '--log-level', default='INFO', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR']
@@ -75,11 +81,10 @@ def main() -> None:
     # ===== 因子节点注册（由 FACTOR_REGISTRY 派生，10 个并行节点） =====
     factor_nodes = [(f'factor_{name}', func) for name, func in FACTOR_REGISTRY.items()]
 
-    # 窗口参数（基于 fwd 动态计算）
+    # 窗口参数
+    # Model 节点独立于 Factor 节点：它接收的是因子输出（截面），需要独立的历史窗口来训练。
     fwd = args.fwd
-    FACTOR_WINDOW = 130
-    FACTOR_MIN_PERIODS = 2
-    MODEL_WINDOW = FACTOR_WINDOW + fwd
+    MODEL_WINDOW = args.model_window + args.fwd
     MODEL_MIN_PERIODS = MODEL_WINDOW
     IC_WINDOW = fwd + 1
     IC_MIN_PERIODS = IC_WINDOW
@@ -97,6 +102,9 @@ def main() -> None:
     # ===== 2. 因子计算节点 =====
     factor_output_queues = []
     for fname, ffunc in factor_nodes:
+        # 提取模块短名（"factor_counting" → "counting"）
+        module_key = fname.removeprefix('factor_')
+        fw = FACTOR_WINDOWS.get(module_key, {'window': 130, 'min_periods': 60})
         q_out = f'q_{fname}_out'
         factor_output_queues.append(q_out)
         flow.add_node(
@@ -104,17 +112,20 @@ def main() -> None:
             func=ffunc,
             input_from=f'q_ohlc_to_{fname}',
             output_to=[q_out],
-            window=FACTOR_WINDOW,
-            min_periods=FACTOR_MIN_PERIODS,
+            window=fw['window'],
+            min_periods=fw['min_periods'],
         )
 
     # ===== 3. 模型训练预测节点 =====
     # Label: cs_zscore(close[t+fwd] / close[t+1] - 1) — (fwd-1)日截面超额收益
     # t+1买入、t+fwd卖出，对齐实盘交易执行和IC指标
+    # model_context 显式列出所有可配置参数（与 model_node.setdefault 默认值对齐）
     model_context = {
         'model_type': args.model_type,
         'fwd': fwd,
         'model_window': MODEL_WINDOW,
+        # 以下参数使用 model_node 默认值，此处仅为文档可读性显式列出
+        # 'retrain_every': 20,
     }
     flow.add_node(
         name='model',
@@ -149,7 +160,11 @@ def main() -> None:
         f'fwd={fwd}, model_type={args.model_type}'
     )
     logging.info(f'Topology: 1 source -> {len(factor_nodes)} factor nodes -> model -> ic_analysis')
-    logging.info(f'Windows: factor={FACTOR_WINDOW}, model={MODEL_WINDOW}, ic={IC_WINDOW}')
+    logging.info(f'Model window={MODEL_WINDOW}, IC window={IC_WINDOW}')
+    factor_window_summary = ', '.join(
+        f'{k}={v["window"]}' for k, v in sorted(FACTOR_WINDOWS.items())
+    )
+    logging.info(f'Factor windows: {factor_window_summary}')
     logging.info('=' * 50)
 
     flow.start()

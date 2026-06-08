@@ -37,6 +37,29 @@ FACTOR_REGISTRY: dict[str, Callable[[str, Frame3D, Any], Frame3D]] = {
     'cross_section': compute_cross_section_factors,
 }
 
+# 各因子节点的个性化窗口配置。
+# window: 滑动窗口大小 = max_rolling_window + 10
+# min_periods: 最小数据量 = max_rolling_window
+# 模型/IC 节点的窗口基于 max_window 动态计算。
+FACTOR_WINDOWS: dict[str, dict[str, int]] = {
+    # max=120 模块 — 需要长窗口（130/120）
+    'momentum':          {'window': 130, 'min_periods': 120},
+    'volatility':        {'window': 130, 'min_periods': 120},
+    'value':             {'window': 130, 'min_periods': 120},
+    'quality_merged':    {'window': 130, 'min_periods': 120},
+    'quality_autocorr':  {'window': 130, 'min_periods': 120},
+    'quality_pattern':   {'window': 130, 'min_periods': 120},
+    'trend':             {'window': 130, 'min_periods': 120},
+    # max=60 模块 — 短窗口（70/60）
+    'liquidity':         {'window': 70, 'min_periods': 60},
+    'counting':          {'window': 70, 'min_periods': 60},
+    'interaction':       {'window': 70, 'min_periods': 60},
+    'cross_section':     {'window': 70, 'min_periods': 60},
+}
+
+# 全局最大窗口（模型/IC 节点基于此计算）
+GLOBAL_MAX_FACTOR_WINDOW = max(c['window'] for c in FACTOR_WINDOWS.values())
+
 FACTOR_PREFIXES: dict[str, str] = {
     'momentum': 'factor_mom',
     'volatility': 'factor_vol',
@@ -54,6 +77,8 @@ FACTOR_PREFIXES: dict[str, str] = {
 __all__ = [
     'FACTOR_PREFIXES',
     'FACTOR_REGISTRY',
+    'FACTOR_WINDOWS',
+    'GLOBAL_MAX_FACTOR_WINDOW',
     'compute_counting_factors',
     'compute_cross_section_factors',
     'compute_interaction_factors',

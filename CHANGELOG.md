@@ -462,6 +462,64 @@ label_xd = cs_zscore(fwd_ret)                         # 逐截面独立标准化
 - `t_past` 从 `times[-(fwd+1)]` 改为 `times[-(fwd)]`
   — 与 model label 对齐：close[t+fwd] / close[t+1] - 1
 
+## [Refactor] 2026-06-08 Node Context 语义简化 + Pipeline 重构 + Model/IC 节点完善
+
+### 动机
+经过多个迭代轮次的问题沉淀，本轮对框架的三个核心模块进行系统性重构：
+1. **node.py**: context 参数语义澄清——从可能为 None 的可选参数改为固定空字典 `{}`
+2. **pipeline.py**: 窗口参数解耦——model 窗口与 factor 窗口独立配置
+3. **model_node.py**: Label 对齐实盘、IC 导向训练、充分日志
+
+### Node Context 简化
+
+**之前的问题**：
+- `MultiInputNode` 和 `SourceNode` 的 `self.context` 初始化可能为 `None`
+- `_call_func` 调用后需要判断 `isinstance(result, tuple)` 来提取 context
+- 业务函数需要 `return Frame3D(df), context` 才能更新 context
+
+**修改后**：
+- `self.context` 统一初始化为 `{}`（空字典）
+- context 为可变对象（dict），func 内直接修改 `context['key'] = value`
+- 业务函数不再返回 context：`return Frame3D(df)` 即可
+- `node.py` 去掉了 `isinstance(result, tuple)` 的分支处理
+- 计时操作直接写入 `current_context['elapsed_ms']`
+
+**旧式兼容**：
+- `_call_func` 仅捕获 `TypeError`（签名不匹配时回退到旧式 `(name, f3d)` 调用）
+- 不再捕获 `ValueError`，避免将因子运行时错误误判为"缺少 context 参数"
+
+### Pipeline 窗口解耦
+
+- 新增 `--model-window` 参数（default=200），控制模型训练窗口大小
+- `FACTOR_WINDOWS` 注册表：每个因子模块独立配置 `window` 和 `min_periods`
+- `MODEL_WINDOW = model_window + fwd`（模型窗口 = 因子历史 + 前瞻期）
+- 因子窗口由 `factors.py` 中的 `FACTOR_WINDOWS` 集中管理
+
+### Model 节点 Label 修正
+
+**核心变更**：
+- **Label 买入点**：`close[t+1]`（次日收盘买入，不含 t→t+1 隔夜）
+- **Label 卖出点**：`close[t+fwd]`
+- **标准化**：`cs_zscore(close_sell / close_buy - 1)`（逐截面独立，无未来信息泄漏）
+- **训练目标**：MSE on cs_zscore labels ≈ 最大化截面 Pearson IC
+- **CV 验证**：使用 Spearman rank IC
+
+**日志增强**：训练开始/样本构建/NaN 清理/CV 每折 IC/特征重要性/预测信号
+
+### IC 分析节点修正
+- `t_past` 从 `times[-(fwd+1)]` 改为 `times[-(fwd)]`，与 model label 对齐
+- 函数返回值移除 context（遵循新的 context 语义）
+
+### 影响范围
+- `qpipe/node.py` — MultiInputNode/SourceNode context 默认 {}、简化 tuple 分支
+- `qpipe/frame3d.py` — `_call_func` 仅捕获 TypeError
+- `pipeline.py` — `--model-window`、FACTOR_WINDOWS、窗口解耦
+- `seafquant/factors.py` — 新增 FACTOR_WINDOWS 注册表
+- `seafquant/model_node.py` — Label 修正、IC 导向、日志增强、移除 context 返回
+- `seafquant/ic_analysis.py` — t_past 修正、移除 context 返回
+- `test/test_node.py` — 适配新 context 语义
+- `TODO.md` — 记录 mlflow 集成等后续计划
+
 ## [Bugfix] 2026-06-08 sliding_window_view 守卫条件修复 + 框架异常传播强化
 
 ### 问题

@@ -14,6 +14,13 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+
+pd.set_option('display.max_rows', 20)
+pd.set_option('display.max_columns', 50)
+pd.set_option('display.max_colwidth', 20)
+pd.set_option('display.width', 1024)
+
+
 class Frame3D:
     """三维数据容器：时间 × 股票 × 属性。"""
 

@@ -18,6 +18,7 @@ context 配置（从 pipeline 传入）：
 from __future__ import annotations
 
 import logging
+import warnings
 from typing import Any
 
 import numpy as np
@@ -67,14 +68,19 @@ def model_train_predict(name: str, f3d: Frame3D, context: Any) -> tuple[Frame3D,
     if context is None:
         context = {}
 
+    # ——— 运行时状态（由节点自身维护，无需 pipeline 传入）———
     context.setdefault('trained_model', None)
     context.setdefault('is_trained', False)
-    context.setdefault('retrain_every', 20)
     context.setdefault('days_since_train', 0)
     context.setdefault('feature_cols', None)
+
+    # ——— 可配置参数（pipeline 传入或在无 context 时使用以下默认值）———
+    # 注意：MultiInputNode 通过 Flow.add_node(context=...) 将 pipeline 的
+    # model_context 合并到此处，setdefault 确保未传入时也有合理的 fallback。
     context.setdefault('model_type', 'lgbm')
     context.setdefault('fwd', 20)
-    context.setdefault('model_window', context['fwd'] + 200)
+    context.setdefault('model_window', 200)
+    context.setdefault('retrain_every', 20)
 
     fwd = context['fwd']
     df = f3d.df.copy()
@@ -102,7 +108,7 @@ def model_train_predict(name: str, f3d: Frame3D, context: Any) -> tuple[Frame3D,
         empty_result = Frame3D(
             pd.DataFrame({'pred_signal': [0.0] * n_stocks}, index=df.loc[times[-1]].index)
         )
-        return empty_result, context
+        return empty_result
 
     # ---- 检查是否需要重训练 ----
     context['days_since_train'] += 1
@@ -116,10 +122,13 @@ def model_train_predict(name: str, f3d: Frame3D, context: Any) -> tuple[Frame3D,
     if should_train:
         model_type = context.get('model_type', 'lgbm')
         logging.info(
-            f'[{name}] ===== RETRAIN START ====='
-            f' model={model_type}, fwd={fwd}, retrain_every={context["retrain_every"]}, '
-            f'days_since_train={context["days_since_train"]}, '
-            f'window={n_times}d x {n_stocks}s, features={len(feature_cols)}'
+            f'[{name}] ===== RETRAIN START ===== '
+            f'model={model_type}, fwd={fwd}, retrain_every={context["retrain_every"]}, '
+            f'days_since_train={context["days_since_train"]}'
+        )
+        logging.info(
+            f'[{name}]   feature window: {n_times}d x {n_stocks}s x {len(feature_cols)}cols, '
+            f'time_range=[{times[0]} .. {times[-1]}]'
         )
 
         # 训练样本范围：[0, n_times - fwd - 1)，每个样本需要 t+1 和 t+fwd
@@ -133,11 +142,19 @@ def model_train_predict(name: str, f3d: Frame3D, context: Any) -> tuple[Frame3D,
             empty_result = Frame3D(
                 pd.DataFrame({'pred_signal': [0.0] * n_stocks}, index=df.loc[times[-1]].index)
             )
-            return empty_result, context
+            return empty_result
 
+        # label = close[t+fwd] / close[t+1] - 1，每个样本的买入/卖出各差 1 天
         logging.info(
-            f'[{name}] Building training set: t ∈ [0, {n_train_times - 1}] → '
-            f'{n_train_times} cross-sections'
+            f'[{name}]   training X: {n_train_times} cross-sections '
+            f'[{times[0]} .. {times[n_train_times - 1]}]'
+        )
+        logging.info(
+            f'[{name}]   first label: signal@{times[0]} -> return[{times[1]}->{times[fwd]}]'
+        )
+        logging.info(
+            f'[{name}]   last  label: signal@{times[n_train_times - 1]} '
+            f'-> return[{times[n_train_times]}->{times[n_train_times - 1 + fwd]}]'
         )
 
         X_list: list[np.ndarray] = []
@@ -151,9 +168,10 @@ def model_train_predict(name: str, f3d: Frame3D, context: Any) -> tuple[Frame3D,
 
             # 特征：t 时刻截面因子
             cs_mask_t = df.index.get_level_values('key') == t
-            X_cs = df.loc[cs_mask_t, feature_cols].values.astype(float)
+            # to_numpy(copy=True) 深拷贝剥离 pandas 列名元数据，避免 LGBM feature_names 警告
+            X_cs = df.loc[cs_mask_t, feature_cols].to_numpy(dtype=float, copy=True)
 
-            # Label：t+1 → t+fwd 的截面超额收益
+            # Label：t+1 -> t+fwd 的截面超额收益
             cs_mask_buy = df.index.get_level_values('key') == t_next
             cs_mask_sell = df.index.get_level_values('key') == t_fwd
             close_buy = df.loc[cs_mask_buy, 'close'].values
@@ -202,7 +220,7 @@ def model_train_predict(name: str, f3d: Frame3D, context: Any) -> tuple[Frame3D,
             empty_result = Frame3D(
                 pd.DataFrame({'pred_signal': [0.0] * n_stocks}, index=df.loc[times[-1]].index)
             )
-            return empty_result, context
+            return empty_result
 
         # ---- 交叉验证（IC 导向） ----
         model = _build_model(model_type)
@@ -216,7 +234,11 @@ def model_train_predict(name: str, f3d: Frame3D, context: Any) -> tuple[Frame3D,
             X_tr, X_val = X[train_idx], X[val_idx]
             y_tr, y_val = y[train_idx], y[val_idx]
             model.fit(X_tr, y_tr)
-            pred = model.predict(X_val)
+            # sklearn/LGBM 可能在 fit 时从 numpy 元数据推断 feature_names_in_，
+            # 导致后续 predict(numpy) 产生无意义警告。此处局部 suppress。
+            with warnings.catch_warnings():
+                warnings.filterwarnings('ignore', message='X does not have valid feature names')
+                pred = model.predict(X_val)
             try:
                 ic = spearmanr(pred, y_val).correlation
                 if not np.isnan(ic):
@@ -250,10 +272,11 @@ def model_train_predict(name: str, f3d: Frame3D, context: Any) -> tuple[Frame3D,
         cv_mean = np.mean(cv_scores) if cv_scores else 0.0
         cv_std = np.std(cv_scores) if cv_scores else 0.0
         logging.info(
-            f'[{name}] ===== RETRAIN DONE ====='
-            f' samples={len(y):,}, features={len(feature_cols)}, '
+            f'[{name}] ===== RETRAIN DONE ===== '
+            f'samples={len(y):,}, features={len(feature_cols)}, '
             f'cv_ic_mean={cv_mean:.4f}±{cv_std:.4f}, '
-            f'n_folds={len(cv_scores)}'
+            f'n_folds={len(cv_scores)}, '
+            f'predict_day={times[-1]}'
         )
 
     # ========================================================================
@@ -262,7 +285,7 @@ def model_train_predict(name: str, f3d: Frame3D, context: Any) -> tuple[Frame3D,
     model = context['trained_model']
     latest_t = times[-1]
     cs_mask_latest = df.index.get_level_values('key') == latest_t
-    X_latest = df.loc[cs_mask_latest, feature_cols].values.astype(float)
+    X_latest = df.loc[cs_mask_latest, feature_cols].to_numpy(dtype=float, copy=True)
 
     # 检查特征缺失
     nan_rows = np.any(np.isnan(X_latest), axis=1)
@@ -273,19 +296,24 @@ def model_train_predict(name: str, f3d: Frame3D, context: Any) -> tuple[Frame3D,
         )
         X_latest = np.nan_to_num(X_latest, nan=0.0)
 
-    pred_raw = model.predict(X_latest)
+    # suppress sklearn feature_names 警告：训练和预测均使用纯 numpy，
+    # 但 LGBM/sklearn 可能在 fit 时从 numpy 内部元数据推断 feature_names_in_。
+    with warnings.catch_warnings():
+        warnings.filterwarnings('ignore', message='X does not have valid feature names')
+        pred_raw = model.predict(X_latest)
 
     # 截面标准化预测信号（保持与训练 label 一致的处理方式）
     pred_signal = _cs_zscore(pred_raw)
 
     logging.info(
-        f'[{name}] Predict day t={latest_t} (fwd={fwd}): '
-        f'n_stocks={len(pred_signal)}, '
-        f'signal_mean={float(np.mean(pred_signal)):.4f}, '
-        f'signal_std={float(np.std(pred_signal)):.4f}, '
-        f'signal_min={float(np.min(pred_signal)):.4f}, '
-        f'signal_max={float(np.max(pred_signal)):.4f}'
+        f'[{name}] Predict signal_day={latest_t} '
+        f'(target return: {latest_t}+1->{latest_t}+{fwd}, fwd={fwd}): '
+        f'n={len(pred_signal)}, '
+        f'mean={float(np.mean(pred_signal)):.4f}, '
+        f'std={float(np.std(pred_signal)):.4f}, '
+        f'min={float(np.min(pred_signal)):.4f}, '
+        f'max={float(np.max(pred_signal)):.4f}'
     )
 
     result_df = pd.DataFrame({'pred_signal': pred_signal}, index=df.loc[cs_mask_latest].index)
-    return Frame3D(result_df), context
+    return Frame3D(result_df)

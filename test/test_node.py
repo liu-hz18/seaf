@@ -47,7 +47,7 @@ def simple_func_3arg(name: str, f3d: Frame3D, context):
     context['values'].append(f3d.df['val'].mean())
     df = f3d.df.copy()
     df['val'] = df['val'] + 1
-    return Frame3D(df), context
+    return Frame3D(df)
 
 
 def simple_func_3arg_no_tuple(name: str, f3d: Frame3D, context):

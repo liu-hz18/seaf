@@ -35,41 +35,52 @@ def ic_analysis_fn(name: str, f3d: Frame3D, context: Any) -> tuple[Frame3D, Any]
     context.setdefault('ic_history', [])
     context.setdefault('cumsum_ic', 0.0)
     context.setdefault('day_count', 0)
+    context.setdefault('first_signal_day', None)
+    context.setdefault('last_signal_day', None)
     fwd = context.get('fwd', 20)
 
     df = f3d.df.copy()
     times = sorted(df.index.get_level_values('key').unique())
 
     if len(times) < fwd + 1:
-        return f3d, context
+        return f3d
 
-    # 取最新一天预测信号
-    latest_t = times[-1]
-    cs_mask = df.index.get_level_values('key') == latest_t
-    pred_signal = df.loc[cs_mask, 'pred_signal'].values.astype(float)
+    # 时间对齐：当前 frame 最早一天 times[0] 的预测信号 pred_signal，
+    # 对齐未来 (fwd-1) 日的截面超额收益率（cs_zscore(close[t+fwd]/close[t+1]-1)）。
+    # 窗口设计：IC_WINDOW == fwd+1，保证 times[fwd] 在窗口内。
+    pred_t = times[0]          # 信号产生日
+    buy_t = times[1]            # t+1 买入日
+    sell_t = times[fwd]         # t+fwd 卖出日（fwd 由 context 传入）
 
-    # 计算 (fwd-1) 日前瞻收益：close[t+fwd] / close[t+1] - 1
-    # pred_signal 产生于 times[0]，交易在 times[1]（t+1 买入），times[-1]（t+fwd 卖出）
-    t_past = times[-(fwd)]  # t+1 买入日
-    cs_mask_past = df.index.get_level_values('key') == t_past
-    close_now = df.loc[cs_mask, 'close'].values
-    close_then = df.loc[cs_mask_past, 'close'].values
+    # 记录首次和末次信号日，供 epilogue 汇总使用
+    if context['first_signal_day'] is None:
+        context['first_signal_day'] = pred_t
+    context['last_signal_day'] = pred_t
 
-    fwd_ret = close_now / close_then - 1
+    cs_pred = df.index.get_level_values('key') == pred_t
+    cs_buy = df.index.get_level_values('key') == buy_t
+    cs_sell = df.index.get_level_values('key') == sell_t
 
-    # 截面标准化 fwd_ret
+    pred_signal = df.loc[cs_pred, 'pred_signal'].values.astype(float)
+    close_buy = df.loc[cs_buy, 'close'].values.astype(float)
+    close_sell = df.loc[cs_sell, 'close'].values.astype(float)
+
+    # cs_zscore(close[t+fwd] / close[t+1] - 1)：截面超额收益率
+    fwd_ret = close_sell / close_buy - 1
+
     valid_mask = ~np.isnan(fwd_ret) & ~np.isnan(pred_signal)
 
     if valid_mask.sum() >= 10:
         pred_valid = pred_signal[valid_mask]
         fwd_valid = fwd_ret[valid_mask]
 
-        fwd_mean = np.nanmean(fwd_valid)
-        fwd_std = np.nanstd(fwd_valid)
-        fwd_xd = (fwd_valid - fwd_mean) / fwd_std if fwd_std > 0 else np.zeros_like(fwd_valid)
+        # 截面标准化（与 model label 定义一致）
+        cs_mean = np.nanmean(fwd_valid)
+        cs_std = np.nanstd(fwd_valid)
+        cs_excess = (fwd_valid - cs_mean) / cs_std if cs_std > 0 else np.zeros_like(fwd_valid)
 
         try:
-            ic = spearmanr(pred_valid, fwd_xd).correlation
+            ic = spearmanr(pred_valid, cs_excess).correlation
             if np.isnan(ic):
                 ic = 0.0
         except Exception:
@@ -79,18 +90,19 @@ def ic_analysis_fn(name: str, f3d: Frame3D, context: Any) -> tuple[Frame3D, Any]
         context['cumsum_ic'] += ic
         context['day_count'] += 1
 
-        if context['day_count'] % 20 == 0:
-            recent = context['ic_history'][-20:]
+        if context['day_count'] % 10 == 0 or context['day_count'] == 1:
+            recent = context['ic_history'][-10:]
             logging.info(
-                f'[{name}] day={context["day_count"]}, ic={ic:.4f}, '
-                f'cumsum_ic={context["cumsum_ic"]:.4f}, '
-                f'recent_mean_ic={np.mean(recent):.4f}'
+                f'[{name}] IC#{context["day_count"]} '
+                f'signal_day={pred_t} buy={buy_t} sell={sell_t} '
+                f'ic={ic:.4f} cumsum={context["cumsum_ic"]:.4f} '
+                f'recent10_mean={np.mean(recent):.4f}'
             )
     else:
         context['ic_history'].append(np.nan)
         context['day_count'] += 1
 
-    return f3d, context
+    return f3d
 
 
 def ic_epilogue(name: str, context: dict[str, Any] | None) -> None:
@@ -115,7 +127,10 @@ def ic_epilogue(name: str, context: dict[str, Any] | None) -> None:
     drawdowns = running_max - cumsum
     max_dd = np.max(drawdowns) if len(drawdowns) > 0 else 0.0
 
+    first_day = context.get('first_signal_day', 'N/A')
+    last_day = context.get('last_signal_day', 'N/A')
     logging.info(f'[{name}] ========== IC Summary ==========')
+    logging.info(f'[{name}]   Signal range: [{first_day} .. {last_day}]')
     logging.info(f'[{name}]   N={len(ics)}, Mean IC={mean_ic:.4f}, ICIR={icir:.4f}')
     logging.info(f'[{name}]   WinRate={winrate:.2%}, CumSum IC={cumsum[-1]:.4f}')
     logging.info(f'[{name}]   IC Std={std_ic:.4f}, IC Skew={pd.Series(ics).skew():.4f}')

@@ -20,8 +20,8 @@ import pandas as pd
 from .frame3d import Frame3D
 
 # 因子节点函数签名：兼容 2 参数 (name, f3d) 和 3 参数 (name, f3d, context) 两种形式
-FactorFunc = Callable[..., Frame3D | tuple[Frame3D, Any]]
-# Epilogue 函数签名：接收 name, context，无返回值
+FactorFunc = Callable[..., Frame3D]
+# Epilogue 函数签名：接收 name, context，无返回值；context 为可变 dict，函数内原地修改
 EpilogueFunc = Callable[[str, Any], None]
 # Source 生成器函数签名：无参，yield Frame3D
 GenFunc = Callable[[], Any]  # 实际是 Iterator[Frame3D]，但 pickle 兼容需要宽松类型
@@ -57,11 +57,11 @@ class MultiInputNode(mp.Process):
         self.input_columns = input_columns if input_columns else []
         self.output_columns = output_columns if output_columns else []
         self.stop_signal = stop_signal
-        self.context = context
+        self.context = context if context is not None else {}
         self.epilogue_fn = epilogue_fn
         self.buffers: list[dict[Any, Frame3D]] = [{} for _ in input_queues]
 
-    def _call_func(self, name: str, f3d: Frame3D, ctx: Any) -> Frame3D | tuple[Frame3D, Any]:
+    def _call_func(self, name: str, f3d: Frame3D, ctx: Any) -> Frame3D:
         """调用节点函数，兼容 2 参数和 3 参数签名。
 
         只捕获 TypeError（签名参数数量不匹配时回退到 2 参数调用）。
@@ -229,11 +229,7 @@ class MultiInputNode(mp.Process):
                     window_df = pd.concat([f[-1].df for f in window_frames], axis=0)
                     window_df = window_df.sort_index(level=0)
                     run_input_f3d = Frame3D(window_df)
-                    result = self._call_func(self.name, run_input_f3d, current_context)
-                    if isinstance(result, tuple):
-                        output_f3d, current_context = result
-                    else:
-                        output_f3d = result
+                    output_f3d = self._call_func(self.name, run_input_f3d, current_context)
                     if self.output_columns:
                         miss_o = [c for c in self.output_columns if c not in output_f3d.df.columns]
                         if miss_o:
@@ -253,10 +249,6 @@ class MultiInputNode(mp.Process):
                     )
                     elapsed = time.time() - start_time
 
-                    if current_context is None:
-                        current_context = {}
-                    if not isinstance(current_context, dict):
-                        current_context = {'_user_context': current_context}
                     timings: list[float] = current_context.setdefault('_node_timings', [])
                     timings.append(elapsed)
                     if len(timings) > 10:
@@ -313,7 +305,7 @@ class SourceNode(mp.Process):
         self.gen_func = gen_func
         self.output_queues = output_queues
         self.stop_signal = stop_signal
-        self.context = context
+        self.context = context if context is not None else {}
         self.epilogue_fn = epilogue_fn
 
     def run(self) -> None:
