@@ -62,13 +62,17 @@ class MultiInputNode(mp.Process):
         self.buffers: list[dict[Any, Frame3D]] = [{} for _ in input_queues]
 
     def _call_func(self, name: str, f3d: Frame3D, ctx: Any) -> Frame3D | tuple[Frame3D, Any]:
-        """调用节点函数，兼容 2 参数和 3 参数签名。"""
+        """调用节点函数，兼容 2 参数和 3 参数签名。
+
+        只捕获 TypeError（签名参数数量不匹配时回退到 2 参数调用）。
+        ValueError 等运行时错误直接向上传播，不在框架层吞没。
+        """
         try:
             sig = inspect.signature(self.func)
             if len(sig.parameters) >= 3:
                 return self.func(name, f3d, ctx)
             return self.func(name, f3d)
-        except (ValueError, TypeError):
+        except TypeError:
             return self.func(name, f3d)
 
     def receive_worker(

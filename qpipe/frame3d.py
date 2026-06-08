@@ -14,7 +14,6 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-
 class Frame3D:
     """三维数据容器：时间 × 股票 × 属性。"""
 

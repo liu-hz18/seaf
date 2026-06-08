@@ -461,3 +461,27 @@ label_xd = cs_zscore(fwd_ret)                         # 逐截面独立标准化
 ### IC 分析节点同步修正
 - `t_past` 从 `times[-(fwd+1)]` 改为 `times[-(fwd)]`
   — 与 model label 对齐：close[t+fwd] / close[t+1] - 1
+
+## [Bugfix] 2026-06-08 sliding_window_view 守卫条件修复 + 框架异常传播强化
+
+### 问题
+运行 `pipeline.py --n-times 500 --n-stocks 50` 时，`factor_counting` 和
+`factor_quality_pattern` 在窗口初期（数据不足 20 天）崩溃：
+`ValueError: window shape cannot be larger than input array shape`。
+
+### 根因
+`sliding_window_view` 的防卫条件是 `max(2, window//2) > T`，当 `window=20, T=12`
+时 `max(2,10)=10` 不满足 `>12`，守卫被绕过，导致窗口尺寸大于数组长度。
+
+### 修复
+- `counting.py: _run_pct_2d`, `_new_high_count`, `_new_low_count`
+  — 守卫条件 `max(2, window//2) > n` → `window > n`
+- `quality_pattern.py: _up_down_ratio_vec`
+  — 同上
+
+### 框架异常传播强化
+- `node.py: _call_func` 只捕获 `TypeError`（签名不匹配的回退），
+  不再捕获 `ValueError`，避免将因子计算运行时错误误判为"缺少 context 参数"
+- 框架既有的 `try-except-finally` 结构能正确终止崩溃节点并发送 stop_signal 到下游：
+  异常 → `except`（日志 + traceback）→ `finally`（`global_exit.set()` +
+  `stop_signal` 推送上/下游 queue）→ 下游通过心跳超时检测并依次退出

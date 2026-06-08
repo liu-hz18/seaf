@@ -40,7 +40,7 @@ def _streaks_2d(arr: np.ndarray, max_len: int = 10):
 def _run_pct_2d(arr: np.ndarray, window: int) -> np.ndarray:
     """向量化同向天数占比。"""
     T, S = arr.shape
-    if max(2, window // 2) > T:
+    if window > T:
         return np.full((T, S), np.nan)
     valid = np.isfinite(arr)
     same_dir = np.zeros((T, S), dtype=np.float64)
@@ -141,7 +141,7 @@ def compute_counting_factors(name: str, f3d: Frame3D, context) -> Frame3D:
     def _new_low_count(series, window):
         arr = series.values.astype(float)
         n = len(arr)
-        if n < max(2, window // 2):
+        if n < window:
             return np.full(n, np.nan)
         clean = np.where(np.isnan(arr), np.inf, arr)
         cmin = np.minimum.accumulate(clean)

@@ -76,7 +76,7 @@ def compute_quality_pattern_factors(name: str, f3d: Frame3D, context) -> Frame3D
     def _up_down_ratio_vec(series, window):
         arr = series.values
         n = len(arr)
-        if n < max(2, window // 2):
+        if n < window:
             return np.full(n, np.nan)
         win = sliding_window_view(arr, window)
         pos_mask = win > 0
