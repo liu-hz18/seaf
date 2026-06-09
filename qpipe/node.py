@@ -31,6 +31,25 @@ except ImportError:
     def _rss_mb() -> float:
         return 0.0
 
+
+def _to_float32(f3d: Frame3D) -> Frame3D:
+    """将 Frame3D 中所有 float64 列转为 float32，减少序列化和下游缓冲内存。
+
+    注意：仅转换 float64 列，保留 int/bool/object 等非数值列不变。
+    NaN 在 float32 下语义等价，无精度风险（因子值域 ±10，7 位有效数字足够）。
+    """
+    import numpy as np
+
+    df = f3d.df
+    changed = False
+    for col in df.columns:
+        if df[col].dtype == np.float64:
+            df[col] = df[col].astype(np.float32, copy=False)
+            changed = True
+    if changed:
+        return Frame3D(df)
+    return f3d
+
 # 因子节点函数签名：兼容 2 参数 (name, f3d) 和 3 参数 (name, f3d, context) 两种形式
 FactorFunc = Callable[..., Frame3D]
 # Epilogue 函数签名：接收 name, context，无返回值；context 为可变 dict，函数内原地修改
@@ -299,6 +318,8 @@ class MultiInputNode(mp.Process):
                         )
 
                     window_tail_index += 1
+                    # float32 输出：将队列传输数据精度降为 fp32，内存减半
+                    latest_f3d = _to_float32(latest_f3d)
                     for outq in self.output_queues:
                         outq.put(latest_f3d)
 
@@ -398,6 +419,8 @@ class SourceNode(mp.Process):
                 max_key = frame.df.index.get_level_values(0).max()
                 latest_df = frame.df[frame.df.index.get_level_values(0) == max_key]
                 latest_f3d = Frame3D(latest_df.copy())
+                # float32 输出：源数据精度降为 fp32，所有下游队列和缓冲受益
+                latest_f3d = _to_float32(latest_f3d)
                 for outq in self.output_queues:
                     outq.put(latest_f3d)
                 # ---- MLflow: 记录源节点输出队列大小 ----

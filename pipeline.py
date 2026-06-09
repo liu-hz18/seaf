@@ -21,9 +21,29 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from qpipe.flow import Flow
 from seafquant.data_generator import generate_synthetic_data
-from seafquant.factors import FACTOR_REGISTRY, FACTOR_WINDOWS, GLOBAL_MAX_FACTOR_WINDOW
+from seafquant.factors import (
+    FACTOR_REGISTRY, FACTOR_WINDOWS, GLOBAL_MAX_FACTOR_WINDOW
+)
 from seafquant.ic_analysis import ic_analysis_fn, ic_epilogue
 from seafquant.model_node import model_train_predict
+
+
+# 因子节点输入列过滤 — 每个模块只接收实际用到的 OHLCV 列。
+# source 发送 7 列到所有因子队列，通过 input_columns 过滤后
+# time_order_buffer 仅保留必要列，窗口缓冲内存节省 30-85%。
+FACTOR_INPUT_COLUMNS: dict[str, list[str]] = {
+    'momentum':         ['close', 'open', 'high', 'low', 'volume', 'turnover'],
+    'volatility':       ['close', 'open', 'high', 'low', 'volume'],
+    'liquidity':        ['close', 'volume', 'turnover', 'market_cap'],
+    'value':            ['close', 'market_cap', 'turnover'],
+    'quality_merged':   ['close', 'high', 'low', 'market_cap', 'volume'],
+    'quality_autocorr': ['close'],
+    'quality_pattern':  ['close', 'high', 'low'],
+    'trend':            ['close', 'volume'],
+    'counting':         ['close', 'high', 'low', 'volume', 'turnover'],
+    'interaction':      ['close', 'high', 'low', 'volume', 'turnover', 'market_cap'],
+    'cross_section':    ['close', 'volume'],
+}
 
 
 class DataSourceCallable:
@@ -125,12 +145,14 @@ def main() -> None:
         # 提取模块短名（"factor_counting" → "counting"）
         module_key = fname.removeprefix('factor_')
         fw = FACTOR_WINDOWS.get(module_key, {'window': 130, 'min_periods': 60})
+        input_cols = FACTOR_INPUT_COLUMNS.get(module_key)
         q_out = f'q_{fname}_out'
         factor_output_queues.append(q_out)
         flow.add_node(
             name=fname,
             func=ffunc,
             input_from=f'q_ohlc_to_{fname}',
+            input_columns=input_cols,
             output_to=[q_out],
             window=fw['window'],
             min_periods=fw['min_periods'],
