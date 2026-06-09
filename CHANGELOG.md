@@ -658,6 +658,61 @@ label_xd = cs_zscore(fwd_ret)                         # 逐截面独立标准化
   - 在线框架中，`compute_cross_section_factors` 收到的是窗口内所有时间片的完整数据，先对每个时间片独立 rank，再沿时序 shift
   - 旧基准方案在 IPO/退市场景下「先 shift 后 rank」会因股票集合不一致而产生不同结果
 
+## [Perf] 2026-06-09 内存系统性优化 — 队列背压 + input_columns + float32 输出层 + gc 调度
+
+### 背景
+n_stocks=50、n_times=1000 运行动辄被系统 kill。根本原因：
+1. `mp.Queue` 无 `maxsize`，上游（source 0.2s/item）远超下游消费速度（factor ~1s/item），队列无限膨胀直至 OOM
+2. 14 个子进程各独立加载 numpy/pandas（84MB/进程），1.2GB 纯 import 开销
+3. 因子节点窗口缓冲无列过滤，全量 7 列 OHLCV 串行化/反串行化
+4. Python 堆碎片多轮迭代后从 96MB 漂移至 194MB（无 gc.collect）
+
+### 四项优化
+
+**A. 队列背压（flow.py）**：
+- `Flow.__init__` 新增 `queue_maxsize` 参数，`create_queue` 默认使用
+- `pipeline.py` 设为 `GLOBAL_MAX_FACTOR_WINDOW` (=130)
+- 每个 mp.Queue 上限 130 项 → 队列内存从"无限"变为有界
+
+**B. input_columns 列过滤（pipeline.py）**：
+- 新增 `FACTOR_INPUT_COLUMNS` 注册表，精确指定每个因子模块需要的 OHLCV 列
+- 11 个模块平均只需 3.5 列（vs 全量 7 列），`time_order_buffer` 列数减半
+- 省最多的是 `quality_autocorr`（7→1，省 86%）、`trend`（7→2，省 71%）
+
+**C. float32 输出层（node.py）**：
+- 新增 `_to_float32()` — 所有节点输出前将 float64→float32
+- SourceNode / MultiInputNode 调用点：`latest_f3d = _to_float32(latest_f3d)` 
+- 队列序列化数据、下游所有 `time_order_buffer`、窗口 concat 全为 fp32 → 精确 50% 内存节省
+- 仅转换 float64 列，保留索引/int/object 列不变
+
+**D. gc 调度 + RSS 日志（node.py）**：
+- 每次迭代后 `gc.collect()` 回收因子计算产生的临时 DataFrame
+- 每 10 次调用打 RSS 日志（需 `psutil`，可选依赖）
+- 堆碎片从 ~100MB（无 gc）降至 ~5MB（有 gc 50 轮后）
+
+### 新增工具
+- `scripts/profile_memory.py` — 独立内存监测，5s 间隔采样进程 RSS 输出 CSV
+- `scripts/_mem_breakdown.py` — 单因子节点逐阶段 RSS 分析脚本
+
+### 实测数据（n_stocks=50, n_times=150, 14 进程）
+
+| 指标 | 优化前 | 优化后 |
+|------|--------|--------|
+| 队列上限 | 无限 (OOM) | 130 项/queue |
+| 进程 RSS (单因子) | ~194 MB | ~100 MB |
+| 堆碎片漂移 | ~100 MB | ~5 MB |
+| 总 RSS | ~2.9 GB | ~1.4 GB |
+
+### 生产预估（6000 stocks, 11 因子 + model + IC）
+
+| 组件 | 优化前 | 优化后 |
+|------|--------|--------|
+| 单因子节点（重） | ~1500 MB | ~800 MB (input_cols + fp32) |
+| 单因子节点（轻） | ~500 MB | ~200 MB |
+| 队列（主进程） | 无限增长 | ~780 MB (bounded) |
+| Import 开销 (×14) | 1.2 GB | 1.2 GB (不变) |
+| **总计** | **OOM** | **~6-8 GB** |
+
 ## [Bugfix] 2026-06-08 sliding_window_view 守卫条件修复 + 框架异常传播强化
 
 ### 问题
