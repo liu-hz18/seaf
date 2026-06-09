@@ -1,18 +1,24 @@
 """
-模型训练与预测节点 — 支持 LGBM / Ridge 两种模型，滚动训练，预测每日截面信号。
+模型训练与预测节点 — 支持 LGBM / Ridge / MLP，滚动训练，预测每日截面信号。
+
+架构：
+- model_wrappers.py：每种模型类型的封装（build / fit / predict / CV / 特征重要性）
+- model_node.py（本文件）：编排层 — 数据预处理、标签构造、CV 调度、MLflow 记录
 
 训练逻辑：
 - 每 retrain_every 天用最近窗口内因子数据重新训练模型。
 - Label：cs_zscore(close_{t+fwd} / close_{t+1} - 1) — 未来 (fwd-1) 日截面超额收益。
-  t+1 日买入、t+fwd 日卖出，排除信号日到买入日的隔夜收益，对齐实盘交易执行。
-- 损失函数：MSE on cs_zscore labels ≈ 最大化截面 Pearson IC（数学等价）。
-- 时间穿越防护：只用 time [0, n_times-fwd-1) 训练（每个样本需要 t+1 和 t+fwd 的 close）。
-- 预测：对窗口内最后一天的因子做 predict，输出 cs_zscore 后的 pred_signal。
+- 时间穿越防护：只用 time [0, n_times-fwd-1) 训练。
 
 context 配置（从 pipeline 传入）：
-  - model_type: 'lgbm' (默认) 或 'ridge'
-  - fwd: 前向预测天数 (默认 20)
-  - retrain_every: 重训练间隔 (默认 20)
+  model_type: 'lgbm' | 'ridge' | 'mlp'
+  fwd: 前向预测天数 (默认 20)
+  retrain_every: 重训练间隔 (默认 20)
+  — MLP 专属 —
+  mlp_hidden: 隐藏层列表 (默认 [128, 64, 32])
+  mlp_dropout: dropout 比例 (默认 0.3)
+  mlp_lr: 学习率 (默认 1e-3)
+  mlp_weight_decay: Adam weight_decay (默认 0.01)
 """
 
 from __future__ import annotations
@@ -28,61 +34,12 @@ from sklearn.model_selection import TimeSeriesSplit
 
 from qpipe.frame3d import Frame3D
 from qpipe.utils import mlflow_log_metrics, trading_step
+from seafquant.model_wrappers import WRAPPER_REGISTRY
 
 
-def _build_model(model_type: str = 'lgbm') -> Any:
-    """根据类型构建模型。"""
-    if model_type == 'lgbm':
-        from lightgbm import LGBMRegressor
-
-        return LGBMRegressor(
-            n_estimators=100,
-            max_depth=6,
-            num_leaves=31,
-            reg_alpha=0.1,
-            reg_lambda=0.1,
-            random_state=42,
-            verbose=-1,
-        )
-    if model_type == 'ridge':
-        from sklearn.linear_model import Ridge
-
-        return Ridge(alpha=1.0, random_state=42)
-    raise ValueError(f'Unknown model_type: {model_type}')
-
-
-def _extract_feature_importance(
-    model: Any, model_type: str, feature_cols: list[str]
-) -> dict[str, float]:
-    """提取模型特征重要性，归一化到 [0, 1]。
-
-    - LGBM: 内置 feature_importances_（分裂增益加权）
-    - Ridge: 系数绝对值（输入经 cs_zscore 截面标准化，权重可比）
-    - 其他模型: 返回空 dict
-    """
-    if model_type == 'lgbm':
-        try:
-            importances = model.feature_importances_
-        except Exception:
-            return {}
-    elif model_type == 'ridge':
-        try:
-            importances = np.abs(model.coef_)
-        except Exception:
-            return {}
-    else:
-        return {}
-
-    if len(importances) != len(feature_cols):
-        return {}
-
-    total = float(np.sum(importances))
-    if total > 0:
-        importances = importances / total
-
-    # 按重要性降序排列
-    sorted_idx = np.argsort(importances)[::-1]
-    return {feature_cols[i]: float(importances[i]) for i in sorted_idx}
+# =============================================================================
+# 工具函数
+# =============================================================================
 
 
 def _cs_zscore(values: np.ndarray) -> np.ndarray:
@@ -94,24 +51,159 @@ def _cs_zscore(values: np.ndarray) -> np.ndarray:
     return np.zeros_like(values)
 
 
+def _empty_result(n_stocks: int, index: pd.Index) -> Frame3D:
+    """构造空预测结果（未训练或数据不足时返回）。"""
+    return Frame3D(pd.DataFrame({'pred_signal': [0.0] * n_stocks}, index=index))
+
+
+# =============================================================================
+# 数据预处理（从 Frame3D 中提取 X, y）
+# =============================================================================
+
+
+def _prepare_training_data(
+    name: str,
+    df: pd.DataFrame,
+    feature_cols: list[str],
+    times: list,
+    fwd: int,
+) -> tuple[np.ndarray, np.ndarray, list[dict]]:
+    """从 Frame3D DataFrame 中提取训练特征和标签。
+
+    Returns (X, y, cs_stats)，其中：
+    - X: (n_samples, n_features)
+    - y: 逐截面 cs_zscore(fwd_ret)
+    - cs_stats: 每个截面的统计信息
+    """
+    n_train_times = len(times) - fwd - 1
+    X_list: list[np.ndarray] = []
+    y_list: list[np.ndarray] = []
+    cs_stats: list[dict] = []
+
+    for t_idx in range(n_train_times):
+        t = times[t_idx]
+        t_next = times[t_idx + 1]
+        t_fwd = times[t_idx + fwd]
+
+        cs_mask_t = df.index.get_level_values('key') == t
+        X_cs = df.loc[cs_mask_t, feature_cols].to_numpy(dtype=float, copy=True)
+
+        cs_mask_buy = df.index.get_level_values('key') == t_next
+        cs_mask_sell = df.index.get_level_values('key') == t_fwd
+        close_buy = df.loc[cs_mask_buy, 'close'].values
+        close_sell = df.loc[cs_mask_sell, 'close'].values
+        fwd_ret = close_sell / close_buy - 1
+        label_xd = _cs_zscore(fwd_ret)
+
+        X_list.append(X_cs)
+        y_list.append(label_xd)
+        cs_stats.append({
+            't': t, 'n': len(fwd_ret),
+            'ret_mean': float(np.nanmean(fwd_ret)),
+            'ret_std': float(np.nanstd(fwd_ret)),
+        })
+
+    return np.vstack(X_list), np.hstack(y_list), cs_stats
+
+
+# =============================================================================
+# 交叉验证调度
+# =============================================================================
+
+
+def _run_cv(
+    name: str,
+    wrapper: Any,
+    X: np.ndarray,
+    y: np.ndarray,
+    n_splits: int = 3,
+) -> tuple[list[float], bool]:
+    """时间序列交叉验证，IC 导向。
+
+    Returns (cv_scores, is_mlp)。
+    """
+    is_mlp = hasattr(wrapper, 'finalize_epochs')
+    tscv = TimeSeriesSplit(n_splits=n_splits)
+    cv_scores: list[float] = []
+
+    logging.info(f'[{name}] CV (TimeSeriesSplit, {n_splits} folds, IC metric):')
+    for fold, (train_idx, val_idx) in enumerate(tscv.split(X)):
+        if len(val_idx) < 10:
+            continue
+        X_tr, X_val = X[train_idx], X[val_idx]
+        y_tr, y_val = y[train_idx], y[val_idx]
+
+        pred, _ = wrapper.cv_fit_predict(X_tr, y_tr, X_val)
+
+        try:
+            ic = spearmanr(pred, y_val).correlation
+            if not np.isnan(ic):
+                cv_scores.append(ic)
+                logging.info(
+                    f'  Fold {fold + 1}: IC={ic:.4f}, '
+                    f'n_train={len(y_tr):,}, n_val={len(y_val):,}'
+                )
+        except Exception:
+            pass
+
+    # MLP：CV 完成后从 epoch 统计中确定全量训练 epoch 数
+    if is_mlp and hasattr(wrapper, 'finalize_epochs'):
+        wrapper.finalize_epochs()
+
+    return cv_scores, is_mlp
+
+
+# =============================================================================
+# MLflow 日志记录
+# =============================================================================
+
+
+def _log_feature_importance(
+    run_id: str,
+    name: str,
+    fi: dict[str, float],
+    model_type: str,
+) -> None:
+    """记录特征重要性到日志和 MLflow artifact。"""
+    if not fi:
+        return
+    top_n = min(10, len(fi))
+    top_items = list(fi.items())[:top_n]
+    logging.info(
+        f'[{name}] Feature importance top-{top_n}: '
+        + ', '.join(f'{k}={v:.4f}' for k, v in top_items)
+    )
+    if run_id:
+        try:
+            import mlflow
+            mlflow.set_tracking_uri('sqlite:///mlruns.db')
+            mlflow.log_dict(
+                fi,
+                f'feature_importance_{model_type}.json',
+                run_id=run_id,
+            )
+        except Exception:
+            pass
+
+
+# =============================================================================
+# 主入口：model_train_predict
+# =============================================================================
+
+
 def model_train_predict(name: str, f3d: Frame3D, context: Any) -> Frame3D:
-    """模型训练与预测主函数。
+    """模型训练与预测主函数 — 编排层。
 
     f3d 包含 window 天的数据（因子列 + close 列）。
     Label = cs_zscore(close[t+fwd] / close[t+1] - 1) — 截面超额收益。
     """
+    # —— context 初始化 ——
     if context is None:
         context = {}
-
-    # ——— 运行时状态（由节点自身维护，无需 pipeline 传入）———
-    context.setdefault('trained_model', None)
+    context.setdefault('trained_wrapper', None)
     context.setdefault('is_trained', False)
     context.setdefault('days_since_train', 0)
     context.setdefault('feature_cols', None)
-
-    # ——— 可配置参数（pipeline 传入或在无 context 时使用以下默认值）———
-    # 注意：MultiInputNode 通过 Flow.add_node(context=...) 将 pipeline 的
-    # model_context 合并到此处，setdefault 确保未传入时也有合理的 fallback。
     context.setdefault('model_type', 'lgbm')
     context.setdefault('fwd', 20)
     context.setdefault('model_window', 200)
@@ -119,36 +211,33 @@ def model_train_predict(name: str, f3d: Frame3D, context: Any) -> Frame3D:
 
     fwd = context['fwd']
     df = f3d.df.copy()
+    model_type: str = context['model_type']
 
-    # ---- 识别因子列 ----
+    # —— 因子列识别 ——
     raw_cols = {'open', 'high', 'low', 'close', 'turnover', 'volume', 'market_cap'}
     if context['feature_cols'] is None:
         context['feature_cols'] = [
             c for c in df.columns if c not in raw_cols and not c.startswith('_')
         ]
-    feature_cols = context['feature_cols']
+    feature_cols: list[str] = context['feature_cols']
 
     if 'close' not in df.columns:
-        raise ValueError(f'[{name}] Model node requires "close" column in input data')
+        raise ValueError(f'[{name}] Model node requires "close" column')
 
-    mlflow_run_id = context.get('mlflow_run_id', '')
-    start_date = context.get('start_date', '')
+    mlflow_run_id: str = context.get('mlflow_run_id', '')
+    start_date: str = context.get('start_date', '')
 
-    # ---- 提取时间维度 ----
+    # —— 时间维度 ——
     times = sorted(df.index.get_level_values('key').unique())
     n_times = len(times)
     n_stocks = df.index.get_level_values('name').nunique()
+    latest_t = times[-1]
 
-    # 需要 fwd+1 天：t 时刻信号 + t+1 买入 + t+fwd 卖出
-    min_required = fwd + 2
-    if n_times < min_required:
-        logging.warning(f'[{name}] Insufficient data: {n_times} < {min_required} (fwd={fwd}+2)')
-        empty_result = Frame3D(
-            pd.DataFrame({'pred_signal': [0.0] * n_stocks}, index=df.loc[times[-1]].index)
-        )
-        return empty_result
+    if n_times < fwd + 2:
+        logging.warning(f'[{name}] Insufficient data: {n_times} < {fwd + 2}')
+        return _empty_result(n_stocks, df.loc[latest_t].index)
 
-    # ---- 检查是否需要重训练 ----
+    # —— 训练触发判断 ——
     context['days_since_train'] += 1
     should_train = (not context['is_trained']) or (
         context['days_since_train'] >= context['retrain_every']
@@ -158,93 +247,28 @@ def model_train_predict(name: str, f3d: Frame3D, context: Any) -> Frame3D:
     # 训练阶段
     # ========================================================================
     if should_train:
-        model_type = context.get('model_type', 'lgbm')
         logging.info(
             f'[{name}] ===== RETRAIN START ===== '
-            f'model={model_type}, fwd={fwd}, retrain_every={context["retrain_every"]}, '
+            f'model={model_type}, fwd={fwd}, '
+            f'retrain_every={context["retrain_every"]}, '
             f'days_since_train={context["days_since_train"]}'
         )
-        logging.info(
-            f'[{name}]   feature window: {n_times}d x {n_stocks}s x {len(feature_cols)}cols, '
-            f'time_range=[{times[0]} .. {times[-1]}]'
-        )
 
-        # 训练样本范围：[0, n_times - fwd - 1)，每个样本需要 t+1 和 t+fwd
+        # 1. 准备训练数据
         n_train_times = n_times - fwd - 1
         if n_train_times < 10:
-            logging.warning(
-                f'[{name}] Too few training time points: {n_train_times} '
-                f'(n_times={n_times}, fwd={fwd})'
-            )
+            logging.warning(f'[{name}] Too few training times: {n_train_times}')
             context['days_since_train'] = 0
-            empty_result = Frame3D(
-                pd.DataFrame({'pred_signal': [0.0] * n_stocks}, index=df.loc[times[-1]].index)
-            )
-            return empty_result
+            return _empty_result(n_stocks, df.loc[latest_t].index)
 
-        # label = close[t+fwd] / close[t+1] - 1，每个样本的买入/卖出各差 1 天
+        X, y, cs_stats = _prepare_training_data(name, df, feature_cols, times, fwd)
+
         logging.info(
-            f'[{name}]   training X: {n_train_times} cross-sections '
-            f'[{times[0]} .. {times[n_train_times - 1]}]'
-        )
-        logging.info(
-            f'[{name}]   first label: signal@{times[0]} -> return[{times[1]}->{times[fwd]}]'
-        )
-        logging.info(
-            f'[{name}]   last  label: signal@{times[n_train_times - 1]} '
-            f'-> return[{times[n_train_times]}->{times[n_train_times - 1 + fwd]}]'
+            f'[{name}] Training set: {len(cs_stats)} cs × ~{n_stocks}s, '
+            f'{len(y)} samples, {X.shape[1]} features'
         )
 
-        X_list: list[np.ndarray] = []
-        y_list: list[np.ndarray] = []
-        cs_stats: list[dict] = []
-
-        for t_idx in range(n_train_times):
-            t = times[t_idx]
-            t_next = times[t_idx + 1]  # t+1（买入日）
-            t_fwd = times[t_idx + fwd]  # t+fwd（卖出日）
-
-            # 特征：t 时刻截面因子
-            cs_mask_t = df.index.get_level_values('key') == t
-            # to_numpy(copy=True) 深拷贝剥离 pandas 列名元数据，避免 LGBM feature_names 警告
-            X_cs = df.loc[cs_mask_t, feature_cols].to_numpy(dtype=float, copy=True)
-
-            # Label：t+1 -> t+fwd 的截面超额收益
-            cs_mask_buy = df.index.get_level_values('key') == t_next
-            cs_mask_sell = df.index.get_level_values('key') == t_fwd
-            close_buy = df.loc[cs_mask_buy, 'close'].values
-            close_sell = df.loc[cs_mask_sell, 'close'].values
-            fwd_ret = close_sell / close_buy - 1
-
-            # 逐截面标准化 label（每个时间截面独立，无时间穿越）
-            label_xd = _cs_zscore(fwd_ret)
-
-            X_list.append(X_cs)
-            y_list.append(label_xd)
-            cs_stats.append(
-                {
-                    't': t,
-                    'n': len(fwd_ret),
-                    'ret_mean': float(np.nanmean(fwd_ret)),
-                    'ret_std': float(np.nanstd(fwd_ret)),
-                }
-            )
-
-        X = np.vstack(X_list)
-        y = np.hstack(y_list)
-
-        # ---- 训练数据统计 ----
-        logging.info(
-            f'[{name}] Training set: {len(cs_stats)} cross-sections, '
-            f'{len(y)} total samples, {X.shape[1]} features, '
-            f'avg stocks/cs={np.mean([cs["n"] for cs in cs_stats]):.0f}'
-        )
-        logging.info(
-            f'[{name}] Label stats: mean={np.mean(y):.4f}, std={np.std(y):.4f}, '
-            f'min={np.min(y):.4f}, max={np.max(y):.4f}, '
-            f'avg cs_ret_mean={np.mean([cs["ret_mean"] for cs in cs_stats]):.6f}, '
-            f'avg cs_ret_std={np.mean([cs["ret_std"] for cs in cs_stats]):.6f}'
-        )
+        # 2. Label 统计 → MLflow
         mlflow_log_metrics(mlflow_run_id, name, {
             'label_mean': float(np.mean(y)),
             'label_std': float(np.std(y)),
@@ -252,85 +276,43 @@ def model_train_predict(name: str, f3d: Frame3D, context: Any) -> Frame3D:
             'label_max': float(np.max(y)),
         }, step=trading_step(start_date, times[n_train_times - 1]))
 
-        # ---- 移除 NaN ----
+        # 3. NaN 处理
         valid = ~np.isnan(y) & ~np.any(np.isnan(X), axis=1)
         nan_count = sum(~valid)
-        X, y = X[valid], y[valid]
         nan_total = nan_count + len(y)
         nan_ratio = nan_count / nan_total if nan_total > 0 else 0.0
-        logging.info(f'[{name}] NaN removal: {nan_count} removed, {len(y)} samples remain')
+        X, y = X[valid], y[valid]
+        logging.info(f'[{name}] NaN removal: {nan_count} removed, {len(y)} remain')
 
         if len(y) < 50:
-            logging.warning(f'[{name}] Insufficient training samples after NaN removal: {len(y)}')
+            logging.warning(f'[{name}] <50 samples after NaN removal')
             context['days_since_train'] = 0
-            empty_result = Frame3D(
-                pd.DataFrame({'pred_signal': [0.0] * n_stocks}, index=df.loc[times[-1]].index)
-            )
-            return empty_result
+            return _empty_result(n_stocks, df.loc[latest_t].index)
 
-        # ---- 交叉验证（IC 导向） ----
-        model = _build_model(model_type)
-        cv_scores: list[float] = []
-        tscv = TimeSeriesSplit(n_splits=3)
+        # 4. 构建 wrapper
+        wrapper_cls = WRAPPER_REGISTRY[model_type]
+        wrapper = wrapper_cls(context)
 
-        logging.info(f'[{name}] CV (TimeSeriesSplit, 3 folds, IC metric):')
-        for fold, (train_idx, val_idx) in enumerate(tscv.split(X)):
-            if len(val_idx) < 10:
-                continue
-            X_tr, X_val = X[train_idx], X[val_idx]
-            y_tr, y_val = y[train_idx], y[val_idx]
-            model.fit(X_tr, y_tr)
-            # sklearn/LGBM 可能在 fit 时从 numpy 元数据推断 feature_names_in_，
-            # 导致后续 predict(numpy) 产生无意义警告。此处局部 suppress。
-            with warnings.catch_warnings():
-                warnings.filterwarnings('ignore', message='X does not have valid feature names')
-                pred = model.predict(X_val)
-            try:
-                ic = spearmanr(pred, y_val).correlation
-                if not np.isnan(ic):
-                    cv_scores.append(ic)
-                    logging.info(
-                        f'  Fold {fold + 1}: IC={ic:.4f}, '
-                        f'n_train={len(y_tr):,}, n_val={len(y_val):,}'
-                    )
-            except Exception:
-                pass
+        # 5. 交叉验证
+        cv_scores, _ = _run_cv(name, wrapper, X, y)
 
-        # ---- 全量训练 ----
-        model = _build_model(model_type)
-        model.fit(X, y)
-        # 训练集 MSE
-        with warnings.catch_warnings():
-            warnings.filterwarnings('ignore', message='X does not have valid feature names')
-            train_pred = model.predict(X)
-        train_mse = float(np.mean((train_pred - y) ** 2))
+        # 6. 全量训练
+        train_metrics = wrapper.fit(X, y)
 
-        # ---- 特征重要性（所有模型类型） ----
-        fi = _extract_feature_importance(model, model_type, feature_cols)
-        if fi:
-            top_n = min(10, len(fi))
-            top_items = list(fi.items())[:top_n]
-            logging.info(
-                f'[{name}] Feature importance top-{top_n}: '
-                + ', '.join(f'{k}={v:.4f}' for k, v in top_items)
-            )
-            # 保存到 MLflow artifact（JSON 格式）
-            if mlflow_run_id:
-                try:
-                    import mlflow
-                    mlflow.set_tracking_uri('sqlite:///mlruns.db')
-                    mlflow.log_dict(
-                        fi,
-                        f'feature_importance_{model_type}.json',
-                        run_id=mlflow_run_id,
-                    )
-                except Exception:
-                    pass
+        # 7. 训练集 MSE
+        pred_train = wrapper.predict(X)
+        train_mse = float(np.mean((pred_train - y) ** 2))
 
-        context['trained_model'] = model
+        # 8. 特征重要性
+        fi = wrapper.get_feature_importance(feature_cols)
+        _log_feature_importance(mlflow_run_id, name, fi, model_type)
+
+        # 9. 保存状态
+        context['trained_wrapper'] = wrapper
         context['is_trained'] = True
         context['days_since_train'] = 0
 
+        # 10. 训练指标 → MLflow
         mlflow_log_metrics(mlflow_run_id, name, {
             'train_samples': float(len(y)),
             'train_features': float(len(feature_cols)),
@@ -343,36 +325,26 @@ def model_train_predict(name: str, f3d: Frame3D, context: Any) -> Frame3D:
         cv_std = np.std(cv_scores) if cv_scores else 0.0
         logging.info(
             f'[{name}] ===== RETRAIN DONE ===== '
-            f'samples={len(y):,}, features={len(feature_cols)}, '
-            f'cv_ic_mean={cv_mean:.4f}±{cv_std:.4f}, '
-            f'n_folds={len(cv_scores)}, '
-            f'predict_day={times[-1]}'
+            f'samples={len(y):,}, feats={len(feature_cols)}, '
+            f'cv_ic={cv_mean:.4f}±{cv_std:.4f}, n_folds={len(cv_scores)}, '
+            f'predict_day={latest_t}'
         )
 
     # ========================================================================
     # 预测阶段
     # ========================================================================
-    model = context['trained_model']
-    latest_t = times[-1]
+    wrapper = context['trained_wrapper']
     cs_mask_latest = df.index.get_level_values('key') == latest_t
     X_latest = df.loc[cs_mask_latest, feature_cols].to_numpy(dtype=float, copy=True)
 
-    # 检查特征缺失
     nan_rows = np.any(np.isnan(X_latest), axis=1)
     if nan_rows.any():
         logging.warning(
-            f'[{name}] Prediction: {nan_rows.sum()}/{len(X_latest)} stocks have NaN features, '
-            f'filling with 0'
+            f'[{name}] {nan_rows.sum()}/{len(X_latest)} stocks NaN features, filled=0'
         )
         X_latest = np.nan_to_num(X_latest, nan=0.0)
 
-    # suppress sklearn feature_names 警告：训练和预测均使用纯 numpy，
-    # 但 LGBM/sklearn 可能在 fit 时从 numpy 内部元数据推断 feature_names_in_。
-    with warnings.catch_warnings():
-        warnings.filterwarnings('ignore', message='X does not have valid feature names')
-        pred_raw = model.predict(X_latest)
-
-    # 截面标准化预测信号（保持与训练 label 一致的处理方式）
+    pred_raw = wrapper.predict(X_latest)
     pred_signal = _cs_zscore(pred_raw)
 
     mlflow_log_metrics(mlflow_run_id, name, {
@@ -382,8 +354,7 @@ def model_train_predict(name: str, f3d: Frame3D, context: Any) -> Frame3D:
     }, step=trading_step(start_date, latest_t))
 
     logging.info(
-        f'[{name}] Predict signal_day={latest_t} '
-        f'(target return: {latest_t}+1->{latest_t}+{fwd}, fwd={fwd}): '
+        f'[{name}] Predict day={latest_t} (fwd={fwd}): '
         f'n={len(pred_signal)}, '
         f'mean={float(np.mean(pred_signal)):.4f}, '
         f'std={float(np.std(pred_signal)):.4f}, '

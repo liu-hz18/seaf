@@ -60,7 +60,7 @@ def main() -> None:
     parser.add_argument('--n-stocks', type=int, default=500)
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--start-date', type=str, default='2020-01-02')
-    parser.add_argument('--model-type', type=str, default='lgbm', choices=['lgbm', 'ridge'])
+    parser.add_argument('--model-type', type=str, default='lgbm', choices=['lgbm', 'ridge', 'mlp'])
     parser.add_argument(
         '--fwd',
         type=int,
