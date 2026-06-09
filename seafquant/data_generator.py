@@ -1,5 +1,5 @@
 """
-合成数据生成器 — 生成具有可预测结构的模拟量价数据。
+合成数据生成器 — 生成具有可预测结构的模拟量价数据（含 IPO/退市机制）。
 
 数据生成逻辑：
 1. 每只股票有独立的 log_price 随机游走路径，波动率异质。
@@ -8,6 +8,9 @@
 4. OHLC 从 log_price 推导；成交量与日内波动正相关；市值服从慢变对数正态分布。
 5. 所有随机数使用 np.random.default_rng(seed)，确保可复现。
 6. 若提供 start_date，time index 使用真实交易日（跳过周末）；否则使用整数索引。
+7. IPO/退市：股价首次低于 0.005 的股票在次日退市，同时激活一只新股（随机初始价格）。
+
+V3: 动态股票池模式 — 预生成 pool_size=n_stocks*2 的参数，逐日管理活跃股票集合。
 """
 
 from __future__ import annotations
@@ -23,6 +26,11 @@ from qpipe.frame3d import Frame3D
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
+
+# 退市阈值：股价（close）低于此值即触发退市
+DELIST_PRICE_THRESHOLD: float = 0.005
+# 股票池倍数：预生成的股票总数为 n_stocks * POOL_MULTIPLIER
+POOL_MULTIPLIER: int = 2
 
 
 def _generate_hidden_factors(n_times: int, rng: np.random.Generator) -> np.ndarray:
@@ -41,43 +49,9 @@ def _generate_hidden_factors(n_times: int, rng: np.random.Generator) -> np.ndarr
 
 def _generate_stock_params(n_stocks: int, rng: np.random.Generator) -> dict[str, np.ndarray]:
     """生成每只股票的参数：波动率 σ 和隐藏因子权重 w_i。"""
-    sigma = rng.lognormal(mean=-3.5, sigma=1.0, size=n_stocks)  # mean ≈ 0.05/day, 截面异质
-    weights = rng.normal(0, 1, (n_stocks, 5))  # (n_stocks, 5)
+    sigma = rng.lognormal(mean=-3.5, sigma=1.0, size=n_stocks)
+    weights = rng.normal(0, 1, (n_stocks, 5))
     return {'sigma': sigma, 'weights': weights}
-
-
-def _generate_ohlc(log_prices: np.ndarray, rng: np.random.Generator) -> dict:
-    """从 log_price 推导 OHLC 价格。"""
-    n_times, n_stocks = log_prices.shape
-    close = np.exp(log_prices)
-    open_price = np.zeros_like(close)
-    high = np.zeros_like(close)
-    low = np.zeros_like(close)
-
-    eps_open_std = 0.002
-    eps_range_std = 0.003
-
-    for t in range(n_times):
-        if t == 0:
-            open_price[t] = close[t] * np.exp(rng.normal(0, eps_open_std, n_stocks))
-        else:
-            open_price[t] = close[t - 1] * np.exp(rng.normal(0, eps_open_std, n_stocks))
-        eps_high = np.abs(rng.normal(0, eps_range_std, n_stocks))
-        eps_low = np.abs(rng.normal(0, eps_range_std, n_stocks))
-        high[t] = np.maximum(open_price[t], close[t]) * (1 + eps_high)
-        low[t] = np.minimum(open_price[t], close[t]) * (1 - eps_low)
-
-    return {'open': open_price, 'high': high, 'low': low, 'close': close}
-
-
-def _generate_market_cap(n_times: int, n_stocks: int, rng: np.random.Generator) -> np.ndarray:
-    """慢变随机游走的市值序列，截面服从对数正态分布。"""
-    base = rng.lognormal(mean=np.log(100), sigma=1.2, size=n_stocks)
-    mcap = np.zeros((n_times, n_stocks))
-    mcap[0] = base
-    for t in range(1, n_times):
-        mcap[t] = mcap[t - 1] * np.exp(rng.normal(0, 0.001, n_stocks))
-    return mcap
 
 
 def _make_time_keys(n_times: int, start_date: str | None) -> list:
@@ -88,7 +62,6 @@ def _make_time_keys(n_times: int, start_date: str | None) -> list:
     """
     if start_date is None:
         return list(range(n_times))
-    # pd.bdate_range: 跳过周末（周六/周日）的交易日序列
     dates = pd.bdate_range(start=start_date, periods=n_times)
     return list(dates)
 
@@ -104,69 +77,167 @@ def generate_synthetic_data(
 
     noise_ratio=0 时完全可预测，noise_ratio=1 时信号淹没在噪声中。
     若提供 start_date（YYYY-MM-DD），time index 使用真实交易日。
+    支持 IPO/退市：股价 < DELIST_PRICE_THRESHOLD 次日退市，同时上市新股。
     """
     rng = np.random.default_rng(seed)
-    stock_names = [f'S{str(i).zfill(4)}' for i in range(n_stocks)]
 
-    # 时间索引
+    pool_size = n_stocks * POOL_MULTIPLIER
     time_keys = _make_time_keys(n_times, start_date)
 
-    # 1. 隐藏因子（+20 用于前瞻收益）
+    # ---- 预生成隐藏因子 ----（+20 用于前瞻收益）
     hidden_factors = _generate_hidden_factors(n_times + 20, rng)
     hidden_factors_trimmed = hidden_factors[:n_times, :]
 
-    # 2. 股票参数
-    params = _generate_stock_params(n_stocks, rng)
-    sigma = params['sigma']
-    weights = params['weights']
+    # ---- 预生成 pool_size 只股票的参数 ----
+    params = _generate_stock_params(pool_size, rng)
+    sigma = params['sigma']        # (pool_size,)
+    weights = params['weights']    # (pool_size, 5)
 
-    # 3. log_price 路径
-    log_prices = np.zeros((n_times, n_stocks))
-    log_prices[0] = rng.normal(0, 0.8, n_stocks)
+    # ---- 预计算信号（所有股票的面板前瞻收益）----
+    signal = hidden_factors_trimmed @ weights.T          # (n_times, pool_size)
+    noise_raw = rng.normal(0, 1, (n_times, pool_size))
+    true_fwd_ret = signal + noise_ratio * noise_raw      # (n_times, pool_size)
 
-    signal = hidden_factors_trimmed @ weights.T
-    noise = rng.normal(0, 1, (n_times, n_stocks))
-    true_fwd_ret = signal + noise_ratio * noise
+    # ---- 每个股票的运行时状态 ----
+    # stock_state[si]: dict with keys:
+    #   log_price, mcap, active, active_since, name
+    stock_state: list[dict] = []
 
-    for t in range(1, n_times):
-        drift = 0.0002
-        log_prices[t] = (
-            log_prices[t - 1] + drift + sigma * (true_fwd_ret[t - 1] + rng.normal(0, 0.5, n_stocks))
-        )
+    def _init_stock(si: int, t: int, name_prefix: str) -> dict:
+        """创建并返回一个股票的初始状态。"""
+        return {
+            'log_price': rng.normal(0, 0.8),
+            'mcap': rng.lognormal(np.log(100), 1.2),
+            'active': True,
+            'active_since': t,
+            'name': name_prefix + str(si).zfill(4),
+        }
 
-    # 4. OHLC
-    ohlc = _generate_ohlc(log_prices, rng)
+    # 初始化前 n_stocks 只股票
+    for si in range(n_stocks):
+        stock_state.append(_init_stock(si, 0, 'S'))
 
-    # 5. market_cap
-    mcap = _generate_market_cap(n_times, n_stocks, rng)
+    # 预初始化剩余 reserve 股票（暂未激活）
+    for si in range(n_stocks, pool_size):
+        stock_state.append({
+            'log_price': 0.0,
+            'mcap': 0.0,
+            'active': False,
+            'active_since': -1,
+            'name': 'R' + str(si - n_stocks).zfill(4),
+        })
 
-    # 6. volume 和 turnover
-    intraday_range = np.abs(ohlc['close'] - ohlc['open'])
-    volume = intraday_range * mcap * 0.01 * np.exp(rng.normal(0, 0.5, (n_times, n_stocks)))
-    # 硬地板会导致多只股票 turnover 完全相等（流动性因子截面退化）。
-    # 加每股票 1‱ 噪声打破完全相等，同时保持最小成交量的约束。
-    floor = mcap * 0.0001 * np.exp(rng.normal(0, 0.0001, n_stocks))
-    volume = np.maximum(volume, floor)
-    turnover = volume / mcap
+    # ---- 退市调度表：{stock_idx: delist_at_time} ----
+    delist_schedule: dict[int, int] = {}
+    next_reserve: int = n_stocks     # 下一个待激活的 reserve 索引
 
-    # 7. 逐日生成 Frame3D
+    # ---- 前一日 log_price 记录（用于生成当天 open price）----
+    prev_log_prices: dict[int, float | None] = {
+        si: None for si in range(n_stocks)  # 初始日无前日价格
+    }
+
     for t in range(n_times):
         tk = time_keys[t]
-        arrays = [[tk] * n_stocks, stock_names]
+
+        # === 处理当日到期的退市 ===
+        to_delist = [si for si, dt in delist_schedule.items() if dt == t]
+        for si in to_delist:
+            stock_state[si]['active'] = False
+            del delist_schedule[si]
+            # 激活下一只新股
+            if next_reserve < pool_size:
+                new_si = next_reserve
+                next_reserve += 1
+                # 用原 reserve 的参数重新初始化
+                stock_state[new_si] = _init_stock(new_si, t, 'N')
+                prev_log_prices[new_si] = None   # 新股无前日价格
+                logging.info(
+                    f'[DataGen][t={t}] Stock {stock_state[si]["name"]} delisted, '
+                    f'new stock {stock_state[new_si]["name"]} listed.'
+                )
+            else:
+                logging.warning(
+                    f'[DataGen][t={t}] Reserve pool exhausted. '
+                    f'Stock {stock_state[si]["name"]} delisted, no replacement.'
+                )
+
+        # === 收集当日活跃股票 ===
+        active_indices = [si for si, st in enumerate(stock_state) if st['active']]
+        n_active = len(active_indices)
+        active_names = [stock_state[si]['name'] for si in active_indices]
+
+        # === 当日 log_price ===
+        log_prices_t = np.array([stock_state[si]['log_price'] for si in active_indices])
+        close_t = np.exp(log_prices_t)
+
+        # === 生成当日 OHLC ===
+        eps_open_std = 0.002
+        eps_range_std = 0.003
+        open_t = np.zeros(n_active)
+        for i, si in enumerate(active_indices):
+            prev_lp = prev_log_prices.get(si)
+            if prev_lp is not None:
+                open_t[i] = np.exp(prev_lp) * np.exp(rng.normal(0, eps_open_std))
+            else:
+                # 上市首日，open 在 close 附近随机
+                open_t[i] = close_t[i] * np.exp(rng.normal(0, eps_open_std))
+        eps_high = np.abs(rng.normal(0, eps_range_std, n_active))
+        eps_low = np.abs(rng.normal(0, eps_range_std, n_active))
+        high_t = np.maximum(open_t, close_t) * (1 + eps_high)
+        low_t = np.minimum(open_t, close_t) * (1 - eps_low)
+
+        # === 当日市值、成交量、换手率 ===
+        mcap_t = np.array([stock_state[si]['mcap'] for si in active_indices])
+        intraday_range = np.abs(close_t - open_t)
+        volume_t = intraday_range * mcap_t * 0.01 * np.exp(rng.normal(0, 0.5, n_active))
+        # 体积地板（含每股票微小噪声，避免截面退化）
+        floor_noise = np.exp(rng.normal(0, 0.0001, n_active))
+        floor = mcap_t * 0.0001 * floor_noise
+        volume_t = np.maximum(volume_t, floor)
+        turnover_t = volume_t / mcap_t
+
+        # === 构建当日 Frame3D ===
+        arrays = [[tk] * n_active, active_names]
         mi = pd.MultiIndex.from_arrays(arrays, names=['key', 'name'])
         df = pd.DataFrame(
             {
-                'open': ohlc['open'][t],
-                'high': ohlc['high'][t],
-                'low': ohlc['low'][t],
-                'close': ohlc['close'][t],
-                'turnover': turnover[t],
-                'volume': volume[t],
-                'market_cap': mcap[t],
+                'open': open_t,
+                'high': high_t,
+                'low': low_t,
+                'close': close_t,
+                'turnover': turnover_t,
+                'volume': volume_t,
+                'market_cap': mcap_t,
             },
             index=mi,
         )
         if t % 100 == 0:
-            logging.info(f'[DataGen] Generated day {t}/{n_times}, noise_ratio={noise_ratio}')
+            logging.info(
+                f'[DataGen] Day {t}/{n_times}, noise_ratio={noise_ratio}, '
+                f'active={n_active}, delisted={len(delist_schedule)}'
+            )
         yield Frame3D(df)
+
+        # === 检查退市条件：close < DELIST_PRICE_THRESHOLD ===
+        for i, si in enumerate(active_indices):
+            if close_t[i] < DELIST_PRICE_THRESHOLD and si not in delist_schedule:
+                delist_schedule[si] = t + 1  # 次日退市
+
+        # === 更新状态供下一日使用 ===
+        # 记录当前 log_price 为下日 open 计算的前日价
+        for i, si in enumerate(active_indices):
+            prev_log_prices[si] = log_prices_t[i]
+            # 市值慢变漂移
+            stock_state[si]['mcap'] = mcap_t[i] * np.exp(rng.normal(0, 0.001))
+
+        # 计算下一日 log_price（仅活跃股票，当前日 t < n_times-1）
+        if t < n_times - 1:
+            drift = 0.0002
+            innovation = rng.normal(0, 0.5, n_active)
+            for i, si in enumerate(active_indices):
+                stock_state[si]['log_price'] = (
+                    log_prices_t[i] + drift
+                    + sigma[si] * (true_fwd_ret[t, si] + innovation[i])
+                )
+
         time.sleep(0.2)

@@ -36,14 +36,19 @@ class TestCrossSectionCrossVal:
         _compare_factor_output(actual, expected)
 
     def test_rank_delta(self, f3d):
-        """factor_cs_rank_delta_{p}d = cs_rank(close[t]) - cs_rank(close[t-p])。"""
+        """factor_cs_rank_delta_{p}d = cs_rank(close[t]) - shift(cs_rank(close[t]), p)。
+
+        关键：先做截面 rank，再做时序 shift。不能先 shift 后 rank，
+        否则在 IPO/退市场景下股票集合不一致会导致结果不同。
+        """
         from seafquant.factor.cross_section import compute_cross_section_factors
         actual = compute_cross_section_factors('test', f3d, None)
         df = f3d.df.copy()
-        rk_now = df.groupby('key')['close'].transform(_cs_rank_pct)
+        # 先时序 shift：cs_rank(close)，每股票内做时序 rank 偏移
+        df['_rk'] = df.groupby('key')['close'].transform(_cs_rank_pct)
+        rk_now = df['_rk']
         for p in [5, 20, 60]:
-            shifted = df.groupby('name')['close'].shift(p)
-            rk_prev = df.assign(_sc=shifted).groupby('key')['_sc'].transform(_cs_rank_pct)
+            rk_prev = df.groupby('name')['_rk'].shift(p)
             _compare_factor_output(
                 actual, {f'factor_cs_rank_delta_{p}d': (rk_now - rk_prev).values},
             )

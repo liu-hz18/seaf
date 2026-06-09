@@ -229,8 +229,33 @@ class MultiInputNode(mp.Process):
                     window_frames = list(time_order_buffer)[:window_length]
 
                     start_time = time.time()
-                    window_df = pd.concat([f[-1].df for f in window_frames], axis=0)
+                    # 拼接窗口内所有时间片的快照
+                    raw_parts = [f[-1].df for f in window_frames]
+                    window_df = pd.concat(raw_parts, axis=0)
                     window_df = window_df.sort_index(level=0)
+
+                    # === IPO/退市对齐：以最新时间片的股票集合为准 ===
+                    # 最新时间片的股票集合是"当前市场"的权威集合。
+                    # - 退市股票：最新片中不存在，前序时间片中应删除。
+                    # - 新上市股票：最新片中存在但前序片中不存在，前序片补 NaN。
+                    #   用 NaN 而非 0.0，避免 np.log(0)/0/0 等下游运算产生
+                    #   "divide by zero in log" / "All-NaN slice" 警告。
+                    latest_t = window_df.index.get_level_values(0).max()
+                    latest_stocks = window_df.loc[latest_t].index.tolist()
+                    cols = window_df.columns.tolist()
+                    aligned_parts: list[pd.DataFrame] = []
+                    for t in sorted(window_df.index.get_level_values(0).unique()):
+                        slice_df = window_df.loc[t].reindex(latest_stocks, fill_value=float('nan'))
+                        mi = pd.MultiIndex.from_arrays(
+                            [[t] * len(latest_stocks), latest_stocks],
+                            names=window_df.index.names,
+                        )
+                        slice_df.index = mi
+                        # reindex 可能改变列顺序，恢复原始列序
+                        aligned_parts.append(slice_df[cols])
+                    window_df = pd.concat(aligned_parts, axis=0).sort_index(level=0)
+                    # === IPO/退市对齐结束 ===
+
                     run_input_f3d = Frame3D(window_df)
                     output_f3d = self._call_func(self.name, run_input_f3d, current_context)
                     if self.output_columns:

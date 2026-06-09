@@ -128,7 +128,7 @@ def compute_counting_factors(name: str, f3d: Frame3D, context) -> Frame3D:
     def _new_high_count(series, window):
         arr = series.values.astype(float)
         n = len(arr)
-        if n < max(2, window // 2):
+        if n < window:
             return np.full(n, np.nan)
         clean = np.where(np.isnan(arr), -np.inf, arr)
         cmax = np.maximum.accumulate(clean)

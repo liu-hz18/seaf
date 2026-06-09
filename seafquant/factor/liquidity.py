@@ -52,7 +52,8 @@ def compute_liquidity_factors(name: str, f3d: Frame3D, context) -> Frame3D:
     _roll('_amihud', 'factor_liq_amihud_20d', 20, 'mean')
 
     dollar_vol = close * volume
-    df['factor_liq_dollar_vol'] = np.log(dollar_vol)
+    with np.errstate(divide='ignore'):
+        df['factor_liq_dollar_vol'] = np.where(dollar_vol > 0, np.log(dollar_vol), np.nan)
     df['_dv'] = dollar_vol
     df['factor_liq_dollar_vol_chg'] = df.groupby('name')['_dv'].pct_change(20)
     df['_to_vol'] = turnover
@@ -60,7 +61,8 @@ def compute_liquidity_factors(name: str, f3d: Frame3D, context) -> Frame3D:
     df['factor_liq_composite'] = -df['factor_liq_amihud_20d'] - df['factor_liq_turnover_vol_20d']
 
     # ===== 规模：16 cols (prefix factor_size_) =====
-    df['factor_size_log_mcap'] = -np.log(mcap)
+    with np.errstate(divide='ignore'):
+        df['factor_size_log_mcap'] = -np.where(mcap > 0, np.log(mcap), np.nan)
     df['factor_size_cs_rank'] = f3d.cs_rank('market_cap').df['market_cap']
 
     for p in [5, 20, 60]:
@@ -75,9 +77,12 @@ def compute_liquidity_factors(name: str, f3d: Frame3D, context) -> Frame3D:
 
     df['factor_size_mcap_sqrt'] = -np.sqrt(mcap)
     df['factor_size_mcap_cube_root'] = -np.cbrt(mcap)
-    df['factor_size_price'] = np.log(mcap / close)
+    ratio = mcap / close
+    with np.errstate(divide='ignore'):
+        df['factor_size_price'] = np.where(ratio > 0, np.log(ratio), np.nan)
     df['factor_size_quintile'] = f3d.cs_rank('market_cap').df['market_cap']
-    df['factor_size_small_and_rising'] = -np.log(mcap) * df['factor_size_mcap_mom_20d']
+    with np.errstate(divide='ignore'):
+        df['factor_size_small_and_rising'] = -np.where(mcap > 0, np.log(mcap), np.nan) * df['factor_size_mcap_mom_20d']
 
     df['_ret20'] = f3d.ts_pct_change('close', 20).df['close']
     df['_mcap_raw'] = mcap

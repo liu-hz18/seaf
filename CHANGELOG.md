@@ -520,6 +520,144 @@ label_xd = cs_zscore(fwd_ret)                         # 逐截面独立标准化
 - `test/test_node.py` — 适配新 context 语义
 - `TODO.md` — 记录 mlflow 集成等后续计划
 
+## [Infra] 2026-06-08 MLflow 全流程集成
+
+### 动机
+之前 pipeline 无实验追踪能力，无法系统化比较不同参数配置下的 IC/ICIR 等指标。
+
+### 变更内容
+
+**MLflow 基础设施**：
+- `qpipe/utils.py`（新建）：子进程安全的 MLflow 工具函数
+  - `mlflow_init()` / `mlflow_end()` — 实验生命周期管理
+  - `mlflow_log_metric()` / `mlflow_log_metrics()` — 单值/批量指标记录
+  - 实验名 = 启动时间戳（`2026-06-08_23-43-15` 格式）
+  - SQLite 后端：`sqlite:///mlruns.db`
+- `pipeline.py`：`--no-mlflow` 参数、git hash 自动记录为 param
+
+**Model 节点指标**：
+- 训练阶段：`n_samples`、`n_features`、`label_mean/std/min/max`
+- 预测阶段：`signal_mean/std/min/max`、`n_predictions`
+- 每次重训练后写入 MLflow step
+
+**IC 分析节点**：
+- 指标日志化：`ic_mean`、`ic_std`、`ic_ir`、`ic_winrate`、`cumsum_ic`（epilogue 阶段）
+- epilogue 函数通过 `context` 读取完整 IC 序列并计算汇总指标
+
+**工具脚本**：
+- `scripts/_check_mlflow.py` — 快速查看最新实验的 IC 指标
+- `scripts/_verify_steps.py` — 验证最新 mlflow 实验是否存在 IC 指标
+
+### 后续扩展
+- `MultiInputNode` 新增 `time_order_buffer_len` 指标（de6f649），暴露窗口队列积压长度，用于诊断流水线背压。
+
+## [Model] 2026-06-09 特征重要性 + ModelWrapper 协议解耦
+
+### 概述
+两轮紧密相关提交（5bf48e9 + c418748）的整体效果：
+1. 模型训练后输出特征重要性（LGBM built-in、Ridge coefficient magnitude）
+2. 模型实现从 model_node.py 中抽离为独立 `model_wrappers.py`
+
+### 特征重要性
+- **LGBM**：`feature_importances_`（split-based），导出 top-10 日志 + 完整 JSON artifact
+- **Ridge**：`abs(coef_)` 排序，日志 top-10 + 完整 JSON
+- artifact 路径：`feature_importance_{model_type}.json`
+
+### ModelWrapper 协议解耦 (c418748) — 211 行新增
+- `seafquant/model_wrappers.py`（新建）：
+  - `ModelWrapper` 抽象基类：`train(X, y)` / `predict(X)` / `get_feature_importance()`
+  - `LGBMWrapper` / `RidgeWrapper` / `MLPWrapper` 三个实现
+  - `MLPWrapper` 将 PyTorch MLP（2 隐藏层 + BatchNorm + Dropout）封装为统一接口
+- `model_node.py` 退化为编排层：数据准备 → `wrapper.train()` → `wrapper.predict()` → 输出信号
+- 模型新增由 FACTORY 注册表 + CLI `--model-type` 参数控制（`lgbm` / `ridge` / `mlp`）
+
+## [Bugfix] 2026-06-09 系统性 rolling .values 索引错位 + model_node 测试套件
+
+### 问题
+全部 8 个因子模块中使用 `groupby('name').rolling(window).apply(func)` 模式，
+在 `apply` 内部取 `.values` 时，rolling 窗口内 DataFrame 的索引是原始全局索引切片，
+`values` 取值与实际窗口数据可能出现索引错位——在退市/股票池变化时尤为致命。
+
+### 修复
+- 10 处 `arr.value` / `series.values` → 先 `.reset_index(drop=True).values` 再取值
+- 模块：momentum/volatility/liquidity/counting/counting_streak/quality_autocorr/quality_merged/value
+- 影响面：price_rsi / garman_klass / amihud / streak / autocorr 等约 40 个因子
+
+### 新增测试
+- `test/test_model_node.py`（623 行，47 tests）：
+  - LGBM / Ridge 训练-预测-信号形状全流程
+  - NaN 处理、feature importance、小样本守卫、CV IC 指标
+  - 重训练间隔逻辑、retrain_every 边界
+- `TestRollingAlignment`：回归测试验证修复后 `values` 取值与慢速基准一致
+
+## [Test] 2026-06-09 因子对拍验证测试套件 (511 tests)
+
+### 概述
+新增全部 11 个因子模块的系统性对拍验证（cross-validation）。每个因子的实时输出
+与独立基准函数计算结果逐值比对，最大绝对误差 < 1e-10。
+
+### 新增文件
+- `test/crossval_helpers.py`：通用基准计算工具（`_cs_rank_pct`、`_parkinson_bench`、滚动聚合等）
+- `test/test_factors_crossval_{module}.py`（11 个文件）：
+  - counting / cross_section / interaction / liquidity / momentum
+  - quality_autocorr / quality_merged / quality_pattern / regression
+  - trend / value / volatility
+- 总计 511 tests，全部通过（pytest, ~230s）
+
+### 设计原则
+- 基准使用 pandas groupby 慢速但正确的计算（不依赖 Frame3D API）
+- 避免测试代码与被测代码共享计算路径（防止"两个相同 bug 互相抵消"）
+- 每个测试在 130 时间 × 20 股票微型数据集上运行
+
+## [Chore] 2026-06-09 Source→IC 属性精简
+
+- `pipeline.py`：source 节点到 ic 分析节点的 pipeline 只传递 `close` 列（而非全部 7 列）
+- 减少跨进程序列化数据量 ~80%，IC 节点本就不需要 OHLC/volume/market_cap
+
+## [Infra + Model] 2026-06-09 IPO/退市机制 + NaN 处理系统性加固
+
+### IPO/退市机制
+
+**数据生成器 V3** (`data_generator.py`)：
+- 预生成 `pool_size = n_stocks * 2` 的股票参数（sigma、weights）
+- 逐日管理活跃股票集合，动态股票池
+- 退市规则：`close < 0.005` → 次日退市，同时激活一只新股（名称前缀 N）
+- OHLC / 市值 / 成交量从预生成改为逐日生成（支持动态股票池）
+- 新股上市首日 open 在 close 附近随机（无前日价格）
+- 验证脚本：`scripts/_check_delist.py`
+
+**窗口对齐** (`node.py`)：
+- `MultiInputNode.run` 中 window_frames 拼接后，以最新时间片的股票集合为权威集合
+- 前序时间片 `reindex(latest_stocks, fill_value=NaN)`：
+  - 退市股票自动删除
+  - 新上市股票补 NaN（非 0.0，避免 `log(0)` 等下游运算异常）
+
+### Model NaN 处理改进 (`model_node.py`)
+
+**旧逻辑**：标签 y 含 NaN 或特征 X 任意列含 NaN → 丢弃该样本。在退市场景下，新上市股票前 60 天大量 NaN 导致全部样本被丢弃，模型无法训练。
+
+**新逻辑**：
+- 标签 y 为 NaN → 丢弃
+- 特征 X 超过半数列为 NaN → 丢弃该样本
+- 特征 X ≤ 半数列为 NaN → NaN 置 0.0，保留样本
+
+### 因子模块 NaN 防护（5 个文件）
+
+| 模块 | 变更 | 原因 |
+|------|------|------|
+| `liquidity.py` | `np.log(dollar_vol/mcap/ratio)` 前加 `> 0` 守卫 | IPO 窗口内 mcap 为 NaN 导致 `log(0) = -inf` |
+| `value.py` | `np.log(mcap)` 守卫 | 同上 |
+| `volatility.py` | `np.log(high/low)`, `np.log(close/open)` 守卫 | high/low 可能为 0 |
+| `counting.py` | `_new_high_count` 守卫 `n < window`（而非 `n < max(2, window//2)`） | 此前遗漏的一处守卫条件不一致 |
+
+### 测试参数调整
+- `test_data_generator.py`：`n_times` 80→200, `n_stocks` 20→30（增强统计显著性）
+
+### Cross-section 对拍测试修复
+- `test_factors_crossval_cross_section.py`：`rank_delta` 基准计算从「先 shift 后 rank」改为「先 rank 后 shift」
+  - 在线框架中，`compute_cross_section_factors` 收到的是窗口内所有时间片的完整数据，先对每个时间片独立 rank，再沿时序 shift
+  - 旧基准方案在 IPO/退市场景下「先 shift 后 rank」会因股票集合不一致而产生不同结果
+
 ## [Bugfix] 2026-06-08 sliding_window_view 守卫条件修复 + 框架异常传播强化
 
 ### 问题

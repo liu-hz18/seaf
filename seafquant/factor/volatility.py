@@ -44,7 +44,9 @@ def compute_volatility_factors(name: str, f3d: Frame3D, context) -> Frame3D:
     _roll('factor_vol_realized_5d', 'factor_vol_of_vol_20d', 20, 'std')
     _roll('factor_vol_realized_20d', 'factor_vol_of_vol_60d', 60, 'std')
 
-    df['_loghl'] = np.log(high / low)
+    hl_ratio = high / low
+    with np.errstate(divide='ignore'):
+        df['_loghl'] = np.where(hl_ratio > 0, np.log(hl_ratio), np.nan)
     park_factor = 1.0 / (4 * np.log(2))
     df['_park_sq'] = park_factor * df['_loghl'] ** 2
     _roll('_park_sq', '_park5_mean', 5, 'mean')
@@ -52,7 +54,9 @@ def compute_volatility_factors(name: str, f3d: Frame3D, context) -> Frame3D:
     _roll('_park_sq', '_park20_mean', 20, 'mean')
     df['factor_vol_parkinson_20d'] = np.sqrt(np.abs(df['_park20_mean']))
 
-    log_co = np.log(close / open_p)
+    co_ratio = close / open_p
+    with np.errstate(divide='ignore'):
+        log_co = np.where(co_ratio > 0, np.log(co_ratio), np.nan)
     df['_gk'] = 0.5 * df['_loghl'] ** 2 - (2 * np.log(2) - 1) * log_co**2
     _roll('_gk', '_gk5_mean', 5, 'mean')
     df['factor_vol_gk_5d'] = np.sqrt(np.abs(df['_gk5_mean']))

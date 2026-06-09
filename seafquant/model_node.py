@@ -276,12 +276,24 @@ def model_train_predict(name: str, f3d: Frame3D, context: Any) -> Frame3D:
         }, step=trading_step(start_date, times[n_train_times - 1]))
 
         # 3. NaN 处理
-        valid = ~np.isnan(y) & ~np.any(np.isnan(X), axis=1)
-        nan_count = sum(~valid)
-        nan_total = nan_count + len(y)
-        nan_ratio = nan_count / nan_total if nan_total > 0 else 0.0
+        #   规则：标签 y 为 NaN 的样本直接丢弃；
+        #         特征 X 的 NaN：
+        #           - 超过半数特征列为 NaN → 丢弃该样本
+        #           - 否则 → NaN 置 0.0
+        feat_nan_cnt = np.sum(np.isnan(X), axis=1)
+        n_feats = X.shape[1]
+        drop_mask = feat_nan_cnt > (n_feats // 2)  # 严格 > 半数
+        y_nan = np.isnan(y)
+        valid = ~y_nan & ~drop_mask
+        nan_total = sum(~valid) + len(y)
+        nan_ratio = nan_total > 0 and (sum(~valid)) / nan_total or 0.0
         X, y = X[valid], y[valid]
-        logging.info(f'[{name}] NaN removal: {nan_count} removed, {len(y)} remain')
+        X = np.nan_to_num(X, nan=0.0)  # 保留样本的 NaN → 0
+        logging.info(
+            f'[{name}] NaN handling: {sum(~valid)} removed '
+            f'(y_nan={sum(y_nan)}, drop>{n_feats // 2}feat_nan={sum(drop_mask)}), '
+            f'{len(y)} remain, {np.sum(np.isnan(X))} NaN filled→0'
+        )
 
         if len(y) < 50:
             logging.warning(f'[{name}] <50 samples after NaN removal')
