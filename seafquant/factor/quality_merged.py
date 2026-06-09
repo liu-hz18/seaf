@@ -20,10 +20,11 @@ from qpipe.frame3d import Frame3D
 
 def compute_quality_merged_factors(name: str, f3d: Frame3D, context) -> Frame3D:
     """计算 25 个质量合并因子 (19 质量基础/符号 + 6 截面中性化)。"""
-    result = f3d.copy()
+    # 注意：本函数直接修改传入的 f3d.df（添加 _ 中间列），
+    # 调用方（node.py）保证每次调用传入的是临时 concat DataFrame，无需拷贝。
     close, high, low = f3d.df['close'], f3d.df['high'], f3d.df['low']
     ret = f3d.ts_pct_change('close', 1).df['close']
-    df = result.df
+    df = f3d.df
     df['_ret'] = ret
     grp = df.index.get_level_values('name')
 
@@ -122,8 +123,10 @@ def compute_quality_merged_factors(name: str, f3d: Frame3D, context) -> Frame3D:
     df['_ret20'] = ret20
 
     # ---- 1-2: 截面动量 ----
-    df['factor_cs_momentum_5d'] = result.cs_zscore('_ret5').df['_ret5']
-    df['factor_cs_momentum_20d'] = result.cs_zscore('_ret20').df['_ret20']
+    # cs_zscore(cp=False) 直接修改 _ret5/_ret20 列（中间列，值可覆盖）
+    dummy = Frame3D(df)
+    df['factor_cs_momentum_5d'] = dummy.cs_zscore('_ret5', cp=False).df['_ret5']
+    df['factor_cs_momentum_20d'] = dummy.cs_zscore('_ret20', cp=False).df['_ret20']
 
     # ---- 3: 截面 Z-score ----
     df['factor_cs_close_zscore'] = f3d.cs_zscore('close').df['close']
@@ -149,7 +152,7 @@ def compute_quality_merged_factors(name: str, f3d: Frame3D, context) -> Frame3D:
     # ====================================================================
     # 联合截面标准化（三种 prefix 统一批处理）
     # ====================================================================
-    result = Frame3D(df.copy())
+    result = Frame3D(df)
     factor_cols = [c for c in df.columns if c.startswith('factor_')]
     result = result.cs_zscore_batch(factor_cols, cp=False)
 

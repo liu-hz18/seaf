@@ -5,9 +5,11 @@ V2: context + epilogue_fn support, backward compatible.
 
 from __future__ import annotations
 
+import gc
 import inspect
 import logging
 import multiprocessing as mp
+import os
 import sys
 import threading
 import time
@@ -19,6 +21,15 @@ import pandas as pd
 
 from .frame3d import Frame3D
 from .utils import mlflow_log_metrics, trading_step
+
+try:
+    import psutil
+
+    def _rss_mb() -> float:
+        return psutil.Process().memory_info().rss / 1024 / 1024
+except ImportError:
+    def _rss_mb() -> float:
+        return 0.0
 
 # 因子节点函数签名：兼容 2 参数 (name, f3d) 和 3 参数 (name, f3d, context) 两种形式
 FactorFunc = Callable[..., Frame3D]
@@ -240,20 +251,16 @@ class MultiInputNode(mp.Process):
                     # - 新上市股票：最新片中存在但前序片中不存在，前序片补 NaN。
                     #   用 NaN 而非 0.0，避免 np.log(0)/0/0 等下游运算产生
                     #   "divide by zero in log" / "All-NaN slice" 警告。
+                    #
+                    #   优化：使用 MultiIndex.from_product 一次性 reindex，
+                    #   避免逐时间片循环产生 O(T) 个中间 DataFrame。
                     latest_t = window_df.index.get_level_values(0).max()
                     latest_stocks = window_df.loc[latest_t].index.tolist()
-                    cols = window_df.columns.tolist()
-                    aligned_parts: list[pd.DataFrame] = []
-                    for t in sorted(window_df.index.get_level_values(0).unique()):
-                        slice_df = window_df.loc[t].reindex(latest_stocks, fill_value=float('nan'))
-                        mi = pd.MultiIndex.from_arrays(
-                            [[t] * len(latest_stocks), latest_stocks],
-                            names=window_df.index.names,
-                        )
-                        slice_df.index = mi
-                        # reindex 可能改变列顺序，恢复原始列序
-                        aligned_parts.append(slice_df[cols])
-                    window_df = pd.concat(aligned_parts, axis=0).sort_index(level=0)
+                    all_times = sorted(window_df.index.get_level_values(0).unique())
+                    full_mi = pd.MultiIndex.from_product(
+                        [all_times, latest_stocks], names=window_df.index.names
+                    )
+                    window_df = window_df.reindex(full_mi).sort_index(level=0)
                     # === IPO/退市对齐结束 ===
 
                     run_input_f3d = Frame3D(window_df)
@@ -319,6 +326,19 @@ class MultiInputNode(mp.Process):
                                 **queue_sizes,
                             },
                             step=step,
+                        )
+
+                    # ---- 内存回收与监控 ----
+                    # 每次计算后强制 GC，回收因子函数产生的临时 DataFrame。
+                    # 生产环境（6000 stocks）单次迭代可能产生 100MB+ 临时对象。
+                    gc.collect()
+                    if total_calls % 10 == 0:
+                        rss = _rss_mb()
+                        buf_sizes = {f'b{i}': len(b) for i, b in enumerate(self.buffers)}
+                        logging.info(
+                            f'mem#{total_calls}: rss={rss:.0f}MB, '
+                            f'tob_len={len(time_order_buffer)}, '
+                            f'buf_sizes={buf_sizes}'
                         )
 
                 if len(dead_workers) == num_workers:
@@ -393,6 +413,9 @@ class SourceNode(mp.Process):
                         qs[f'queue_{qname}'] = float(q.qsize())
                     step = trading_step(current_context.get('start_date', ''), max_key)
                     mlflow_log_metrics(run_id, self.name, qs, step=step)
+                # 数据生成器可能在内存中持有大数组（hidden_factors / noise），
+                # 但生成器自身不累积逐日数据。此处 gc 为防御性措施。
+                gc.collect()
             for outq in self.output_queues:
                 outq.put(self.stop_signal)
         except Exception as e:

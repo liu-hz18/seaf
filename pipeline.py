@@ -21,7 +21,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from qpipe.flow import Flow
 from seafquant.data_generator import generate_synthetic_data
-from seafquant.factors import FACTOR_REGISTRY, FACTOR_WINDOWS
+from seafquant.factors import FACTOR_REGISTRY, FACTOR_WINDOWS, GLOBAL_MAX_FACTOR_WINDOW
 from seafquant.ic_analysis import ic_analysis_fn, ic_epilogue
 from seafquant.model_node import model_train_predict
 
@@ -104,7 +104,7 @@ def main() -> None:
     else:
         mlflow_run_id = ''
 
-    flow = Flow()
+    flow = Flow(queue_maxsize=GLOBAL_MAX_FACTOR_WINDOW)
 
     # ===== 1. 数据源节点 =====
     gen_callable = DataSourceCallable(

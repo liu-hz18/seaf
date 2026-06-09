@@ -21,17 +21,33 @@ from .node import (
 class Flow:
     """流式管线编排器：声明式构建因子流水线拓扑，自动验证 DAG 约束。"""
 
-    def __init__(self, stop_signal: Any = None) -> None:
+    def __init__(self, stop_signal: Any = None, queue_maxsize: int = 0) -> None:
+        """初始化流水线编排器。
+
+        Args:
+            stop_signal: 节点间传递的停止哨兵值。
+            queue_maxsize: mp.Queue 最大容量。0=无限制; >0 时提供背压控制，
+                           防止上游生产速率远超下游消费时队列无限膨胀导致 OOM。
+                           推荐设为 max(factor_windows) 或 model_window。
+        """
         self.nodes: list[mp.Process] = []
         self.stop_signal: Any = stop_signal if stop_signal is not None else '__STOP__'
         self.queues: dict[str, mp.Queue] = {}
         self._node_specs: list[dict[str, Any]] = []
         self._queue_writers: dict[str, list[str]] = {}
         self._queue_readers: dict[str, list[str]] = {}
+        self.queue_maxsize = queue_maxsize
 
-    def create_queue(self, name: str) -> mp.Queue[Any]:
+    def create_queue(self, name: str, maxsize: int | None = None) -> mp.Queue[Any]:
+        """创建或获取命名管道。
+
+        maxsize=None 时使用 Flow 实例级别的 queue_maxsize（0=无限制）。
+        maxsize>0 时提供背压控制，防止队列无限膨胀。
+        """
+        if maxsize is None:
+            maxsize = self.queue_maxsize
         if name not in self.queues:
-            self.queues[name] = mp.Queue()
+            self.queues[name] = mp.Queue(maxsize=maxsize)
         return self.queues[name]
 
     def add_source(
