@@ -23,7 +23,7 @@ def compute_value_factors(name: str, f3d: Frame3D, context) -> Frame3D:
 
     def _roll(src, dst, window, agg):
         df[dst] = (
-            df.groupby('name')[src].rolling(window, min_periods=max(1, window // 2)).agg(agg).values
+            df.groupby('name')[src].rolling(window, min_periods=max(1, window // 2)).agg(agg).reset_index(level=0, drop=True)
         )
 
     # ---- 1-3: 基础价值 ----

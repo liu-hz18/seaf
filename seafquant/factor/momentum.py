@@ -25,7 +25,7 @@ def compute_momentum_factors(name: str, f3d: Frame3D, context) -> Frame3D:
     df['_daily_ret'] = df.groupby('name')['close'].pct_change(1)
     for w in vol_windows:
         df[f'_vol_{w}'] = (
-            df.groupby('name')['_daily_ret'].rolling(w, min_periods=max(1, w // 2)).std().values
+            df.groupby('name')['_daily_ret'].rolling(w, min_periods=max(1, w // 2)).std().reset_index(level=0, drop=True)
         )
     result = result.ts_pct_change_multi('close', periods, prefix='factor_mom_ret', cp=False)
     for p in periods:
@@ -47,14 +47,14 @@ def compute_momentum_factors(name: str, f3d: Frame3D, context) -> Frame3D:
     df['factor_rev_overnight_1d'] = -overnight
     df['_ovn'] = overnight
     df['factor_rev_overnight_5d'] = (
-        -df.groupby('name')['_ovn'].rolling(5, min_periods=2).mean().values
+        -df.groupby('name')['_ovn'].rolling(5, min_periods=2).mean().reset_index(level=0, drop=True)
     )
 
     intraday = close / (open_p + EPS) - 1
     df['factor_rev_intraday_1d'] = -intraday
     df['_intra'] = intraday
     df['factor_rev_intraday_5d'] = (
-        -df.groupby('name')['_intra'].rolling(5, min_periods=2).mean().values
+        -df.groupby('name')['_intra'].rolling(5, min_periods=2).mean().reset_index(level=0, drop=True)
     )
 
     df['factor_rev_volrev_1d'] = -df['_ret1'] * vol_rank

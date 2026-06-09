@@ -182,7 +182,7 @@ def main() -> None:
         try:
             git_hash = subprocess.run(
                 ['git', 'rev-parse', '--short', 'HEAD'],
-                capture_output=True, text=True, timeout=5,
+                check=False, capture_output=True, text=True, timeout=5,
             ).stdout.strip()
             if git_hash:
                 mlflow.log_param('git_commit', git_hash)

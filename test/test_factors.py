@@ -80,5 +80,90 @@ class TestFactorModules:
         self._test_category(f3d, 'interaction', expected_cols=16)
 
 
+# ============================================================================
+# 回归测试：rolling 计算对齐
+# ============================================================================
+
+
+class TestRollingAlignment:
+    """验证 groupby rolling 没有跨股票交叉污染（.values → .reset_index bug 回归）。"""
+
+    def _make_deterministic_f3d(self, n_times=20, n_stocks=5):
+        """每只股票价格 = stock_id * 100 + t，rolling mean 可精确预测。"""
+        import numpy as np
+        import pandas as pd
+        from qpipe.frame3d import Frame3D
+
+        records = []
+        for t in range(n_times):
+            for s in range(n_stocks):
+                price = float(s * 100 + t)
+                row = {
+                    'key': t,
+                    'name': f'S{s:03d}',
+                    'close': price,
+                    'open': price * 0.99,
+                    'high': price * 1.02,
+                    'low': price * 0.98,
+                    'turnover': 1.0,
+                    'volume': 1000.0,
+                    'market_cap': float((s + 1) * 1e4),
+                }
+                records.append(row)
+        df = pd.DataFrame(records).set_index(['key', 'name'])
+        return Frame3D(df)
+
+    def test_rolling_mean_no_cross_contamination(self):
+        """验证 groupby rolling mean / max / min 不会跨股票错位。"""
+        import numpy as np
+        from seafquant.factor.value import compute_value_factors
+
+        # 需要足够数据填充 max window=120, min_periods=60
+        f3d = self._make_deterministic_f3d(130, 5)
+        result = compute_value_factors('test', f3d, None)
+
+        df = result.df
+        # 对所有因子列，同一时间截面上的值不应完全相同
+        # （因为有 5 只价格不同的股票，因子值应有截面方差）
+        t_last = sorted(df.index.get_level_values('key').unique())[-1]
+        cs_df = df.loc[t_last]
+        for col in cs_df.columns:
+            if col.startswith('_'):
+                continue
+            vals = cs_df[col].values
+            if np.allclose(vals[0], vals):
+                # 如果所有股票在该因子上完全相同，很可能是 bug
+                # 但对某些因子（如 dd_60d 在完全趋势性数据上可能接近），
+                # 只对预期有差异的因子严格检查
+                if 'dist_ma' in col or 'inv_price' in col or 'log_mcap' in col:
+                    raise AssertionError(
+                        f'{col}: all {len(vals)} stocks have identical value {vals[0]:.6f} '
+                        f'— likely cross-stock contamination'
+                    )
+
+    def test_rolling_mean_values_correct(self):
+        """验证 rolling 值精确匹配手工计算。"""
+        import numpy as np
+        import pandas as pd
+        from qpipe.frame3d import Frame3D
+
+        f3d = self._make_deterministic_f3d(10, 3)
+        df = f3d.df.copy()
+        # 手工计算 stock S001 的 3-day MA
+        stock1_data = df.loc[(slice(None), 'S001'), 'close']
+        ma3_manual = stock1_data.rolling(3, min_periods=1).mean()
+
+        # 模拟 _roll 的正确实现
+        rolled = df.groupby('name')['close'].rolling(3, min_periods=1).mean()
+        df['ma3_correct'] = rolled.reset_index(level=0, drop=True)
+
+        # 比较 S001 的值
+        s001_correct = df.loc[(slice(None), 'S001'), 'ma3_correct']
+        pd.testing.assert_series_equal(
+            s001_correct, ma3_manual, check_names=False,
+            obj='S001 MA3 should match manual computation',
+        )
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])

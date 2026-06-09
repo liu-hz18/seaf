@@ -143,7 +143,10 @@ def generate_synthetic_data(
     # 6. volume 和 turnover
     intraday_range = np.abs(ohlc['close'] - ohlc['open'])
     volume = intraday_range * mcap * 0.01 * np.exp(rng.normal(0, 0.5, (n_times, n_stocks)))
-    volume = np.maximum(volume, mcap * 0.0001)
+    # 硬地板会导致多只股票 turnover 完全相等（流动性因子截面退化）。
+    # 加每股票 1‱ 噪声打破完全相等，同时保持最小成交量的约束。
+    floor = mcap * 0.0001 * np.exp(rng.normal(0, 0.0001, n_stocks))
+    volume = np.maximum(volume, floor)
     turnover = volume / mcap
 
     # 7. 逐日生成 Frame3D

@@ -27,7 +27,7 @@ def compute_liquidity_factors(name: str, f3d: Frame3D, context) -> Frame3D:
 
     def _roll(src, dst, window, agg):
         df[dst] = (
-            df.groupby('name')[src].rolling(window, min_periods=max(1, window // 2)).agg(agg).values
+            df.groupby('name')[src].rolling(window, min_periods=max(1, window // 2)).agg(agg).reset_index(level=0, drop=True)
         )
 
     # ===== 流动性：16 cols (prefix factor_liq_) =====

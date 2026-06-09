@@ -24,7 +24,6 @@ context 配置（从 pipeline 传入）：
 from __future__ import annotations
 
 import logging
-import warnings
 from typing import Any
 
 import numpy as np
@@ -35,7 +34,6 @@ from sklearn.model_selection import TimeSeriesSplit
 from qpipe.frame3d import Frame3D
 from qpipe.utils import mlflow_log_metrics, trading_step
 from seafquant.model_wrappers import WRAPPER_REGISTRY
-
 
 # =============================================================================
 # 工具函数
@@ -235,7 +233,8 @@ def model_train_predict(name: str, f3d: Frame3D, context: Any) -> Frame3D:
 
     if n_times < fwd + 2:
         logging.warning(f'[{name}] Insufficient data: {n_times} < {fwd + 2}')
-        return _empty_result(n_stocks, df.loc[latest_t].index)
+        cs_mask = df.index.get_level_values('key') == latest_t
+        return _empty_result(n_stocks, df.loc[cs_mask].index)
 
     # —— 训练触发判断 ——
     context['days_since_train'] += 1
@@ -264,7 +263,7 @@ def model_train_predict(name: str, f3d: Frame3D, context: Any) -> Frame3D:
         X, y, cs_stats = _prepare_training_data(name, df, feature_cols, times, fwd)
 
         logging.info(
-            f'[{name}] Training set: {len(cs_stats)} cs × ~{n_stocks}s, '
+            f'[{name}] Training set: {len(cs_stats)} cs x ~{n_stocks}s, '
             f'{len(y)} samples, {X.shape[1]} features'
         )
 
@@ -297,7 +296,7 @@ def model_train_predict(name: str, f3d: Frame3D, context: Any) -> Frame3D:
         cv_scores, _ = _run_cv(name, wrapper, X, y)
 
         # 6. 全量训练
-        train_metrics = wrapper.fit(X, y)
+        wrapper.fit(X, y)
 
         # 7. 训练集 MSE
         pred_train = wrapper.predict(X)
