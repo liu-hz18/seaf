@@ -51,6 +51,40 @@ def _build_model(model_type: str = 'lgbm') -> Any:
     raise ValueError(f'Unknown model_type: {model_type}')
 
 
+def _extract_feature_importance(
+    model: Any, model_type: str, feature_cols: list[str]
+) -> dict[str, float]:
+    """提取模型特征重要性，归一化到 [0, 1]。
+
+    - LGBM: 内置 feature_importances_（分裂增益加权）
+    - Ridge: 系数绝对值（输入经 cs_zscore 截面标准化，权重可比）
+    - 其他模型: 返回空 dict
+    """
+    if model_type == 'lgbm':
+        try:
+            importances = model.feature_importances_
+        except Exception:
+            return {}
+    elif model_type == 'ridge':
+        try:
+            importances = np.abs(model.coef_)
+        except Exception:
+            return {}
+    else:
+        return {}
+
+    if len(importances) != len(feature_cols):
+        return {}
+
+    total = float(np.sum(importances))
+    if total > 0:
+        importances = importances / total
+
+    # 按重要性降序排列
+    sorted_idx = np.argsort(importances)[::-1]
+    return {feature_cols[i]: float(importances[i]) for i in sorted_idx}
+
+
 def _cs_zscore(values: np.ndarray) -> np.ndarray:
     """截面标准化：(x - mean) / std，std=0 时返回零向量。"""
     mean = np.nanmean(values)
@@ -271,16 +305,27 @@ def model_train_predict(name: str, f3d: Frame3D, context: Any) -> Frame3D:
             train_pred = model.predict(X)
         train_mse = float(np.mean((train_pred - y) ** 2))
 
-        # ---- 特征重要性（仅 LGBM） ----
-        if model_type == 'lgbm':
-            try:
-                importances = model.feature_importances_
-                top_n = min(10, len(feature_cols))
-                top_idx = np.argsort(importances)[-top_n:][::-1]
-                top_features = [(feature_cols[i], f'{importances[i]:.4f}') for i in top_idx]
-                logging.info(f'[{name}] Feature importance top-{top_n}: {top_features}')
-            except Exception:
-                pass
+        # ---- 特征重要性（所有模型类型） ----
+        fi = _extract_feature_importance(model, model_type, feature_cols)
+        if fi:
+            top_n = min(10, len(fi))
+            top_items = list(fi.items())[:top_n]
+            logging.info(
+                f'[{name}] Feature importance top-{top_n}: '
+                + ', '.join(f'{k}={v:.4f}' for k, v in top_items)
+            )
+            # 保存到 MLflow artifact（JSON 格式）
+            if mlflow_run_id:
+                try:
+                    import mlflow
+                    mlflow.set_tracking_uri('sqlite:///mlruns.db')
+                    mlflow.log_dict(
+                        fi,
+                        f'feature_importance_{model_type}.json',
+                        run_id=mlflow_run_id,
+                    )
+                except Exception:
+                    pass
 
         context['trained_model'] = model
         context['is_trained'] = True
