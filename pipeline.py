@@ -171,6 +171,7 @@ def main() -> None:
         output_to=[],
         window=IC_WINDOW,
         min_periods=IC_MIN_PERIODS,
+        input_columns=['pred_signal', 'close'],
         epilogue_fn=ic_epilogue,
         context=ic_context,
     )

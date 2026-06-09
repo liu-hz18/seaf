@@ -41,7 +41,7 @@ def _generate_hidden_factors(n_times: int, rng: np.random.Generator) -> np.ndarr
 
 def _generate_stock_params(n_stocks: int, rng: np.random.Generator) -> dict[str, np.ndarray]:
     """生成每只股票的参数：波动率 σ 和隐藏因子权重 w_i。"""
-    sigma = rng.lognormal(mean=-3.5, sigma=0.5, size=n_stocks)  # mean ≈ 0.025/day
+    sigma = rng.lognormal(mean=-3.5, sigma=1.0, size=n_stocks)  # mean ≈ 0.05/day, 截面异质
     weights = rng.normal(0, 1, (n_stocks, 5))  # (n_stocks, 5)
     return {'sigma': sigma, 'weights': weights}
 
@@ -122,7 +122,7 @@ def generate_synthetic_data(
 
     # 3. log_price 路径
     log_prices = np.zeros((n_times, n_stocks))
-    log_prices[0] = rng.normal(0, 0.3, n_stocks)
+    log_prices[0] = rng.normal(0, 0.8, n_stocks)
 
     signal = hidden_factors_trimmed @ weights.T
     noise = rng.normal(0, 1, (n_times, n_stocks))
