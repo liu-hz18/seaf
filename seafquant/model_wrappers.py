@@ -58,11 +58,19 @@ class _SklearnWrapper(BaseWrapper):
         raise NotImplementedError
 
     def fit(self, X: np.ndarray, y: np.ndarray) -> dict[str, float]:
-        self._model.fit(X, y)
+        self._model.fit(np.asarray(X, dtype=float), np.asarray(y, dtype=float))
         return {}
 
     def predict(self, X: np.ndarray) -> np.ndarray:
-        return self._model.predict(X)
+        # 抑制 sklearn ≥1.2 在 numpy 输入上的 FeatureNameWarning（全程 numpy，无列名）
+        import warnings
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                'ignore',
+                message='X does not have valid feature names',
+                category=UserWarning,
+            )
+            return self._model.predict(np.asarray(X, dtype=float))
 
     def _raw_importance(self) -> np.ndarray | None:
         """子类实现：返回原始重要性数组。"""
