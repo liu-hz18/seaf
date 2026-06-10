@@ -7,7 +7,7 @@
 
 训练逻辑：
 - 每 retrain_every 天用最近窗口内因子数据重新训练模型。
-- Label：cs_zscore(close_{t+fwd} / close_{t+1} - 1) — 未来 (fwd-1) 日截面超额收益。
+- Label：cs_zscore(ln(close_{t+fwd}) - ln(close_{t+1})) — 未来 (fwd-1) 日截面对数超额收益。
 - 时间穿越防护：只用 time [0, n_times-fwd-1) 训练。
 
 context 配置（从 pipeline 传入）：
@@ -89,7 +89,7 @@ def _prepare_training_data(
         cs_mask_sell = df.index.get_level_values('key') == t_fwd
         close_buy = df.loc[cs_mask_buy, 'close'].values
         close_sell = df.loc[cs_mask_sell, 'close'].values
-        fwd_ret = close_sell / close_buy - 1
+        fwd_ret = np.log(close_sell) - np.log(close_buy)
         label_xd = _cs_zscore(fwd_ret)
 
         X_list.append(X_cs)
@@ -196,7 +196,7 @@ def model_train_predict(name: str, f3d: Frame3D, context: Any) -> Frame3D:
     """模型训练与预测主函数 — 编排层。
 
     f3d 包含 window 天的数据（因子列 + close 列）。
-    Label = cs_zscore(close[t+fwd] / close[t+1] - 1) — 截面超额收益。
+    Label = cs_zscore(ln(close[t+fwd]) - ln(close[t+1])) — 截面对数超额收益。
     """
     # —— context 初始化 ——
     if context is None:

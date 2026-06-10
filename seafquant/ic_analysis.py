@@ -72,7 +72,7 @@ def ic_analysis_fn(name: str, f3d: Frame3D, context: Any) -> Frame3D:
     close_buy = df.loc[cs_buy, 'close'].values.astype(float)
     close_sell = df.loc[cs_sell, 'close'].values.astype(float)
 
-    fwd_ret = close_sell / close_buy - 1
+    fwd_ret = np.log(close_sell) - np.log(close_buy)
 
     valid_mask = ~np.isnan(fwd_ret) & ~np.isnan(pred_signal)
 
@@ -184,4 +184,32 @@ def ic_epilogue(name: str, context: dict[str, Any] | None) -> None:
     logging.info(f'[{name}]   WinRate={winrate:.2%}, CumSum Rank IC={cumsum[-1]:.4f}')
     logging.info(f'[{name}]   IC Std={std_ic:.4f}, IC Skew={pd.Series(ics).skew():.4f}')
     logging.info(f'[{name}]   Max CumSum DD={max_dd:.4f}')
+
+    # ---- 理论 top-bottom 对数净值差 ----
+    # 公式：ln(NAV_top) - ln(NAV_bot) ≈ 2N · φ(Φ⁻¹(1/N)) · mean(raw_ret_std) · Σ pearson_ic
+    num_groups = context.get('num_groups', 10)
+    raw_stds = [x for x in context.get('raw_ret_std_history', []) if not np.isnan(x)]
+    cumsum_p = context.get('cumsum_pearson_ic', 0.0)
+    if raw_stds and num_groups >= 2:
+        from scipy.stats import norm  # 延迟导入
+        mean_ret_std = float(np.mean(raw_stds))
+        phi_inv = float(norm.ppf(1.0 / num_groups))
+        phi_val = float(norm.pdf(phi_inv))
+        theo_log_spread = 2.0 * num_groups * phi_val * mean_ret_std * cumsum_p
+        logging.info(
+            f'[{name}]   Theoretical top-bottom log NAV spread: {theo_log_spread:.6f} '
+            f'(N={num_groups}, φ(Φ⁻¹(1/N))={phi_val:.4f}, '
+            f'mean_ret_std={mean_ret_std:.6f}, Σ_pearson_ic={cumsum_p:.4f})'
+        )
+        # MLflow
+        run_id = context.get('mlflow_run_id', '')
+        if run_id:
+            mlflow_log_metrics(run_id, f'{name}_theory', {
+                'theo_log_nav_spread': theo_log_spread,
+                'phi_inv_n': phi_inv,
+                'phi_val': phi_val,
+                'mean_raw_ret_std': mean_ret_std,
+                'sum_pearson_ic': cumsum_p,
+            }, step=0)
+
     logging.info(f'[{name}] ======================================')

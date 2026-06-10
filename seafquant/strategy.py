@@ -336,7 +336,7 @@ def _on_bar(
     if nav > ctx.get('peak_nav', 0):
         ctx['peak_nav'] = nav
     peak = ctx['peak_nav']
-    drawdown = (peak - nav) / peak if peak > 0 else 0.0
+    drawdown = (nav - peak) / peak if peak > 0 else 0.0
     ctx['nav_log'].append({
         'date': date,
         'day_counter': dc,
@@ -518,7 +518,7 @@ def strategy_fn(name: str, f3d: Frame3D, context: Any) -> Frame3D:
                 mlflow_log_metrics(run_id, f'{name}.spread', {
                     'top_nav': top_nav,
                     'bottom_nav': bot_nav,
-                    'top_bottom_nav_spread': top_nav / bot_nav - 1.0,
+                    'top_bottom_lognav_spread': np.log(top_nav) - np.log(bot_nav),
                     'top_value': top_val,
                     'bottom_value': bot_val,
                     'top_bottom_value_gap': top_val - bot_val,

@@ -517,3 +517,20 @@ if __name__ == '__main__':
 ```
 请你根据上述要求，完成 strategy 节点函数的设计和编写，保持低耦合度和可扩展性，方便合作开发者和我们后续的进一步迭代和修正。保持耐心，细粒度拆解任务，结合框架特点和基建特点，以及真实量化交易的实际场景，设计合适的细粒度方案，然后一步步完成。
 
+在 seafquant\ic_analysis.py 中，你需要给出我们截面选股策略 top多头组 - bottom 多头组的理论对数净值差(log(top nav) - log(bottom nav))。如果下游的选股策略是将截面N等分组，并且组内对不同股票是等权重持仓的，那么其近似的关系为：
+$$
+\ln(NAV_{top, T}) - \ln(NAV_{bot, T}) \approx 2N \cdot \phi\left(\Phi^{-1}\left(\frac{1}{N}\right)\right) \cdot \overline{\sigma_r} \cdot \sum_{t=1}^T \rho_t
+$$
+符号说明：
+$NAV_{top, T}, NAV_{bot, T}$：第 $T$ 期 Top 组和 Bottom 组的净值
+$N$：截面等分的组数
+$\phi(\cdot)$：标准正态分布的概率密度函数 (PDF)
+$\Phi^{-1}(\cdot)$：标准正态分布的逆累积分布函数 (分位数函数)
+$\overline{\sigma_r}$：时间序列上截面等权对数收益率标准差的均值
+$\rho_t$ 或 $IC_t$：第 $t$ 期的截面 Pearson IC
+
+所以你需要做一些修正：
+1. 在模型训练节点 seafquant\model_node.py，截面超额收益率(训练标签)定义为对数收益率：ln(close_{t+fwd}) - ln(close_{t+1}), 而不是简单收益率。注意收益率依然需要做截面的标准化。
+2. 在IC计算节点 seafquant\ic_analysis.py，根据上述公式，给出理论上近似的 top-bottom 对数净值差，并将其记录在 mlflow metric 中。可以在 ic_epilogue 中实现，这样我们就可以计算 平均的 截面对数收益率的标准差。
+3. strategy 节点中已经有了 top-bottom 对数净值差 的实际计算结果，已经记录在 mlflow 的 metric 中了，方便我们后续对比两者是否一致。
+
