@@ -49,6 +49,10 @@ def main() -> None:
         '--log-level', type=str, default='INFO', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR']
     )
     parser.add_argument('--no-mlflow', action='store_true', default=False, help='Disable MLflow tracking')
+    parser.add_argument(
+        '--snapshot-interval', type=int, default=100,
+        help='Snapshot input/output every N calls (0=disabled)',
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -92,6 +96,7 @@ def main() -> None:
         gen_callable,
         src_output_queues,
         context={'mlflow_run_id': mlflow_run_id, 'start_date': args.start_date},
+        snapshot_interval=args.snapshot_interval,
     )
 
     # ===== 2. 因子计算节点 =====
@@ -112,6 +117,7 @@ def main() -> None:
             window=fw['window'],
             min_periods=fw['min_periods'],
             context={'mlflow_run_id': mlflow_run_id, 'start_date': args.start_date},
+            snapshot_interval=args.snapshot_interval,
         )
 
     # ===== 3. 模型训练预测节点 =====
@@ -135,6 +141,7 @@ def main() -> None:
         window=MODEL_WINDOW,
         min_periods=MODEL_MIN_PERIODS,
         context=model_context,
+        snapshot_interval=args.snapshot_interval,
     )
 
     # ===== 4. IC 分析节点 =====
@@ -151,6 +158,7 @@ def main() -> None:
         input_columns=['pred_signal', 'close'],
         epilogue_fn=ic_epilogue,
         context=ic_context,
+        snapshot_interval=args.snapshot_interval,
     )
 
     # ===== 记录启动参数与 git 版本 =====

@@ -57,6 +57,7 @@ class Flow:
         output_to: list[str],
         context: Any = None,
         epilogue_fn: EpilogueFunc | None = None,
+        snapshot_interval: int = 0,
     ) -> SourceNode:
         """添加数据源节点。gen_func 应为返回 Frame3D 迭代器的可调用对象。"""
         output_queues = [self.create_queue(qname) for qname in output_to]
@@ -68,6 +69,7 @@ class Flow:
             context=context,
             epilogue_fn=epilogue_fn,
             output_queue_names=list(output_to),
+            snapshot_interval=snapshot_interval,
         )
         self.nodes.append(node)
         self._node_specs.append(
@@ -95,6 +97,7 @@ class Flow:
         output_columns: list[str] | None = None,
         context: Any = None,
         epilogue_fn: EpilogueFunc | None = None,
+        snapshot_interval: int = 0,
     ) -> MultiInputNode:
         """添加因子/计算节点。func 接收 (name, f3d, context)，返回 Frame3D。"""
         if isinstance(input_from, str):
@@ -114,6 +117,7 @@ class Flow:
             context=context,
             epilogue_fn=epilogue_fn,
             output_queue_names=list(output_to),
+            snapshot_interval=snapshot_interval,
         )
         self.nodes.append(node)
         self._node_specs.append(

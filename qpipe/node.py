@@ -20,7 +20,7 @@ from typing import Any
 import pandas as pd
 
 from .frame3d import Frame3D
-from .utils import mlflow_log_metrics, trading_step
+from .utils import mlflow_log_metrics, snapshot_dataframe, trading_step
 
 try:
     import psutil
@@ -78,6 +78,7 @@ class MultiInputNode(mp.Process):
         context: Any = None,
         epilogue_fn: EpilogueFunc | None = None,
         output_queue_names: list[str] | None = None,
+        snapshot_interval: int = 0,
     ) -> None:
         super().__init__()
         self.name = name
@@ -92,6 +93,7 @@ class MultiInputNode(mp.Process):
         self.stop_signal = stop_signal
         self.context = context if context is not None else {}
         self.epilogue_fn = epilogue_fn
+        self.snapshot_interval = snapshot_interval
         self.buffers: list[dict[Any, Frame3D]] = [{} for _ in input_queues]
 
     def _call_func(self, name: str, f3d: Frame3D, ctx: Any) -> Frame3D:
@@ -283,6 +285,15 @@ class MultiInputNode(mp.Process):
                     # === IPO/退市对齐结束 ===
 
                     run_input_f3d = Frame3D(window_df)
+
+                    # ---- 快照：输入（_call_func 之前，防止原地修改） ----
+                    total_calls = current_context.setdefault('_node_call_count', 0) + 1
+                    current_context['_node_call_count'] = total_calls
+                    run_id_s = current_context.get('mlflow_run_id', '')
+                    ts = str(latest_t)[:10] if hasattr(latest_t, '__str__') else str(latest_t)
+                    if self.snapshot_interval > 0 and total_calls % self.snapshot_interval == 0:
+                        snapshot_dataframe(run_id_s, self.name, run_input_f3d.df, 'in', ts)
+
                     output_f3d = self._call_func(self.name, run_input_f3d, current_context)
                     if self.output_columns:
                         miss_o = [c for c in self.output_columns if c not in output_f3d.df.columns]
@@ -295,6 +306,8 @@ class MultiInputNode(mp.Process):
                     max_key = result_f3d.df.index.get_level_values(0).max()
                     latest_df = result_f3d.df[result_f3d.df.index.get_level_values(0) == max_key]
                     latest_f3d = Frame3D(latest_df.copy())
+                    # float32 输出：将队列传输数据精度降为 fp32，内存减半
+                    latest_f3d = _to_float32(latest_f3d)
                     logging.info(
                         f'window_start_index:{window_start_index}, '
                         f'window_tail_index={window_tail_index}\n'
@@ -308,8 +321,15 @@ class MultiInputNode(mp.Process):
                     if len(timings) > 10:
                         timings.pop(0)
                     avg_time = sum(timings) / len(timings)
-                    total_calls = current_context.setdefault('_node_call_count', 0) + 1
-                    current_context['_node_call_count'] = total_calls
+
+                    # ---- 快照：输出（复用 latest_f3d.df） ----
+                    if self.snapshot_interval > 0 and total_calls % self.snapshot_interval == 0:
+                        snapshot_dataframe(run_id_s, self.name, latest_f3d.df, 'out', ts)
+                        logging.info(
+                            f'[{self.name}] snapshot #{total_calls}: '
+                            f'in={run_input_f3d.df.shape}, out={latest_f3d.df.shape}'
+                        )
+
                     if total_calls % 10 == 0 or total_calls == 1:
                         logging.info(
                             f'call#{total_calls}: '
@@ -318,8 +338,6 @@ class MultiInputNode(mp.Process):
                         )
 
                     window_tail_index += 1
-                    # float32 输出：将队列传输数据精度降为 fp32，内存减半
-                    latest_f3d = _to_float32(latest_f3d)
                     for outq in self.output_queues:
                         outq.put(latest_f3d)
 
@@ -393,6 +411,7 @@ class SourceNode(mp.Process):
         context: Any = None,
         epilogue_fn: EpilogueFunc | None = None,
         output_queue_names: list[str] | None = None,
+        snapshot_interval: int = 0,
     ) -> None:
         super().__init__()
         self.name = name
@@ -402,6 +421,7 @@ class SourceNode(mp.Process):
         self.stop_signal = stop_signal
         self.context = context if context is not None else {}
         self.epilogue_fn = epilogue_fn
+        self.snapshot_interval = snapshot_interval
 
     def run(self) -> None:
         """子进程主入口：迭代数据生成器，逐日输出最新截面。"""
@@ -412,6 +432,7 @@ class SourceNode(mp.Process):
         )
         logging.info('SourceNode started.')
         current_context: Any = self.context
+        call_count = 0
         try:
             for frame in self.gen_func():
                 max_key = frame.df.index.get_level_values(0).max()
@@ -419,6 +440,25 @@ class SourceNode(mp.Process):
                 latest_f3d = Frame3D(latest_df.copy())
                 # float32 输出：源数据精度降为 fp32，所有下游队列和缓冲受益
                 latest_f3d = _to_float32(latest_f3d)
+
+                call_count += 1
+                # ---- 快照采样 ----
+                if self.snapshot_interval > 0 and call_count % self.snapshot_interval == 0:
+                    run_id = current_context.get('mlflow_run_id', '')
+                    time_str = str(max_key)[:10] if hasattr(max_key, '__str__') else str(max_key)
+                    # 输入快照：数据生成器产出的当日完整 frame
+                    snapshot_dataframe(
+                        run_id, self.name, frame.df, 'in', time_str,
+                    )
+                    # 输出快照：最新时间片
+                    snapshot_dataframe(
+                        run_id, self.name, latest_f3d.df, 'out', time_str,
+                    )
+                    logging.info(
+                        f'[{self.name}] snapshot #{call_count}: '
+                        f'in={frame.df.shape}, out={latest_f3d.df.shape}'
+                    )
+
                 for outq in self.output_queues:
                     outq.put(latest_f3d)
                 # ---- MLflow: 记录源节点输出队列大小 ----
