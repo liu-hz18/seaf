@@ -23,6 +23,7 @@ from seafquant.data_generator import DataSourceCallable
 from seafquant.factors import FACTOR_REGISTRY, FACTOR_WINDOWS, GLOBAL_MAX_FACTOR_WINDOW, FACTOR_INPUT_COLUMNS
 from seafquant.ic_analysis import ic_analysis_fn, ic_epilogue
 from seafquant.model_node import model_train_predict
+from seafquant.strategy import strategy_fn, strategy_epilogue
 
 
 def main() -> None:
@@ -90,7 +91,7 @@ def main() -> None:
         args.n_times, args.n_stocks, args.noise_ratio, args.seed, args.start_date
     )
     src_output_queues = [f'q_ohlc_to_{name}' for name, _ in factor_nodes]
-    src_output_queues.extend(['q_close_to_model', 'q_close_to_ic'])
+    src_output_queues.extend(['q_close_to_model', 'q_close_to_ic', 'q_close_to_strategy'])
     flow.add_source(
         'src_data',
         gen_callable,
@@ -137,7 +138,7 @@ def main() -> None:
         name='model',
         func=model_train_predict,
         input_from=[*factor_output_queues, 'q_close_to_model'],
-        output_to=['q_signal'],
+        output_to=['q_signal', 'q_signal_to_strategy'],
         window=MODEL_WINDOW,
         min_periods=MODEL_MIN_PERIODS,
         context=model_context,
@@ -158,6 +159,27 @@ def main() -> None:
         input_columns=['pred_signal', 'close'],
         epilogue_fn=ic_epilogue,
         context=ic_context,
+        snapshot_interval=args.snapshot_interval,
+    )
+
+    # ===== 5. 策略绩效节点 =====
+    strategy_context = {
+        'fwd': fwd,
+        'num_groups': 10,
+        'initial_cash': 10_000_000,
+        'mlflow_run_id': mlflow_run_id,
+        'start_date': args.start_date,
+    }
+    flow.add_node(
+        name='strategy',
+        func=strategy_fn,
+        input_from=['q_signal_to_strategy', 'q_close_to_strategy'],
+        output_to=[],
+        window=2,
+        min_periods=2,
+        input_columns=['pred_signal', 'close', 'close_uq'],
+        epilogue_fn=strategy_epilogue,
+        context=strategy_context,
         snapshot_interval=args.snapshot_interval,
     )
 
@@ -187,7 +209,7 @@ def main() -> None:
         f'noise_ratio={args.noise_ratio}, seed={args.seed}, start_date={args.start_date}, '
         f'fwd={fwd}, model_type={args.model_type}'
     )
-    logging.info(f'Topology: 1 source -> {len(factor_nodes)} factor nodes -> model -> ic_analysis')
+    logging.info(f'Topology: 1 source -> {len(factor_nodes)} factor nodes -> model -> ic_analysis + strategy')
     logging.info(f'Model window={MODEL_WINDOW}, IC window={IC_WINDOW}')
     factor_window_summary = ', '.join(
         f'{k}={v["window"]}' for k, v in sorted(FACTOR_WINDOWS.items())

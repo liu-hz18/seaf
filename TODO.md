@@ -42,3 +42,478 @@ logging.info(f'[{name}] NaN removal: {nan_count} removed, {len(y)} remain')
 
 
 我们的业务框架是基于多进程流式数据框架进行的，在 qpipe\node.py 的 MultiInputNode.run 和 SourceNode.run 中，每个节点的计算逻辑函数 如 _call_func 和 gen_func 都会根据输入的一定时间窗的数据来进行计算或记录，然后输出最新时间片的数据（也就是计算结果）。现在，我需要你增加一个功能，就是当这些函数调用一定频次时（如100次），就采样一次这个节点的输入数据(Frame3D)和输出数据(Frame3D)，作为快照保存在 mlflow artifact 中，文件命名为 {node_name}_in|out_{time}.csv, 其中 time 就是frame3d的最新时间片的日期(key)。请阅读和分析框架代码与基建代码，理清项目全局，设计合适的方案，完成本次迭代。注意迭代应该保持低耦合度、低代码复杂度和可扩展性，以方便合作开发者以及后续我们自己的继续迭代。
+
+【重要迭代、较复杂迭代】增加截面选股策略与绩效计算记录模块 strategy。
+1. 首先在源节点的数据生成函数中增加 close_uq 列，表示不复权的收盘价。此前已经有的 open, close, high, low 等等都是后复权价格，是用来计算截面选股的信号（已经由model节点给出）和策略净值的。
+2. pipeline 中增加 strategy 节点。它的上游节点为 source 和 model, 即接收 source 节点的 close(后复权), close_uq(不复权)的截面数据（单日），以及 model 节点的截面信号数据（单日）。经由基建框架合并之后，进行分组选股、交易和净值的计算。 
+3. strategy 节点内部，会缓存 T日的 signal 数据，并在 T+1 时间片进行选股和交易，这样是为了防止时间穿越，因为我们的信号是基于前一天的收盘价给出的，到次日才有机会交易，我们设置次日的交易时间为收盘时，这与前续模型节点的训练标签是一致的。
+4. strategy 节点是截面选股策略，分为 group 组进行交易和持仓。首先对截面上的 signal 排序并分为 group 组，group 0 始终买入 signal分位数0-10% 的股票、group 1 始终买入 signal分位数10-20% 的股票、... 以此类推, 共 group 组。
+5. 因为实际的股票有分红送股等行为，所有我们提供了 不复权 close_uq 和后复权 close 的收盘价。不复权数据主要用于交易，计算真实股数；复权数据主要用于计算净值NAV。此外复权数据还用于在因子和model节点用来计算最终的信号。
+6. 我们是 fwd 日滚动交易，以提高统计数量，对齐信号的生成和策略的交易，也就是把资金平均分配到 fwd 日，每日都根据前一日的信号，在当日临近收盘时进行交易，持仓周期是 fwd 日，初始资金为 initial_cash.
+7. 买入或卖出的手续费都是0.0005，最低5元。
+8. 每个 group 的每日净值、持仓、交易、回撤等数据都保存到 mlflow 中。
+9. 每个函数要配置对应的测试代码，以验证每个模块或单元的逻辑正确性和计算正确性。
+对于每个 group 内的交易和净值计算，我初步设计了一套计算流程，伪代码（变量名不一定和上面的叙述保持一致，只是逻辑大概行得通）如下：
+┌─────────────────────────────────────────────────────────────┐
+│  FUNCTION init_context(initial_cash, fwd=20)                │
+│    context.cash = initial_cash                              │
+│    context.positions = {}        # (sid, batch_dc) → record │
+│    context.pending_signal = None # T-1日信号，待T日执行       │
+│    context.day_counter = 0                                  │
+│    context.trade_log = []                                   │
+│    context.position_log = []                                │
+│    context.nav_log = []                                     │
+│    RETURN context                                           │
+│                                                             │
+│  FUNCTION on_bar(context, date, signal_T, close_uq, hfq)   │
+│    day_counter += 1                                         │
+│                                                             │
+│    ── Step 1: 计算今日复权因子 F_T ──                        │
+│    FOR each stock: F_T[sid] = hfq[sid] / uq[sid]           │
+│                                                             │
+│    ── Step 2: 执行昨日待执行信号 ──                          │
+│    IF pending_signal exists:                                │
+│      找到今日到期的持仓 (mature_dc == day_counter)            │
+│      total_equity = 现金 + 所有持仓市值                      │
+│      slice_capital = total_equity / fwd                     │
+│                                                             │
+│      FOR sid IN signal ∩ maturing:                          │
+│        旧仓实际股数 = Σ N_initial_i × (F_T / F_buy_i)      │
+│        目标股数 = floor(slice_capital × weight / uq / 100)×100│
+│        delta = 目标股数 - 旧仓实际股数                       │
+│        IF delta > 0:  补仓(扣现金+手续费)                    │
+│        IF delta < 0:  减仓(加现金-手续费)                    │
+│        删除旧批次，创建新批次(N_initial=实际股数, F_buy=F_T) │
+│                                                             │
+│      FOR sid IN signal - maturing:                          │
+│        新开仓：买入目标股数(扣现金+手续费)                    │
+│        创建新批次(N_initial=买入股数, F_buy=F_T)            │
+│                                                             │
+│      FOR sid IN maturing - signal:                          │
+│        全部平仓(加现金-手续费)                               │
+│        删除旧批次                                           │
+│                                                             │
+│    ── Step 3: 存储今日信号 ──                               │
+│    pending_signal = signal_T                                │
+│                                                             │
+│    ── Step 4: 计算并记录净值 ──                              │
+│    total_equity = 现金 + Σ(N_initial × hfq / F_buy)        │
+│    nav_log.append(date, cash, total_equity)                 │
+│                                                             │
+│    ── Step 5: 记录持仓快照 ──                               │
+│    FOR each position:                                       │
+│      实际股数 = N_initial × (F_T / F_buy)                   │
+│      市值 = N_initial × (hfq / F_buy)                      │
+│      position_log.append(...)                               │
+│                                                             │
+│    RETURN context                                           │
+└─────────────────────────────────────────────────────────────┘
+上述针对每个 group 进行交易和计算净值的伪代码，转化为的python代码示例如下（仅供参考和分析使用）：
+```
+import math
+import pandas as pd
+import numpy as np
+from collections import defaultdict
+
+# ════════════════════════════════════════════════════════════════
+#  一、初始化
+# ════════════════════════════════════════════════════════════════
+def init_context(initial_cash=1_000_000, fwd=20,
+                 commission_rate=0.0005, min_commission=5.0):
+    """
+    初始化回测上下文
+
+    Parameters
+    ----------
+    initial_cash   : float  初始资金
+    fwd            : int    持仓周期（交易日）= 资金均分份数
+    commission_rate: float  买卖手续费率（万五 = 0.0005）
+    min_commission : float  最低手续费
+    """
+    return {
+        # ── 配置 ──
+        'initial_cash'    : initial_cash,
+        'fwd'             : fwd,
+        'commission_rate' : commission_rate,
+        'min_commission'  : min_commission,
+
+        # ── 核心状态 ──
+        'cash'            : initial_cash,
+        # 持仓字典 key=(stock_id, batch_dc)  value=dict
+        #   stock_id   : 股票代码
+        #   batch_dc   : 建仓时的 day_counter
+        #   N_initial  : 锚定不复权股数（黄金公式的核心变量）
+        #   F_buy      : 建仓日的复权因子
+        #   mature_dc  : 到期 day_counter = batch_dc + fwd
+        #   entry_date : 建仓日期（用于输出展示）
+        'positions'       : {},
+
+        # T-1日信号，待T日收盘执行
+        'pending_signal'  : None,
+        'day_counter'     : 0,
+
+        # ── 输出日志 ──
+        'trade_log'       : [],   # 逐笔交易
+        'position_log'    : [],   # 每日持仓快照
+        'nav_log'         : [],   # 每日净值
+    }
+
+
+# ════════════════════════════════════════════════════════════════
+#  二、内部辅助函数
+# ════════════════════════════════════════════════════════════════
+
+def _calc_commission(trade_value, rate, min_comm):
+    """计算手续费：万五，最低5元"""
+    return max(abs(trade_value) * rate, min_comm)
+
+
+def _get_actual_shares(pos, F_today):
+    """
+    由锚定股数 + 复权因子推算当前实际股数
+    ─────────────────────────────────────
+    如果中间发生了10送5，F 从 F_buy 变为 1.5×F_buy
+    actual_shares = N_initial × (1.5 × F_buy) / F_buy = 1.5 × N_initial
+    ─────────────────────────────────────
+    """
+    ft = F_today.get(pos['stock_id'])
+    if ft is None or pos['F_buy'] <= 0:
+        return 0.0
+    return pos['N_initial'] * (ft / pos['F_buy'])
+
+
+def _get_position_value(pos, close_hfq):
+    """
+    ★ 黄金公式 ★  用后复权价计算持仓真实人民币市值
+    ─────────────────────────────────────
+    市值 = N_initial × (P_hfq / F_buy)
+
+    证明：
+      今日市值 = 实际股数 × 不复权价
+               = [N_initial × (F_today/F_buy)] × P_uq
+               = N_initial × (P_uq × F_today) / F_buy
+               = N_initial × P_hfq / F_buy  ✓
+    ─────────────────────────────────────
+    """
+    p_hfq = close_hfq.get(pos['stock_id'], 0)
+    if p_hfq <= 0 or pos['F_buy'] <= 0:
+        return 0.0
+    return pos['N_initial'] * (p_hfq / pos['F_buy'])
+
+
+def _compute_total_equity(context, close_uq, close_hfq):
+    """总资产 = 现金 + 所有持仓市值（黄金公式）"""
+    total = context['cash']
+    for pos in context['positions'].values():
+        total += _get_position_value(pos, close_hfq)
+    return total
+
+
+def _log_trade(context, date, stock_id, action, shares, price, value, commission):
+    """记录一笔交易"""
+    context['trade_log'].append({
+        'date': date, 'stock_id': stock_id, 'action': action,
+        'shares': shares, 'price': price, 'value': value, 'commission': commission,
+    })
+
+
+def _create_position(context, stock_id, dc, n_initial, f_buy, date):
+    """创建新持仓批次"""
+    context['positions'][(stock_id, dc)] = {
+        'stock_id'  : stock_id,
+        'batch_dc'  : dc,
+        'N_initial' : n_initial,
+        'F_buy'     : f_buy,
+        'mature_dc' : dc + context['fwd'],
+        'entry_date': date,
+    }
+
+
+# ════════════════════════════════════════════════════════════════
+#  三、三种交易处理逻辑
+# ════════════════════════════════════════════════════════════════
+
+def _process_delta_trade(context, date, dc, sid, weight, slice_capital,
+                         maturing_keys, close_uq, close_hfq, F_today):
+    """
+    差额交易：到期持仓 + 新信号继续持有
+    → 只补仓/减仓，节省手续费，锚点重置为新批次
+    """
+    p_uq = close_uq.get(sid, 0)
+    if p_uq <= 0:  # 停牌无法交易，延期一天到期
+        for key in maturing_keys:
+            context['positions'][key]['mature_dc'] = dc + 1
+        return
+
+    rate     = context['commission_rate']
+    min_comm = context['min_commission']
+
+    # ── 旧仓实际股数（含送股产生的零碎股）──
+    old_shares = sum(
+        _get_actual_shares(context['positions'][k], F_today) for k in maturing_keys
+    )
+
+    # ── 目标股数（100的整数倍）──
+    target_value  = slice_capital * weight
+    target_shares = math.floor(target_value / p_uq / 100) * 100
+
+    # ── 差额交易 ──
+    delta = target_shares - old_shares
+
+    if delta > 0:                          # 补仓
+        trade_value = delta * p_uq
+        commission  = _calc_commission(trade_value, rate, min_comm)
+        if context['cash'] >= trade_value + commission:
+            context['cash'] -= (trade_value + commission)
+            _log_trade(context, date, sid, 'buy', delta, p_uq, trade_value, commission)
+        else:                              # 资金不足，尽力买入
+            max_aff   = max(0, context['cash'] - min_comm)
+            buy_shares = math.floor(max_aff / p_uq / 100) * 100
+            if buy_shares > 0:
+                trade_value = buy_shares * p_uq
+                commission  = _calc_commission(trade_value, rate, min_comm)
+                if context['cash'] >= trade_value + commission:
+                    context['cash'] -= (trade_value + commission)
+                    _log_trade(context, date, sid, 'buy', buy_shares,
+                               p_uq, trade_value, commission)
+                    target_shares = old_shares + buy_shares
+                else:
+                    target_shares = old_shares
+            else:
+                target_shares = old_shares
+
+    elif delta < 0:                        # 减仓
+        sell_shares = min(abs(delta), old_shares)
+        trade_value = sell_shares * p_uq
+        commission  = _calc_commission(trade_value, rate, min_comm)
+        context['cash'] += (trade_value - commission)
+        _log_trade(context, date, sid, 'sell', sell_shares,
+                   p_uq, trade_value, commission)
+        target_shares = old_shares - sell_shares
+
+    # delta == 0 时无需交易，target_shares = old_shares
+
+    # ── 删除旧批次，创建新批次（锚点重置）──
+    for key in maturing_keys:
+        del context['positions'][key]
+
+    if target_shares > 0 and sid in F_today:
+        _create_position(context, sid, dc, target_shares, F_today[sid], date)
+
+
+def _process_new_trade(context, date, dc, sid, weight, slice_capital,
+                       close_uq, close_hfq, F_today):
+    """新开仓：信号中的股票，当前无到期持仓"""
+    p_uq = close_uq.get(sid, 0)
+    if p_uq <= 0 or sid not in F_today:
+        return
+
+    rate     = context['commission_rate']
+    min_comm = context['min_commission']
+
+    target_value  = slice_capital * weight
+    target_shares = math.floor(target_value / p_uq / 100) * 100
+    if target_shares <= 0:
+        return
+
+    trade_value = target_shares * p_uq
+    commission  = _calc_commission(trade_value, rate, min_comm)
+
+    if context['cash'] >= trade_value + commission:
+        context['cash'] -= (trade_value + commission)
+        _log_trade(context, date, sid, 'buy', target_shares,
+                   p_uq, trade_value, commission)
+        _create_position(context, sid, dc, target_shares, F_today[sid], date)
+    else:                                  # 资金不足，尽力买入
+        max_aff    = max(0, context['cash'] - min_comm)
+        buy_shares = math.floor(max_aff / p_uq / 100) * 100
+        if buy_shares > 0:
+            trade_value = buy_shares * p_uq
+            commission  = _calc_commission(trade_value, rate, min_comm)
+            if context['cash'] >= trade_value + commission:
+                context['cash'] -= (trade_value + commission)
+                _log_trade(context, date, sid, 'buy', buy_shares,
+                           p_uq, trade_value, commission)
+                _create_position(context, sid, dc, buy_shares, F_today[sid], date)
+
+
+def _process_close_trade(context, date, dc, sid, maturing_keys,
+                         close_uq, close_hfq, F_today):
+    """全部平仓：到期持仓不在新信号中"""
+    p_uq = close_uq.get(sid, 0)
+    if p_uq <= 0:                          # 停牌无法卖出，延期
+        for key in maturing_keys:
+            context['positions'][key]['mature_dc'] = dc + 1
+        return
+
+    rate     = context['commission_rate']
+    min_comm = context['min_commission']
+
+    for key in maturing_keys:
+        pos = context['positions'][key]
+        actual_shares = _get_actual_shares(pos, F_today)
+        if actual_shares > 0:
+            trade_value = actual_shares * p_uq
+            commission  = _calc_commission(trade_value, rate, min_comm)
+            context['cash'] += (trade_value - commission)
+            _log_trade(context, date, sid, 'sell', actual_shares,
+                       p_uq, trade_value, commission)
+        del context['positions'][key]
+
+
+# ════════════════════════════════════════════════════════════════
+#  四、主函数：逐日调用
+# ════════════════════════════════════════════════════════════════
+
+def on_bar(context, date, signal, close_uq, close_hfq):
+    """
+    逐日调用 — 对齐信号、交易与净值
+
+    Timeline
+    --------
+    T日收盘:  生成 signal_T
+    T+1收盘:  执行 signal_T（用 T+1 的不复权价撮合）
+
+    所以: on_bar 在 T日 被调用时，
+      - 执行 context['pending_signal']（即 signal_{T-1}）→ 用 T日不复权价撮合
+      - 存储 signal_T → 供 T+1 日执行
+
+    Parameters
+    ----------
+    context   : dict   回测上下文
+    date      :        当前交易日 T
+    signal    : dict   T日收盘信号 {stock_id: weight}，T+1收盘执行
+    close_uq  : dict   T日不复权收盘价 {stock_id: price}
+    close_hfq : dict   T日后复权收盘价 {stock_id: price}
+
+    Returns
+    -------
+    context   : dict   更新后的上下文
+    """
+    context['day_counter'] += 1
+    dc = context['day_counter']
+
+    # ═══════════════════════════════════════
+    #  Step 1: 计算今日隐含复权因子
+    # ═══════════════════════════════════════
+    F_today = {}
+    for sid in close_uq:
+        puq, phfq = close_uq[sid], close_hfq.get(sid, 0)
+        if puq > 0 and phfq > 0:
+            F_today[sid] = phfq / puq
+
+    # ═══════════════════════════════════════
+    #  Step 2: 执行昨日待执行信号
+    # ═══════════════════════════════════════
+    if context['pending_signal'] is not None:
+        sig = context['pending_signal']
+
+        # 2.1 找出今日到期的持仓批次
+        maturing = defaultdict(list)      # stock_id -> [position_keys]
+        for key, pos in list(context['positions'].items()):
+            if pos['mature_dc'] == dc:
+                maturing[pos['stock_id']].append(key)
+
+        # 2.2 计算当前总资产 → 确定新切片资金量
+        total_equity = _compute_total_equity(context, close_uq, close_hfq)
+        slice_capital = total_equity / context['fwd']
+
+        sig_sids = set(sig.keys())
+        mat_sids = set(maturing.keys())
+
+        # 2.3 信号 ∩ 到期 → 差额交易 + 锚点重置（省手续费）
+        for sid in sig_sids & mat_sids:
+            _process_delta_trade(
+                context, date, dc, sid, sig[sid], slice_capital,
+                maturing[sid], close_uq, close_hfq, F_today
+            )
+
+        # 2.4 信号 - 到期 → 新开仓
+        for sid in sig_sids - mat_sids:
+            _process_new_trade(
+                context, date, dc, sid, sig[sid], slice_capital,
+                close_uq, close_hfq, F_today
+            )
+
+        # 2.5 到期 - 信号 → 全部平仓
+        for sid in mat_sids - sig_sids:
+            _process_close_trade(
+                context, date, dc, sid, maturing[sid],
+                close_uq, close_hfq, F_today
+            )
+
+    # ═══════════════════════════════════════
+    #  Step 3: 存储今日信号，供明日执行
+    # ═══════════════════════════════════════
+    context['pending_signal'] = signal
+
+    # ═══════════════════════════════════════
+    #  Step 4: 计算并记录净值
+    # ═══════════════════════════════════════
+    total_equity = _compute_total_equity(context, close_uq, close_hfq)
+    context['nav_log'].append({
+        'date'          : date,
+        'day_counter'   : dc,
+        'cash'          : context['cash'],
+        'total_equity'  : total_equity,
+        'position_value': total_equity - context['cash'],
+    })
+
+    # ═══════════════════════════════════════
+    #  Step 5: 记录持仓快照
+    # ═══════════════════════════════════════
+    for key, pos in context['positions'].items():
+        sid = pos['stock_id']
+        actual_shares = _get_actual_shares(pos, F_today) if sid in F_today else 0
+        market_value  = _get_position_value(pos, close_hfq)
+        context['position_log'].append({
+            'date'         : date,
+            'day_counter'  : dc,
+            'stock_id'     : sid,
+            'batch_dc'     : pos['batch_dc'],
+            'N_initial'    : pos['N_initial'],
+            'F_buy'        : pos['F_buy'],
+            'F_today'      : F_today.get(sid),
+            'actual_shares': actual_shares,      # 当前真实股数（含送股零头）
+            'market_value' : market_value,        # 人民币市值
+            'p_uq'         : close_uq.get(sid, 0),
+            'p_hfq'        : close_hfq.get(sid, 0),
+            'mature_dc'    : pos['mature_dc'],
+            'entry_date'   : pos['entry_date'],
+        })
+
+    return context
+
+
+# ════════════════════════════════════════════════════════════════
+#  五、结果提取
+# ════════════════════════════════════════════════════════════════
+
+def get_nav_df(context):
+    return pd.DataFrame(context['nav_log'])
+
+def get_trade_df(context):
+    return pd.DataFrame(context['trade_log'])
+
+def get_position_df(context):
+    return pd.DataFrame(context['position_log'])
+
+
+if __name__ == '__main__':
+    # ── 初始化 ──
+    context = init_context(initial_cash=1_000_000, fwd=20)
+
+    # ── 逐日调用 ──
+    for i, dt in enumerate(trading_dates):
+        # signal:   T日收盘信号，dict {stock_id: weight}
+        # close_uq: T日不复权收盘价，dict {stock_id: price}
+        # close_hfq:T日后复权收盘价，dict {stock_id: price}
+        on_bar(context, dt, signal[i], close_uq[i], close_hfq[i])
+
+    # ── 取结果 ──
+    nav_df      = get_nav_df(context)       # 每日净值
+    trade_df    = get_trade_df(context)     # 逐笔交易记录
+    position_df = get_position_df(context)  # 每日持仓快照
+```
+请你根据上述要求，完成 strategy 节点函数的设计和编写，保持低耦合度和可扩展性，方便合作开发者和我们后续的进一步迭代和修正。保持耐心，细粒度拆解任务，结合框架特点和基建特点，以及真实量化交易的实际场景，设计合适的细粒度方案，然后一步步完成。
+

@@ -199,12 +199,17 @@ def generate_synthetic_data(
         # === 构建当日 Frame3D ===
         arrays = [[tk] * n_active, active_names]
         mi = pd.MultiIndex.from_arrays(arrays, names=['key', 'name'])
+
+        # close_uq：不复权收盘价（模拟除权除息，与后复权 close 有微小偏离）
+        close_uq_t = close_t * np.exp(rng.normal(0, 0.0005, n_active))
+
         df = pd.DataFrame(
             {
                 'open': open_t,
                 'high': high_t,
                 'low': low_t,
                 'close': close_t,
+                'close_uq': close_uq_t,
                 'turnover': turnover_t,
                 'volume': volume_t,
                 'market_cap': mcap_t,
