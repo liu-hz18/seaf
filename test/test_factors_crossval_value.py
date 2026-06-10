@@ -5,6 +5,7 @@ value 因子对拍验证 — 直接公式 + MA偏离 + 回撤 + 复合。
 
 import numpy as np
 import pytest
+
 from test.crossval_helpers import _compare_factor_output, _make_data, _roll_manual
 
 
@@ -49,8 +50,8 @@ class TestValueCrossVal:
 
     def test_sharpe_inv(self, f3d):
         """factor_val_sharpe_inv = -ts_zscore(close, 60)。"""
-        from seafquant.factor.value import compute_value_factors
         from qpipe.frame3d import Frame3D
+        from seafquant.factor.value import compute_value_factors
         actual = compute_value_factors('test', f3d, None)
         z = Frame3D(f3d.df.copy()).ts_zscore('close', 60).df['close']
         _compare_factor_output(actual, {'factor_val_sharpe_inv': (-z).values})

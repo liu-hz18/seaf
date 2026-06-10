@@ -40,7 +40,7 @@ class TestRollingAlignmentRegression:
     ])
     def test_majority_factors_have_variance(self, module_key):
         """回归：每个模块至少 50% 的因子列有截面方差。
-        
+
         确定性数据中 turnover/volume/price 各有差异，但某些衍生因子
         （如 cs_zscore 后 rank=0.5）可能在特定窗口下退化。容忍度设为 50%。
         """

@@ -5,8 +5,11 @@ cross_section 因子对拍验证 — 截面排名/排名变化/Z-score/收益率
 
 import pandas as pd
 import pytest
+
 from test.crossval_helpers import (
-    _compare_factor_output, _make_data, _ts_pct_manual,
+    _compare_factor_output,
+    _make_data,
+    _ts_pct_manual,
 )
 
 
@@ -55,8 +58,8 @@ class TestCrossSectionCrossVal:
 
     def test_rank_zscore(self, f3d):
         """factor_cs_rank_zscore_{p}d = ts_zscore(close, p)。"""
-        from seafquant.factor.cross_section import compute_cross_section_factors
         from qpipe.frame3d import Frame3D
+        from seafquant.factor.cross_section import compute_cross_section_factors
         actual = compute_cross_section_factors('test', f3d, None)
         expected = {}
         for p in [5, 20, 60]:

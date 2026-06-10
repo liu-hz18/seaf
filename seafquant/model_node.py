@@ -28,9 +28,8 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from scipy.stats import spearmanr
-from sklearn.model_selection import TimeSeriesSplit
 
+# scipy / sklearn 延迟导入到使用函数内，节省 ~1s 顶层导入时间
 from qpipe.frame3d import Frame3D
 from qpipe.utils import mlflow_log_metrics, trading_step
 from seafquant.model_wrappers import WRAPPER_REGISTRY
@@ -120,6 +119,9 @@ def _run_cv(
 
     Returns (cv_scores, is_mlp)。
     """
+    from scipy.stats import spearmanr  # 延迟导入
+    from sklearn.model_selection import TimeSeriesSplit  # 延迟导入
+
     is_mlp = hasattr(wrapper, 'finalize_epochs')
     tscv = TimeSeriesSplit(n_splits=n_splits)
     cv_scores: list[float] = []
@@ -161,6 +163,7 @@ def _log_feature_importance(
     name: str,
     fi: dict[str, float],
     model_type: str,
+    step: int,
 ) -> None:
     """记录特征重要性到日志和 MLflow artifact。"""
     if not fi:
@@ -177,7 +180,7 @@ def _log_feature_importance(
             mlflow.set_tracking_uri('sqlite:///mlruns.db')
             mlflow.log_dict(
                 fi,
-                f'feature_importance_{model_type}.json',
+                f'feature_importance_{model_type}_{step}.json',
                 run_id=run_id,
             )
         except Exception:
@@ -286,7 +289,7 @@ def model_train_predict(name: str, f3d: Frame3D, context: Any) -> Frame3D:
         y_nan = np.isnan(y)
         valid = ~y_nan & ~drop_mask
         nan_total = sum(~valid) + len(y)
-        nan_ratio = nan_total > 0 and (sum(~valid)) / nan_total or 0.0
+        nan_ratio = (nan_total > 0 and (sum(~valid)) / nan_total) or 0.0
         X, y = X[valid], y[valid]
         X = np.nan_to_num(X, nan=0.0)  # 保留样本的 NaN → 0
         logging.info(
@@ -316,7 +319,7 @@ def model_train_predict(name: str, f3d: Frame3D, context: Any) -> Frame3D:
 
         # 8. 特征重要性
         fi = wrapper.get_feature_importance(feature_cols)
-        _log_feature_importance(mlflow_run_id, name, fi, model_type)
+        _log_feature_importance(mlflow_run_id, name, fi, model_type, step=trading_step(start_date, times[n_train_times - 1]))
 
         # 9. 保存状态
         context['trained_wrapper'] = wrapper

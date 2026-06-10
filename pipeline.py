@@ -15,62 +15,14 @@ import os
 import subprocess
 import sys
 
-import mlflow
-
+# mlflow 延迟导入 — 仅在非 --no-mlflow 时加载，节省 3.5s 启动时间
 sys.path.insert(0, os.path.dirname(__file__))
 
 from qpipe.flow import Flow
-from seafquant.data_generator import generate_synthetic_data
-from seafquant.factors import (
-    FACTOR_REGISTRY, FACTOR_WINDOWS, GLOBAL_MAX_FACTOR_WINDOW
-)
+from seafquant.data_generator import DataSourceCallable
+from seafquant.factors import FACTOR_REGISTRY, FACTOR_WINDOWS, GLOBAL_MAX_FACTOR_WINDOW, FACTOR_INPUT_COLUMNS
 from seafquant.ic_analysis import ic_analysis_fn, ic_epilogue
 from seafquant.model_node import model_train_predict
-
-
-# 因子节点输入列过滤 — 每个模块只接收实际用到的 OHLCV 列。
-# source 发送 7 列到所有因子队列，通过 input_columns 过滤后
-# time_order_buffer 仅保留必要列，窗口缓冲内存节省 30-85%。
-FACTOR_INPUT_COLUMNS: dict[str, list[str]] = {
-    'momentum':         ['close', 'open', 'high', 'low', 'volume', 'turnover'],
-    'volatility':       ['close', 'open', 'high', 'low', 'volume'],
-    'liquidity':        ['close', 'volume', 'turnover', 'market_cap'],
-    'value':            ['close', 'market_cap', 'turnover'],
-    'quality_merged':   ['close', 'high', 'low', 'market_cap', 'volume'],
-    'quality_autocorr': ['close'],
-    'quality_pattern':  ['close', 'high', 'low'],
-    'trend':            ['close', 'volume'],
-    'counting':         ['close', 'high', 'low', 'volume', 'turnover'],
-    'interaction':      ['close', 'high', 'low', 'volume', 'turnover', 'market_cap'],
-    'cross_section':    ['close', 'volume'],
-}
-
-
-class DataSourceCallable:
-    """模块级可调用类，用于 pickle 安全的 SourceNode gen_func。"""
-
-    def __init__(
-        self,
-        n_times: int,
-        n_stocks: int,
-        noise_ratio: float,
-        seed: int,
-        start_date: str | None = None,
-    ) -> None:
-        self.n_times = n_times
-        self.n_stocks = n_stocks
-        self.noise_ratio = noise_ratio
-        self.seed = seed
-        self.start_date: str | None = start_date
-
-    def __call__(self):
-        return generate_synthetic_data(
-            n_times=self.n_times,
-            n_stocks=self.n_stocks,
-            noise_ratio=self.noise_ratio,
-            seed=self.seed,
-            start_date=self.start_date,
-        )
 
 
 def main() -> None:
@@ -94,15 +46,16 @@ def main() -> None:
         help='Model training window in days (factor history for training)',
     )
     parser.add_argument(
-        '--log-level', default='INFO', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR']
+        '--log-level', type=str, default='INFO', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR']
     )
-    parser.add_argument('--no-mlflow', action='store_true', help='Disable MLflow tracking')
+    parser.add_argument('--no-mlflow', action='store_true', default=False, help='Disable MLflow tracking')
     args = parser.parse_args()
 
     logging.basicConfig(
         level=getattr(logging, args.log_level), format='%(message)s', stream=sys.stdout
     )
 
+    logging.info(f"args: {args}")
     # ===== 因子节点注册（由 FACTOR_REGISTRY 派生，10 个并行节点） =====
     factor_nodes = [(f'factor_{name}', func) for name, func in FACTOR_REGISTRY.items()]
 
@@ -117,6 +70,8 @@ def main() -> None:
     # ===== MLflow 初始化 =====
     experiment_name = datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
     if not args.no_mlflow:
+        import mlflow  # 延迟导入 — 仅在需要时加载
+
         mlflow.set_tracking_uri('sqlite:///mlruns.db')
         mlflow.set_experiment(experiment_name)
         mlflow_run = mlflow.start_run()

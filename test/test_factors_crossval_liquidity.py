@@ -5,8 +5,12 @@ liquidity 因子对拍验证 — 换手率 + Amihud + 规模。
 
 import numpy as np
 import pytest
+
 from test.crossval_helpers import (
-    _compare_factor_output, _make_data, _roll_manual, _ts_pct_manual,
+    _compare_factor_output,
+    _make_data,
+    _roll_manual,
+    _ts_pct_manual,
 )
 
 
@@ -46,8 +50,8 @@ class TestLiquidityCrossVal:
 
     def test_size_basic(self, f3d):
         """factor_size_log_mcap / cs_rank / sqrt / cbrt / price。"""
-        from seafquant.factor.liquidity import compute_liquidity_factors
         from qpipe.frame3d import Frame3D
+        from seafquant.factor.liquidity import compute_liquidity_factors
         actual = compute_liquidity_factors('test', f3d, None)
         mcap = f3d.df['market_cap']
         cs_rank = Frame3D(f3d.df.copy()).cs_rank('market_cap').df['market_cap']

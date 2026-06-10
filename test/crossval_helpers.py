@@ -75,8 +75,8 @@ def _compare_factor_output(
 ):
     """对比实际因子输出与期望值（先对期望值做 cs_zscore 再对比）。"""
     expect_df = actual_f3d.df.copy()
-    for col in expected_cols:
-        expect_df[col] = expected_cols[col]
+    for col, vals in expected_cols.items():
+        expect_df[col] = vals
     expect_f3d = _cs_zscore_manual(Frame3D(expect_df), list(expected_cols.keys()))
 
     for col in expected_cols:

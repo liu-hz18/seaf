@@ -24,11 +24,11 @@ from seafquant.model_node import (
     model_train_predict,
 )
 from seafquant.model_wrappers import (
+    WRAPPER_REGISTRY,
     BaseWrapper,
     LGBMWrapper,
     MLPWrapper,
     RidgeWrapper,
-    WRAPPER_REGISTRY,
 )
 
 # ============================================================================
@@ -128,7 +128,8 @@ class TestCsZscore:
     def test_all_nan(self):
         """全 NaN 向量应返回零向量。"""
         z = _cs_zscore(np.array([np.nan, np.nan]))
-        assert z[0] == 0.0 and z[1] == 0.0
+        assert z[0] == 0.0
+        assert z[1] == 0.0
 
     def test_zero_std(self):
         """两元素相同 -> std=0 -> 零向量。"""
@@ -194,7 +195,6 @@ class TestPrepareTrainingData:
         times = sorted(df.index.get_level_values('key').unique())
         X, y, cs_stats = _prepare_training_data('test', df, feature_cols, times, fwd=5)
 
-        n_stocks = df.index.get_level_values('name').nunique()
         start = 0
         for stat in cs_stats:
             n = stat['n']
@@ -214,7 +214,6 @@ class TestPrepareTrainingData:
 
         t0 = times[0]
         t1_close = df.loc[times[1], 'close'].values
-        t_fwd_close = df.loc[times[fwd], 'close'].values
 
         # 第一个截面使用 t+fwd 与 t+1 的 close 做 label，而非 t
         assert cs_stats[0]['t'] == t0
@@ -256,7 +255,7 @@ class MockWrapper(BaseWrapper):
         return y_val_proxy, {}
 
     def get_feature_importance(self, feature_cols):
-        return {k: 0.1 for k in feature_cols}
+        return dict.fromkeys(feature_cols, 0.1)
 
 
 class TestRunCv:

@@ -5,8 +5,12 @@ quality_merged 因子对拍验证 — 收益稳定性/Sharpe/正收益占比/最
 
 import numpy as np
 import pytest
+
 from test.crossval_helpers import (
-    _compare_factor_output, _make_data, _roll_manual, _ts_pct_manual,
+    _compare_factor_output,
+    _make_data,
+    _roll_manual,
+    _ts_pct_manual,
 )
 
 
@@ -77,8 +81,8 @@ class TestQualityMergedCrossVal:
 
     def test_cs_momentum(self, f3d):
         """factor_cs_momentum_{p}d = cs_zscore(pct_change(close, p))。"""
-        from seafquant.factor.quality_merged import compute_quality_merged_factors
         from qpipe.frame3d import Frame3D
+        from seafquant.factor.quality_merged import compute_quality_merged_factors
         actual = compute_quality_merged_factors('test', f3d, None)
         df = f3d.df.copy()
         expected = {}

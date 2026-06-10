@@ -60,6 +60,23 @@ FACTOR_WINDOWS: dict[str, dict[str, int]] = {
 # 全局最大窗口（模型/IC 节点基于此计算）
 GLOBAL_MAX_FACTOR_WINDOW = max(c['window'] for c in FACTOR_WINDOWS.values())
 
+# 因子节点输入列过滤 — 每个模块只接收实际用到的 OHLCV 列。
+# source 发送 7 列到所有因子队列，通过 input_columns 过滤后
+# time_order_buffer 仅保留必要列，窗口缓冲内存节省 30-85%。
+FACTOR_INPUT_COLUMNS: dict[str, list[str]] = {
+    'momentum':         ['close', 'open', 'high', 'low', 'volume', 'turnover'],
+    'volatility':       ['close', 'open', 'high', 'low', 'volume'],
+    'liquidity':        ['close', 'volume', 'turnover', 'market_cap'],
+    'value':            ['close', 'market_cap', 'turnover'],
+    'quality_merged':   ['close', 'high', 'low', 'market_cap', 'volume'],
+    'quality_autocorr': ['close'],
+    'quality_pattern':  ['close', 'high', 'low'],
+    'trend':            ['close', 'volume'],
+    'counting':         ['close', 'high', 'low', 'volume', 'turnover'],
+    'interaction':      ['close', 'high', 'low', 'volume', 'turnover', 'market_cap'],
+    'cross_section':    ['close', 'volume'],
+}
+
 FACTOR_PREFIXES: dict[str, str] = {
     'momentum': 'factor_mom',
     'volatility': 'factor_vol',
@@ -73,6 +90,7 @@ FACTOR_PREFIXES: dict[str, str] = {
     'interaction': 'factor_inter',
     'cross_section': 'factor_cs',
 }
+
 
 __all__ = [
     'FACTOR_PREFIXES',

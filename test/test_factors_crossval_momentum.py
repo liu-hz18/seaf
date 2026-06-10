@@ -3,10 +3,14 @@ momentum 因子对拍验证 — 动量收益率 + 波动率调整 + 反转。
 每测试以 scope='class' 的 fixture params 重复 10 组随机数据。
 """
 
-import numpy as np
 import pytest
+
 from test.crossval_helpers import (
-    _compare_factor_output, _make_data, _roll_manual, _ts_pct_manual, EPS,
+    EPS,
+    _compare_factor_output,
+    _make_data,
+    _roll_manual,
+    _ts_pct_manual,
 )
 
 

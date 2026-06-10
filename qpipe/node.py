@@ -9,12 +9,12 @@ import gc
 import inspect
 import logging
 import multiprocessing as mp
-import os
 import sys
 import threading
 import time
 from collections import deque
 from collections.abc import Callable
+from contextlib import suppress
 from typing import Any
 
 import pandas as pd
@@ -333,10 +333,8 @@ class MultiInputNode(mp.Process):
                                 if qi < len(self.output_queue_names)
                                 else f'q{qi}'
                             )
-                            try:
+                            with suppress(Exception):
                                 queue_sizes[f'queue_{qname}'] = float(q.qsize())
-                            except Exception:
-                                pass
                         step = trading_step(current_context.get('start_date', ''), max_key)
                         mlflow_log_metrics(
                             run_id,

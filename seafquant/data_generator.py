@@ -132,9 +132,7 @@ def generate_synthetic_data(
     next_reserve: int = n_stocks     # 下一个待激活的 reserve 索引
 
     # ---- 前一日 log_price 记录（用于生成当天 open price）----
-    prev_log_prices: dict[int, float | None] = {
-        si: None for si in range(n_stocks)  # 初始日无前日价格
-    }
+    prev_log_prices: dict[int, float | None] = dict.fromkeys(range(n_stocks))
 
     for t in range(n_times):
         tk = time_keys[t]
@@ -190,9 +188,11 @@ def generate_synthetic_data(
         mcap_t = np.array([stock_state[si]['mcap'] for si in active_indices])
         intraday_range = np.abs(close_t - open_t)
         volume_t = intraday_range * mcap_t * 0.01 * np.exp(rng.normal(0, 0.5, n_active))
-        # 体积地板（含每股票微小噪声，避免截面退化）
+        # 体积地板（含每股票微小噪声，避免截面退化）。
+        # 注意：price 回落后 1e-4 的 floor 会反客为主（0.01 vs 实际 volume≈0.006），
+        # 故降低至 1e-7，确保 floor 仅在极端情况下生效。
         floor_noise = np.exp(rng.normal(0, 0.0001, n_active))
-        floor = mcap_t * 0.0001 * floor_noise
+        floor = mcap_t * 1e-7 * floor_noise
         volume_t = np.maximum(volume_t, floor)
         turnover_t = volume_t / mcap_t
 
@@ -233,11 +233,42 @@ def generate_synthetic_data(
         # 计算下一日 log_price（仅活跃股票，当前日 t < n_times-1）
         if t < n_times - 1:
             drift = 0.0002
-            innovation = rng.normal(0, 0.5, n_active)
+            innovation = rng.normal(0, 0.01, n_active)
             for i, si in enumerate(active_indices):
+                # true_fwd_ret 是 20 日级信号（std≈7.2），直接用作每日漂移会导致
+                # 1000 天后价格爆炸（e^80+），使 liquidity/value 等因子退化。
+                # 除以 sqrt(20)≈4.5 转换为日度尺度，再乘以 0.05 控制日波动率。
+                daily_signal = true_fwd_ret[t, si] * 0.05 / 4.5
                 stock_state[si]['log_price'] = (
                     log_prices_t[i] + drift
-                    + sigma[si] * (true_fwd_ret[t, si] + innovation[i])
+                    + sigma[si] * (daily_signal + innovation[i])
                 )
 
         time.sleep(0.2)
+
+
+class DataSourceCallable:
+    """模块级可调用类，用于 pickle 安全的 SourceNode gen_func。"""
+
+    def __init__(
+        self,
+        n_times: int,
+        n_stocks: int,
+        noise_ratio: float,
+        seed: int,
+        start_date: str | None = None,
+    ) -> None:
+        self.n_times = n_times
+        self.n_stocks = n_stocks
+        self.noise_ratio = noise_ratio
+        self.seed = seed
+        self.start_date: str | None = start_date
+
+    def __call__(self):
+        return generate_synthetic_data(
+            n_times=self.n_times,
+            n_stocks=self.n_stocks,
+            noise_ratio=self.noise_ratio,
+            seed=self.seed,
+            start_date=self.start_date,
+        )

@@ -19,8 +19,8 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pandas as pd
-from scipy.stats import pearsonr, spearmanr
 
+# scipy 延迟导入到 ic_analysis_fn 内，节省顶层导入时间
 from qpipe.utils import mlflow_log_metrics, trading_step
 
 if TYPE_CHECKING:
@@ -35,6 +35,8 @@ def ic_analysis_fn(name: str, f3d: Frame3D, context: Any) -> Frame3D:
     """
     if context is None:
         context = {}
+    from scipy.stats import pearsonr, spearmanr  # 延迟导入
+
     context.setdefault('pearson_ic_history', [])
     context.setdefault('rank_ic_history', [])
     context.setdefault('raw_ret_std_history', [])

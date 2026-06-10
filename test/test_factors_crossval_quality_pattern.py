@@ -5,8 +5,12 @@ quality_pattern 因子对拍验证 — HL稳定性/峰度/偏度/MaxConsecPos。
 
 import numpy as np
 import pytest
+
 from test.crossval_helpers import (
-    _compare_factor_output, _make_data, _roll_manual, _ts_pct_manual,
+    _compare_factor_output,
+    _make_data,
+    _roll_manual,
+    _ts_pct_manual,
 )
 
 
@@ -52,8 +56,9 @@ class TestQualityPatternCrossVal:
 
     def test_max_consec_pos(self, f3d):
         """factor_qa_max_consec_pos_60d：滑动窗口内最长连续正收益占比。"""
-        from seafquant.factor.quality_pattern import compute_quality_pattern_factors
         from numpy.lib.stride_tricks import sliding_window_view
+
+        from seafquant.factor.quality_pattern import compute_quality_pattern_factors
         actual = compute_quality_pattern_factors('test', f3d, None)
 
         def _mcp_vec(series, window):

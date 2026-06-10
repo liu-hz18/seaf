@@ -4,6 +4,7 @@ quality_autocorr 因子对拍验证 — 自相关 + 尾部风险。
 """
 
 import pytest
+
 from test.crossval_helpers import _compare_factor_output, _make_data
 
 
@@ -23,7 +24,7 @@ class TestQualityAutocorrCrossVal:
         expected = {}
         for p in [20, 60]:
             expected[f'factor_qa_autocorr_{p}d'] = df.groupby('name')['_ret'].transform(
-                lambda x: x.rolling(p, min_periods=mp_map[p]).corr(x.shift(1))
+                lambda x, _p=p, _mp=mp_map[p]: x.rolling(_p, min_periods=_mp).corr(x.shift(1))
             ).values
         _compare_factor_output(actual, expected)
 
@@ -37,6 +38,6 @@ class TestQualityAutocorrCrossVal:
         expected = {}
         for p in [60, 120]:
             expected[f'factor_qa_tail_risk_{p}d'] = df.groupby('name')['_ret'].transform(
-                lambda x: -x.where(x < 0).rolling(p, min_periods=mp_map[p]).quantile(0.05)
+                lambda x, _p=p, _mp=mp_map[p]: -x.where(x < 0).rolling(_p, min_periods=_mp).quantile(0.05)
             ).values
         _compare_factor_output(actual, expected)

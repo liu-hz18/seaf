@@ -5,8 +5,12 @@ volatility 因子对拍验证 — 已实现波动 + Parkinson + GK + 日内。
 
 import numpy as np
 import pytest
+
 from test.crossval_helpers import (
-    _compare_factor_output, _make_data, _roll_manual, _ts_pct_manual,
+    _compare_factor_output,
+    _make_data,
+    _roll_manual,
+    _ts_pct_manual,
 )
 
 

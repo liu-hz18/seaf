@@ -6,8 +6,11 @@ interaction 因子对拍验证 — 量价共振/活跃度加权/市值交互/方
 import numpy as np
 import pandas as pd
 import pytest
+
 from test.crossval_helpers import (
-    _compare_factor_output, _make_data, _ts_pct_manual,
+    _compare_factor_output,
+    _make_data,
+    _ts_pct_manual,
 )
 
 
