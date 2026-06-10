@@ -91,7 +91,7 @@ def main() -> None:
     )
     actual = latest_section["factor_val_inv_price"].values
     diff = np.abs(actual - expected_inv_price).max()
-    print(f"\n=== 对比 factor_val_inv_price ===")
+    print("\n=== 对比 factor_val_inv_price ===")
     print(f"  max diff: {diff:.2e}")
     if diff < 1e-5:
         print("  [PASS] exact match (diff < 1e-5)")
@@ -101,7 +101,7 @@ def main() -> None:
         print(f"  [FAIL] mismatch! max diff {diff:.2e}")
 
     # ---- 全列逐一对比 ----
-    print(f"\n=== 全列对比 (16 columns) ===")
+    print("\n=== 全列对比 (16 columns) ===")
     expected_all = {
         "factor_val_inv_price": np.array(
             [
@@ -124,11 +124,8 @@ def main() -> None:
     for col in factor_cols:
         if col in expected_all:
             diff_col = np.abs(latest_section[col].values - expected_all[col]).max()
-            status = "[PASS]" if diff_col < 1e-5 else f"[FAIL] {diff_col:.2e}"
             if diff_col >= 1e-5:
                 all_pass = False
-        else:
-            status = "[SKIP]"
         # 只打印前几个，其余状态聚合
     print(f"  checked {len(expected_all)} columns: {'all pass' if all_pass else 'some failed'}")
 
