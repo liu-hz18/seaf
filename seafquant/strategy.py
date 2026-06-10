@@ -277,8 +277,8 @@ def _on_bar(
 
     # Step 1: 复权因子 F_T = hfq / uq
     f_today: dict[str, float] = {}
-    for sid in close_uq:
-        puq, phfq = close_uq[sid], close_hfq.get(sid, 0.0)
+    for sid, puq in close_uq.items():
+        phfq = close_hfq.get(sid, 0.0)
         if puq > 0 and phfq > 0:
             f_today[sid] = phfq / puq
 
@@ -352,7 +352,7 @@ def _on_bar(
     })
 
     # Step 5: 持仓快照
-    for key, pos in ctx['positions'].items():
+    for pos in ctx['positions'].values():
         sid = pos['stock_id']
         actual_shares = (
             _get_actual_shares(pos, f_today) if sid in f_today else 0.0
@@ -518,7 +518,7 @@ def strategy_fn(name: str, f3d: Frame3D, context: Any) -> Frame3D:
                 mlflow_log_metrics(run_id, f'{name}.spread', {
                     'top_nav': top_nav,
                     'bottom_nav': bot_nav,
-                    'top_bottom_lognav_spread': np.log(top_nav) - np.log(bot_nav),
+                    'top_bottom_log_nav_spread': np.log(top_nav) - np.log(bot_nav),
                     'top_value': top_val,
                     'bottom_value': bot_val,
                     'top_bottom_value_gap': top_val - bot_val,

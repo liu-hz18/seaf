@@ -8,18 +8,13 @@
 - TestStrategyFn: 框架集成（含多组独立状态）
 """
 
-import math
-from collections import defaultdict
-
 import numpy as np
 import pandas as pd
-import pytest
 
 from qpipe.frame3d import Frame3D
 from seafquant.strategy import (
     _calc_commission,
     _compute_total_equity,
-    _create_position,
     _get_actual_shares,
     _get_position_value,
     _init_group_context,
@@ -27,7 +22,6 @@ from seafquant.strategy import (
     _rank_into_groups,
     strategy_fn,
 )
-
 
 # =============================================================================
 # 辅助函数测试
@@ -104,8 +98,8 @@ class TestOnBar:
     def _make_prices(close_uq, close_hfq):
         """构造价格字典，假设所有股票都有相同价格。"""
         return (
-            {'S{:02d}'.format(i): close_uq for i in range(10)},
-            {'S{:02d}'.format(i): close_hfq for i in range(10)},
+            {f'S{i:02d}': close_uq for i in range(10)},
+            {f'S{i:02d}': close_hfq for i in range(10)},
         )
 
     def test_first_day_no_trade(self):
@@ -154,7 +148,7 @@ class TestOnBar:
 
         # 无新持仓（停牌无法买入），但第一天买入的仓位应延期到期
         # 第一天买入后只有一个持仓，到期日 = batch_dc + fwd
-        for key, pos in ctx['positions'].items():
+        for pos in ctx['positions'].values():
             assert pos['mature_dc'] > ctx['day_counter']  # 延期了
 
     def test_insufficient_cash_partial_buy(self):
@@ -326,7 +320,7 @@ class TestRankIntoGroups:
         sig = pd.Series(np.arange(20), index=sids)  # 0..19
         groups = _rank_into_groups(sig, 5)
         assert len(groups) == 5
-        for g, members in groups.items():
+        for members in groups.values():
             assert len(members) == 4
             for v in members.values():
                 assert v['w'] == 0.25  # 等权 1/4
@@ -381,7 +375,7 @@ class TestStrategyFn:
         """首次调用 strategy_fn 初始化 10 个 group。"""
         ctx = {}
         f3d = self._make_f3d(0.0, 100.0, 98.0)
-        result = strategy_fn('test', f3d, ctx)
+        strategy_fn('test', f3d, ctx)
         assert ctx['groups'] is not None
         assert len(ctx['groups']) == 10
 
@@ -399,7 +393,7 @@ class TestStrategyFn:
 
         # 每组有各自的 nav_log
         nav_lengths = [len(g['nav_log']) for g in ctx['groups']]
-        assert all(l > 0 for l in nav_lengths)
+        assert all(n > 0 for n in nav_lengths)
         # 每组 nav 历史长度一致（同时开始交易）
         assert len(set(nav_lengths)) == 1
 

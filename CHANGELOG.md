@@ -853,3 +853,42 @@ with warnings.catch_warnings():
 
 - `test_strategy.py` 从 28 增至 33 tests（+5：nav/value、drawdown×2、交易顺序、cumsum_fee×2）
 - 全量 88 tests 通过，syntax / git-whitespace verifier 通过
+
+## [Chore] 2026-06-10 Lint 全面清零 — 15 处 ruff 违规修复
+
+### 变更
+
+**`pyproject.toml`**：
+- `test/*.py` 的 `per-file-ignores` 新增 `RUF001`（中文断言消息中的全角括号为合理使用）
+
+**`qpipe/utils.py`**：
+- TC002：模块级 `import pandas as pd` 移入 `TYPE_CHECKING` block（配合 `from __future__ import annotations`，运行时无需此导入）
+- I001：函数内部 `import os` / `import tempfile` 排序修正
+
+**`seafquant/factor/counting.py`**：
+- F841：移除未使用的 `high`、`low` 变量解包（仅 `close` 被使用）
+
+**`seafquant/factors.py`**：
+- counting 节点 `FACTOR_INPUT_COLUMNS` 从 `['close','high','low','volume','turnover']` 精简为 `['close','turnover']`（与 counting.py 实际使用对齐）
+
+**`seafquant/strategy.py`**：
+- W292：文件末尾添加换行符
+- PLC0206：`for sid in close_uq` 改为 `for sid, puq in close_uq.items()`（避免从键提取值）
+- B007+PERF102：`for key, pos in ctx['positions'].items()` 改为 `for pos in ctx['positions'].values()`
+- `top_bottom_lognav_spread` → `top_bottom_log_nav_spread`（metric 命名对齐）
+
+**`test/test_strategy.py`**：
+- F401：移除未使用的 `import math`、`from collections import defaultdict`、`import pytest`、`_create_position`
+- F841：移除未使用的 `result` 变量
+- E741：模糊变量名 `l` → `n`
+- B007+PERF102：`.items()` → `.values()` ×2 处
+- UP032：`.format()` → f-string ×2 处
+- I001：导入块排序
+
+**`pipeline.py`**：
+- I001：多行导入排序（FACTOR_* 按字母序）
+
+### 验证
+
+- `ruff check .`：All checks passed（全部 30+ 规则通过）
+- `ruf check --select=E,F,W`：All checks passed

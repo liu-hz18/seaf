@@ -47,7 +47,7 @@ exclude = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"test/*.py" = ["S101", "PT004", "PT011", "PLR2004", "N806", "PLC0415", "E402", "RUF012", "N803", "B017"]
+"test/*.py" = ["S101", "PT004", "PT011", "PLR2004", "N806", "PLC0415", "E402", "RUF012", "N803", "B017", "RUF001"]
 "scripts/*.py" = ["PLR0913", "T201", "INP001", "E402", "RUF001"]
 "seafquant/factor/*.py" = ["E701", "E702"]
 "seafquant/model_node.py" = ["N803"]

@@ -72,7 +72,7 @@ FACTOR_INPUT_COLUMNS: dict[str, list[str]] = {
     'quality_autocorr': ['close'],
     'quality_pattern':  ['close', 'high', 'low'],
     'trend':            ['close', 'volume'],
-    'counting':         ['close', 'high', 'low', 'volume', 'turnover'],
+    'counting':         ['close', 'turnover'],
     'interaction':      ['close', 'high', 'low', 'volume', 'turnover', 'market_cap'],
     'cross_section':    ['close', 'volume'],
 }

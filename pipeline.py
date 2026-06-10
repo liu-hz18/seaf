@@ -20,10 +20,15 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from qpipe.flow import Flow
 from seafquant.data_generator import DataSourceCallable
-from seafquant.factors import FACTOR_REGISTRY, FACTOR_WINDOWS, GLOBAL_MAX_FACTOR_WINDOW, FACTOR_INPUT_COLUMNS
+from seafquant.factors import (
+    FACTOR_INPUT_COLUMNS,
+    FACTOR_REGISTRY,
+    FACTOR_WINDOWS,
+    GLOBAL_MAX_FACTOR_WINDOW,
+)
 from seafquant.ic_analysis import ic_analysis_fn, ic_epilogue
 from seafquant.model_node import model_train_predict
-from seafquant.strategy import strategy_fn, strategy_epilogue
+from seafquant.strategy import strategy_epilogue, strategy_fn
 
 
 def main() -> None:

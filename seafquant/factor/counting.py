@@ -122,7 +122,7 @@ def _new_low_count(series, window):
 def compute_counting_factors(name: str, f3d: Frame3D, context) -> Frame3D:
     """计算 17 个纯计数因子（无离散化阈值）。"""
     result = f3d.copy()
-    close, high, low = f3d.df['close'], f3d.df['high'], f3d.df['low']
+    close = f3d.df['close']
     ret = f3d.ts_pct_change('close', 1).df['close']
     df = result.df
     df['_ret'] = ret
