@@ -102,11 +102,15 @@ def _compute_total_equity(
 def _log_trade(
     ctx: dict, date, stock_id: str, action: str,
     shares: float, price: float, value: float, commission: float,
+    signal_value: float = 0.0,
+    hfq_price: float = 0.0,
 ) -> None:
     ctx['trade_log'].append({
         'date': date, 'stock_id': stock_id, 'action': action,
         'shares': shares, 'price': price, 'value': value,
         'commission': commission,
+        'signal_value': signal_value,
+        'hfq_price': hfq_price,
     })
 
 
@@ -133,10 +137,11 @@ def _process_delta_trade(
     ctx: dict, date, dc: int, sid: str,
     weight: float, slice_capital: float,
     maturing_keys: list, close_uq: dict, close_hfq: dict,
-    f_today: dict,
+    f_today: dict, signal_value: float = 0.0,
 ) -> None:
     """差额交易：到期持仓 + 新信号继续持有 → 补仓/减仓，锚点重置。"""
     p_uq = close_uq.get(sid, 0.0)
+    p_hfq = close_hfq.get(sid, p_uq)
     if p_uq <= 0:
         for key in maturing_keys:
             ctx['positions'][key]['mature_dc'] = dc + 1
@@ -155,7 +160,8 @@ def _process_delta_trade(
         commission = _calc_commission(trade_value, rate, min_comm)
         if ctx['cash'] >= trade_value + commission:
             ctx['cash'] -= (trade_value + commission)
-            _log_trade(ctx, date, sid, 'buy', delta, p_uq, trade_value, commission)
+            _log_trade(ctx, date, sid, 'buy', delta, p_uq, trade_value, commission,
+                       signal_value=signal_value, hfq_price=p_hfq)
         else:
             max_aff = max(0.0, ctx['cash'] - min_comm)
             buy_shares = math.floor(max_aff / p_uq / 100) * 100
@@ -165,7 +171,8 @@ def _process_delta_trade(
                 if ctx['cash'] >= trade_value + commission:
                     ctx['cash'] -= (trade_value + commission)
                     _log_trade(ctx, date, sid, 'buy', buy_shares, p_uq,
-                               trade_value, commission)
+                               trade_value, commission,
+                               signal_value=signal_value, hfq_price=p_hfq)
                     target_shares = old_shares + buy_shares
                 else:
                     target_shares = old_shares
@@ -176,7 +183,8 @@ def _process_delta_trade(
         trade_value = sell_shares * p_uq
         commission = _calc_commission(trade_value, rate, min_comm)
         ctx['cash'] += (trade_value - commission)
-        _log_trade(ctx, date, sid, 'sell', sell_shares, p_uq, trade_value, commission)
+        _log_trade(ctx, date, sid, 'sell', sell_shares, p_uq, trade_value, commission,
+                   signal_value=signal_value, hfq_price=p_hfq)
         target_shares = old_shares - sell_shares
 
     for key in maturing_keys:
@@ -189,9 +197,11 @@ def _process_new_trade(
     ctx: dict, date, dc: int, sid: str,
     weight: float, slice_capital: float,
     close_uq: dict, f_today: dict,
+    close_hfq: dict | None = None, signal_value: float = 0.0,
 ) -> None:
     """新开仓：信号中的股票，当前无到期持仓。"""
     p_uq = close_uq.get(sid, 0.0)
+    p_hfq = (close_hfq or {}).get(sid, p_uq)
     if p_uq <= 0 or sid not in f_today:
         return
     rate, min_comm = ctx['commission_rate'], ctx['min_commission']
@@ -203,7 +213,8 @@ def _process_new_trade(
     commission = _calc_commission(trade_value, rate, min_comm)
     if ctx['cash'] >= trade_value + commission:
         ctx['cash'] -= (trade_value + commission)
-        _log_trade(ctx, date, sid, 'buy', target_shares, p_uq, trade_value, commission)
+        _log_trade(ctx, date, sid, 'buy', target_shares, p_uq, trade_value, commission,
+                   signal_value=signal_value, hfq_price=p_hfq)
         _create_position(ctx, sid, dc, target_shares, f_today[sid], date)
     else:
         max_aff = max(0.0, ctx['cash'] - min_comm)
@@ -214,16 +225,19 @@ def _process_new_trade(
             if ctx['cash'] >= trade_value + commission:
                 ctx['cash'] -= (trade_value + commission)
                 _log_trade(ctx, date, sid, 'buy', buy_shares, p_uq,
-                           trade_value, commission)
+                           trade_value, commission,
+                           signal_value=signal_value, hfq_price=p_hfq)
                 _create_position(ctx, sid, dc, buy_shares, f_today[sid], date)
 
 
 def _process_close_trade(
     ctx: dict, date, dc: int, sid: str,
     maturing_keys: list, close_uq: dict, f_today: dict,
+    close_hfq: dict | None = None, signal_value: float = 0.0,
 ) -> None:
     """全部平仓：到期持仓不在新信号中。"""
     p_uq = close_uq.get(sid, 0.0)
+    p_hfq = close_hfq.get(sid, p_uq)
     if p_uq <= 0:
         for key in maturing_keys:
             ctx['positions'][key]['mature_dc'] = dc + 1
@@ -237,7 +251,8 @@ def _process_close_trade(
             commission = _calc_commission(trade_value, rate, min_comm)
             ctx['cash'] += (trade_value - commission)
             _log_trade(ctx, date, sid, 'sell', actual_shares, p_uq,
-                       trade_value, commission)
+                       trade_value, commission,
+                       signal_value=signal_value, hfq_price=p_hfq)
         del ctx['positions'][key]
 
 
@@ -267,7 +282,7 @@ def _on_bar(
 
     # Step 2: 执行昨日待执行信号
     if ctx['pending_signal'] is not None:
-        sig = ctx['pending_signal']
+        sig = ctx['pending_signal']  # {sid: {'w': weight, 'v': signal_value}}
         maturing: dict[str, list] = defaultdict(list)
         for key, pos in list(ctx['positions'].items()):
             if pos['mature_dc'] == dc:
@@ -281,18 +296,26 @@ def _on_bar(
 
         # 信号 ∩ 到期 → 差额交易
         for sid in sig_sids & mat_sids:
+            sw = sig[sid]['w']
+            sv = sig[sid]['v']
             _process_delta_trade(
-                ctx, date, dc, sid, sig[sid], slice_capital,
-                maturing[sid], close_uq, close_hfq, f_today,
+                ctx, date, dc, sid, sw, slice_capital,
+                maturing[sid], close_uq, close_hfq, f_today, signal_value=sv,
             )
         # 信号 - 到期 → 新开仓
         for sid in sig_sids - mat_sids:
+            sw = sig[sid]['w']
+            sv = sig[sid]['v']
             _process_new_trade(
-                ctx, date, dc, sid, sig[sid], slice_capital, close_uq, f_today,
+                ctx, date, dc, sid, sw, slice_capital, close_uq, f_today,
+                close_hfq=close_hfq, signal_value=sv,
             )
         # 到期 - 信号 → 平仓
         for sid in mat_sids - sig_sids:
-            _process_close_trade(ctx, date, dc, sid, maturing[sid], close_uq, f_today)
+            _process_close_trade(
+                ctx, date, dc, sid, maturing[sid], close_uq, f_today,
+                close_hfq=close_hfq, signal_value=0.0,
+            )
 
     # Step 3: 存储今日信号
     ctx['pending_signal'] = signal
@@ -315,6 +338,8 @@ def _on_bar(
             _get_actual_shares(pos, f_today) if sid in f_today else 0.0
         )
         market_value = _get_position_value(pos, close_hfq)
+        mkt_pct = market_value / total_equity if total_equity > 0 else 0.0
+        sig_info = signal.get(sid, {})
         ctx['position_log'].append({
             'date': date,
             'day_counter': dc,
@@ -325,8 +350,10 @@ def _on_bar(
             'f_today': f_today.get(sid),
             'actual_shares': actual_shares,
             'market_value': market_value,
+            'market_value_pct': mkt_pct,
             'p_uq': close_uq.get(sid, 0.0),
             'p_hfq': close_hfq.get(sid, 0.0),
+            'signal_value': sig_info.get('v', 0.0),
             'mature_dc': pos['mature_dc'],
             'entry_date': pos['entry_date'],
         })
@@ -343,15 +370,15 @@ def _rank_into_groups(
     """按截面 signal 排名分为 num_groups 组，等权分配。
 
     group 0 = top 信号分位，group N-1 = bottom。
-    每组返回 {stock_id: equal_weight} 字典。
-    """
+    信号分组格式::
+        {stock_id: {'w': equal_weight, 'v': float(signal_value)}}"""
     n = len(signal_series)
     if n < num_groups:
         return {}
     # rank 从 0（最小）到 n-1（最大），除以 n 得 [0, 1) 分位数
     ranks = signal_series.rank(method='min') - 1
     quantiles = (ranks / n).clip(0, 1 - 1e-12)
-    results: dict[int, dict[str, float]] = {}
+    results: dict[int, dict[str, dict[str, float]]] = {}
     for g in range(num_groups):
         lo, hi = g / num_groups, (g + 1) / num_groups
         mask = (quantiles >= lo) & (quantiles < hi)
@@ -359,7 +386,7 @@ def _rank_into_groups(
         if not members:
             continue
         w = 1.0 / len(members)
-        results[g] = {m: w for m in members}
+        results[g] = {m: {'w': w, 'v': float(signal_series[m])} for m in members}
     return results
 
 
@@ -448,11 +475,24 @@ def strategy_fn(name: str, f3d: Frame3D, context: Any) -> Frame3D:
         for gctx in context['groups']:
             if gctx['nav_log']:
                 last_nav = gctx['nav_log'][-1]
-                mlflow_log_metrics(run_id, f'{name}_g{gctx["group_id"]}', {
+                mlflow_log_metrics(run_id, f'{name}.g{gctx["group_id"]}', {
                     'nav': last_nav['total_equity'],
                     'cash': last_nav['cash'],
                     'position_value': last_nav['position_value'],
                     'n_positions': float(last_nav['n_positions']),
+                }, step=step)
+        # top-bottom NAV spread
+        ng = context['num_groups']
+        if ng >= 2:
+            nav0 = context['groups'][0]['nav_log']
+            nav1 = context['groups'][ng - 1]['nav_log']
+            if nav0 and nav1:
+                top_nav = nav1[-1]['total_equity']
+                bot_nav = nav0[-1]['total_equity']
+                mlflow_log_metrics(run_id, f'{name}.spread', {
+                    'top_nav': top_nav,
+                    'bottom_nav': bot_nav,
+                    'top_bottom_spread': top_nav - bot_nav,
                 }, step=step)
 
     dc_global = context['groups'][0]['day_counter'] if context['groups'] else 0
@@ -465,8 +505,9 @@ def strategy_fn(name: str, f3d: Frame3D, context: Any) -> Frame3D:
             f'total_nav={sum(navs):.0f}'
         )
 
-    empty_mi = pd.MultiIndex.from_arrays([[], []], names=['key', 'name'])
-    return Frame3D(pd.DataFrame(index=empty_mi))
+    # 返回非空 Frame3D（含 t_curr），保证框架中 max_key 有效 → trading_step 正确计算 step
+    latest_mi = pd.MultiIndex.from_tuples([(t_curr, '_strategy_')], names=['key', 'name'])
+    return Frame3D(pd.DataFrame({'_dummy': [0.0]}, index=latest_mi))
 
 
 # =============================================================================
@@ -518,7 +559,7 @@ def strategy_epilogue(name: str, context: dict[str, Any] | None) -> None:
 
         # ---- MLflow 指标 ----
         if run_id:
-            mlflow_log_metrics(run_id, f'{name}_summary_g{gid}', {
+            mlflow_log_metrics(run_id, f'{name}_summary.g{gid}', {
                 'final_nav': final_nav,
                 'total_return': total_return,
                 'ann_return': ann_ret,

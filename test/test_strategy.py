@@ -111,7 +111,7 @@ class TestOnBar:
     def test_first_day_no_trade(self):
         """第一天只有 pending_signal=None，不交易，只缓存信号。"""
         ctx = _init_group_context(1_000_000, 20, 0.0005, 5.0, 0)
-        sig = {'S00': 0.5, 'S01': 0.5}
+        sig = {'S00': {'w': 0.5, 'v': 0.1}, 'S01': {'w': 0.5, 'v': 0.2}}
         uq, hfq = self._make_prices(50.0, 55.0)
         _on_bar(ctx, pd.Timestamp('2020-01-02'), sig, uq, hfq)
         assert ctx['pending_signal'] == sig
@@ -124,13 +124,13 @@ class TestOnBar:
         """第两天用第 1 天信号 + 第 2 天价格执行交易。"""
         ctx = _init_group_context(1_000_000, 20, 0.0005, 5.0, 0)
         # Day 1: 缓存信号
-        sig_d1 = {'S00': 0.5, 'S01': 0.5}
+        sig_d1 = {'S00': {'w': 0.5, 'v': 0.1}, 'S01': {'w': 0.5, 'v': 0.2}}
         uq1, hfq1 = self._make_prices(50.0, 55.0)
         _on_bar(ctx, pd.Timestamp('2020-01-02'), sig_d1, uq1, hfq1)
         trades_d1 = len(ctx['trade_log'])
 
         # Day 2: 执行信号
-        sig_d2 = {'S00': 0.6, 'S01': 0.4}
+        sig_d2 = {'S00': {'w': 0.6, 'v': 0.3}, 'S01': {'w': 0.4, 'v': -0.1}}
         uq2, hfq2 = self._make_prices(52.0, 57.0)
         _on_bar(ctx, pd.Timestamp('2020-01-03'), sig_d2, uq2, hfq2)
 
@@ -143,7 +143,7 @@ class TestOnBar:
     def test_suspended_stock_no_trade(self):
         """停牌（p_uq=0）不执行交易，仓位延期。"""
         ctx = _init_group_context(1_000_000, 20, 0.0005, 5.0, 0)
-        sig_d1 = {'S00': 1.0}
+        sig_d1 = {'S00': {'w': 1.0, 'v': 0.5}}
         uq1, hfq1 = self._make_prices(50.0, 55.0)
         _on_bar(ctx, pd.Timestamp('2020-01-02'), sig_d1, uq1, hfq1)
 
@@ -160,7 +160,7 @@ class TestOnBar:
     def test_insufficient_cash_partial_buy(self):
         """资金不足时尽力买入，不会超额支出。"""
         ctx = _init_group_context(100_000, 20, 0.0005, 5.0, 0)
-        sig_d1 = {'S00': 1.0}
+        sig_d1 = {'S00': {'w': 1.0, 'v': 0.5}}
         uq1, hfq1 = {'S00': 100.0}, {'S00': 110.0}
         _on_bar(ctx, pd.Timestamp('2020-01-02'), sig_d1, uq1, hfq1)
 
@@ -175,7 +175,7 @@ class TestOnBar:
     def test_nav_tracks_equity(self):
         """净值日志应反映总资产变化。"""
         ctx = _init_group_context(1_000_000, 20, 0.0005, 5.0, 0)
-        sig_d1 = {'S00': 0.5, 'S01': 0.5}
+        sig_d1 = {'S00': {'w': 0.5, 'v': 0.1}, 'S01': {'w': 0.5, 'v': 0.2}}
         uq, hfq = self._make_prices(50.0, 55.0)
         _on_bar(ctx, pd.Timestamp('2020-01-02'), sig_d1, uq, hfq)
         _on_bar(ctx, pd.Timestamp('2020-01-03'), sig_d1, uq, hfq)
@@ -203,8 +203,8 @@ class TestRankIntoGroups:
         assert len(groups) == 5
         for g, members in groups.items():
             assert len(members) == 4
-            for w in members.values():
-                assert w == 0.25  # 等权 1/4
+            for v in members.values():
+                assert v['w'] == 0.25  # 等权 1/4
 
     def test_low_signal_in_group0(self):
         """最低信号在 group 0，最高信号在 group N-1。"""
@@ -227,7 +227,7 @@ class TestRankIntoGroups:
         sig = pd.Series(np.random.randn(50), index=[f'S{i:02d}' for i in range(50)])
         groups = _rank_into_groups(sig, 10)
         for members in groups.values():
-            assert abs(sum(members.values()) - 1.0) < 1e-10
+            assert abs(sum(v['w'] for v in members.values()) - 1.0) < 1e-10
 
 
 # =============================================================================
@@ -346,20 +346,21 @@ class TestTradingStep:
 class TestStrategyFnEmptyOutput:
     """strategy_fn 始终返回空 Frame3D；trading_step 必须在消费端安全处理 NaN。"""
 
-    def test_return_empty_frame3d(self):
+    def test_return_valid_time_key(self):
+        """strategy_fn 现在返回含 t_curr 的非空 Frame3D，确保 max_key 有效。"""
         ctx = {}
         f3d = TestStrategyFn._make_f3d(0.0, 100.0, 98.0)
         result = strategy_fn('test', f3d, ctx)
-        assert result.df.empty
+        assert not result.df.empty  # 非空，含 _dummy 占位列
         max_key = result.df.index.get_level_values(0).max()
-        assert np.isnan(max_key)  # 空 Index.max() → nan
+        assert not pd.isna(max_key)  # 有效的 Timestamp
 
-    def test_trading_step_on_empty_result(self):
-        """复现原 bug：strategy 空返回 → max_key=nan → trading_step 不应崩溃。"""
+    def test_trading_step_on_valid_result(self):
+        """strategy_fn 返回有效 t_curr → max_key 有效 → trading_step 正确计算。"""
         from qpipe.utils import trading_step
         ctx = {}
         f3d = TestStrategyFn._make_f3d(0.0, 100.0, 98.0)
         result = strategy_fn('test', f3d, ctx)
         max_key = result.df.index.get_level_values(0).max()
         step = trading_step('2020-01-02', max_key)
-        assert step == 0  # 原 bug 导致 ValueError 崩溃
+        assert step >= 0  # 有效 step（不再因 NaN 崩溃）

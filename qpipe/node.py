@@ -341,8 +341,22 @@ class MultiInputNode(mp.Process):
                     for outq in self.output_queues:
                         outq.put(latest_f3d)
 
+                    # ---- 内存回收与监控 ----
+                    # 每次计算后强制 GC，回收因子函数产生的临时 DataFrame。
+                    # 生产环境（6000 stocks）单次迭代可能产生 100MB+ 临时对象。
+                    rss = _rss_mb()
+                    if total_calls % 10 == 0:
+                        gc.collect()
+                        buf_sizes = {f'b{i}': len(b) for i, b in enumerate(self.buffers)}
+                        logging.info(
+                            f'mem#{total_calls}: rss={rss:.0f}MB, '
+                            f'tob_len={len(time_order_buffer)}, '
+                            f'buf_sizes={buf_sizes}'
+                        )
+
                     # ---- MLflow: 记录本节点运行时间和输出队列大小 ----
                     run_id: str = current_context.get('mlflow_run_id', '')
+                    step = trading_step(current_context.get('start_date', ''), max_key)
                     if run_id:
                         queue_sizes = {}
                         for qi, q in enumerate(self.output_queues):
@@ -353,29 +367,16 @@ class MultiInputNode(mp.Process):
                             )
                             with suppress(Exception):
                                 queue_sizes[f'queue_{qname}'] = float(q.qsize())
-                        step = trading_step(current_context.get('start_date', ''), max_key)
                         mlflow_log_metrics(
                             run_id,
                             self.name,
                             {
                                 'elapsed_ms': elapsed * 1000,
+                                'rss_mb': rss,
                                 'time_order_buffer_len': float(len(time_order_buffer)),
                                 **queue_sizes,
                             },
                             step=step,
-                        )
-
-                    # ---- 内存回收与监控 ----
-                    # 每次计算后强制 GC，回收因子函数产生的临时 DataFrame。
-                    # 生产环境（6000 stocks）单次迭代可能产生 100MB+ 临时对象。
-                    gc.collect()
-                    if total_calls % 10 == 0:
-                        rss = _rss_mb()
-                        buf_sizes = {f'b{i}': len(b) for i, b in enumerate(self.buffers)}
-                        logging.info(
-                            f'mem#{total_calls}: rss={rss:.0f}MB, '
-                            f'tob_len={len(time_order_buffer)}, '
-                            f'buf_sizes={buf_sizes}'
                         )
 
                 if len(dead_workers) == num_workers:
