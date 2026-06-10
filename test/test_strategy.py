@@ -311,3 +311,55 @@ class TestStrategyFn:
                 assert 'actual_shares' in plog
                 assert 'p_uq' in plog
                 assert 'p_hfq' in plog
+
+
+# =============================================================================
+# trading_step 边界测试 (NaN 等非法输入安全返回 0)
+# =============================================================================
+
+
+class TestTradingStep:
+    """trading_step 应安全处理 NaN/None/NaT 等从空 Frame3D.max() 来的非法输入。"""
+
+    def test_nan_returns_zero(self):
+        from qpipe.utils import trading_step
+        assert trading_step('2020-01-02', float('nan')) == 0
+
+    def test_none_returns_zero(self):
+        from qpipe.utils import trading_step
+        assert trading_step('2020-01-02', None) == 0
+
+    def test_nat_returns_zero(self):
+        from qpipe.utils import trading_step
+        assert trading_step('2020-01-02', pd.NaT) == 0
+
+    def test_valid_timestamp(self):
+        from qpipe.utils import trading_step
+        assert trading_step('2020-01-02', pd.Timestamp('2020-01-03')) == 1
+
+
+# =============================================================================
+# strategy_fn 空输出 — 确保框架可安全消费
+# =============================================================================
+
+
+class TestStrategyFnEmptyOutput:
+    """strategy_fn 始终返回空 Frame3D；trading_step 必须在消费端安全处理 NaN。"""
+
+    def test_return_empty_frame3d(self):
+        ctx = {}
+        f3d = TestStrategyFn._make_f3d(0.0, 100.0, 98.0)
+        result = strategy_fn('test', f3d, ctx)
+        assert result.df.empty
+        max_key = result.df.index.get_level_values(0).max()
+        assert np.isnan(max_key)  # 空 Index.max() → nan
+
+    def test_trading_step_on_empty_result(self):
+        """复现原 bug：strategy 空返回 → max_key=nan → trading_step 不应崩溃。"""
+        from qpipe.utils import trading_step
+        ctx = {}
+        f3d = TestStrategyFn._make_f3d(0.0, 100.0, 98.0)
+        result = strategy_fn('test', f3d, ctx)
+        max_key = result.df.index.get_level_values(0).max()
+        step = trading_step('2020-01-02', max_key)
+        assert step == 0  # 原 bug 导致 ValueError 崩溃
