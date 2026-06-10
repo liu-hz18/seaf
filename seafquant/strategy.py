@@ -418,20 +418,24 @@ def strategy_fn(name: str, f3d: Frame3D, context: Any) -> Frame3D:
         context['first_date'] = t_curr
     context['last_date'] = t_curr
 
-    cs_prev = df.index.get_level_values('key') == t_prev
-    cs_curr = df.index.get_level_values('key') == t_curr
-
-    # T-1 日的 pred_signal（纯 name 索引，去掉 time level）
-    signal_prev = df.xs(t_prev, level='key')['pred_signal']
-
     # T 日的价格（纯 name 索引 Series → dict ）
     close_uq_t = df.xs(t_curr, level='key')['close_uq'].to_dict()
     close_hfq_t = df.xs(t_curr, level='key')['close'].to_dict()
 
-    # ---- 按信号分组 ----
-    group_signals = _rank_into_groups(signal_prev, context['num_groups'])
+    # ---- 首次调用：用 T-1 信号为每个 group 初始化 pending_signal ----
+    if context.get('_primed') is None:
+        signal_first = df.xs(t_prev, level='key')['pred_signal']
+        first_groups = _rank_into_groups(signal_first, context['num_groups'])
+        for gctx in context['groups']:
+            gid = gctx['group_id']
+            sig = first_groups.get(gid, {})
+            if sig:
+                gctx['pending_signal'] = sig
+        context['_primed'] = True
 
-    # ---- 每组独立 on_bar ----
+    # ---- T 日信号分组 + 每组独立 on_bar ----
+    signal_curr = df.xs(t_curr, level='key')['pred_signal']
+    group_signals = _rank_into_groups(signal_curr, context['num_groups'])
     for gctx in context['groups']:
         gid = gctx['group_id']
         sig = group_signals.get(gid, {})
