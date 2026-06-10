@@ -53,6 +53,8 @@ def _init_group_context(
         'min_commission': min_commission,
         # 核心状态
         'cash': initial_cash,
+        'peak_nav': 1.0,
+        'cumsum_fee': 0.0,
         'positions': {},        # (sid, batch_dc) → dict
         'pending_signal': None,  # T-1 日信号 {sid: weight}，待 T 日执行
         'day_counter': 0,
@@ -282,6 +284,7 @@ def _on_bar(
 
     # Step 2: 执行昨日待执行信号
     if ctx['pending_signal'] is not None:
+        n_trades_before = len(ctx['trade_log'])
         sig = ctx['pending_signal']  # {sid: {'w': weight, 'v': signal_value}}
         maturing: dict[str, list] = defaultdict(list)
         for key, pos in list(ctx['positions'].items()):
@@ -294,7 +297,14 @@ def _on_bar(
         sig_sids = set(sig.keys())
         mat_sids = set(maturing.keys())
 
-        # 信号 ∩ 到期 → 差额交易
+        # 先卖后买：优先卖出释放现金，再买入分配资金
+        # 1. 到期-信号 → 平仓（纯卖）
+        for sid in mat_sids - sig_sids:
+            _process_close_trade(
+                ctx, date, dc, sid, maturing[sid], close_uq, f_today,
+                close_hfq=close_hfq, signal_value=0.0,
+            )
+        # 2. 信号∩到期 → 差额交易（可能买卖，内部先判断方向）
         for sid in sig_sids & mat_sids:
             sw = sig[sid]['w']
             sv = sig[sid]['v']
@@ -302,7 +312,7 @@ def _on_bar(
                 ctx, date, dc, sid, sw, slice_capital,
                 maturing[sid], close_uq, close_hfq, f_today, signal_value=sv,
             )
-        # 信号 - 到期 → 新开仓
+        # 3. 信号-到期 → 新开仓（纯买，最后执行确保现金充足）
         for sid in sig_sids - mat_sids:
             sw = sig[sid]['w']
             sv = sig[sid]['v']
@@ -310,23 +320,33 @@ def _on_bar(
                 ctx, date, dc, sid, sw, slice_capital, close_uq, f_today,
                 close_hfq=close_hfq, signal_value=sv,
             )
-        # 到期 - 信号 → 平仓
-        for sid in mat_sids - sig_sids:
-            _process_close_trade(
-                ctx, date, dc, sid, maturing[sid], close_uq, f_today,
-                close_hfq=close_hfq, signal_value=0.0,
-            )
+
+        # 累加当日新增手续费
+        for t in ctx['trade_log'][n_trades_before:]:
+            ctx['cumsum_fee'] += t['commission']
 
     # Step 3: 存储今日信号
     ctx['pending_signal'] = signal
 
     # Step 4: 净值记录
     total_equity = _compute_total_equity(ctx, close_uq, close_hfq)
+    initial_cash = ctx.get('initial_cash', total_equity)
+    nav = total_equity / initial_cash if initial_cash > 0 else 0.0
+    # 更新历史最高净值，计算回撤
+    if nav > ctx.get('peak_nav', 0):
+        ctx['peak_nav'] = nav
+    peak = ctx['peak_nav']
+    drawdown = (peak - nav) / peak if peak > 0 else 0.0
     ctx['nav_log'].append({
         'date': date,
         'day_counter': dc,
         'cash': ctx['cash'],
+        'value': total_equity,
         'total_equity': total_equity,
+        'nav': nav,
+        'peak_nav': peak,
+        'drawdown': drawdown,
+        'cumsum_fee': ctx['cumsum_fee'],
         'position_value': total_equity - ctx['cash'],
         'n_positions': len(ctx['positions']),
     })
@@ -475,9 +495,13 @@ def strategy_fn(name: str, f3d: Frame3D, context: Any) -> Frame3D:
         for gctx in context['groups']:
             if gctx['nav_log']:
                 last_nav = gctx['nav_log'][-1]
+                ic = gctx.get('initial_cash', 1.0)
                 mlflow_log_metrics(run_id, f'{name}.g{gctx["group_id"]}', {
-                    'nav': last_nav['total_equity'],
+                    'nav': last_nav.get('nav', last_nav.get('total_equity', 0) / ic),
+                    'value': last_nav.get('value', last_nav['total_equity']),
                     'cash': last_nav['cash'],
+                    'drawdown': last_nav.get('drawdown', 0.0),
+                    'cumsum_fee': last_nav.get('cumsum_fee', 0.0),
                     'position_value': last_nav['position_value'],
                     'n_positions': float(last_nav['n_positions']),
                 }, step=step)
@@ -487,12 +511,17 @@ def strategy_fn(name: str, f3d: Frame3D, context: Any) -> Frame3D:
             nav0 = context['groups'][0]['nav_log']
             nav1 = context['groups'][ng - 1]['nav_log']
             if nav0 and nav1:
-                top_nav = nav1[-1]['total_equity']
-                bot_nav = nav0[-1]['total_equity']
+                top_nav = nav1[-1].get('nav', 0)
+                bot_nav = nav0[-1].get('nav', 0)
+                top_val = nav1[-1].get('value', nav1[-1]['total_equity'])
+                bot_val = nav0[-1].get('value', nav0[-1]['total_equity'])
                 mlflow_log_metrics(run_id, f'{name}.spread', {
                     'top_nav': top_nav,
                     'bottom_nav': bot_nav,
-                    'top_bottom_spread': top_nav - bot_nav,
+                    'top_bottom_nav_spread': top_nav / bot_nav - 1.0,
+                    'top_value': top_val,
+                    'bottom_value': bot_val,
+                    'top_bottom_value_gap': top_val - bot_val,
                 }, step=step)
 
     dc_global = context['groups'][0]['day_counter'] if context['groups'] else 0
@@ -532,27 +561,35 @@ def strategy_epilogue(name: str, context: dict[str, Any] | None) -> None:
             continue
 
         nav_df = pd.DataFrame(gctx['nav_log'])
-        navs = nav_df['total_equity'].values
-        start_nav = gctx['initial_cash']
-        final_nav = navs[-1]
-        total_return = (final_nav / start_nav - 1) if start_nav > 0 else 0.0
-        rets = np.diff(navs) / navs[:-1]
-        rets = rets[np.isfinite(rets)]
-        ann_vol = float(np.std(rets) * np.sqrt(252)) if len(rets) > 1 else 0.0
-        ann_ret = total_return * (252 / max(len(navs), 1))
+        values = nav_df['value'].values if 'value' in nav_df.columns else nav_df['total_equity'].values
+        nav_series = nav_df['nav'].values if 'nav' in nav_df.columns else values / gctx['initial_cash']
+        start_value = gctx['initial_cash']
+        final_value = values[-1]
+        final_nav = nav_series[-1]
+        total_return = (final_value / start_value - 1) if start_value > 0 else 0.0
+        # value-based risk metrics
+        rets_v = np.diff(values) / values[:-1]
+        rets_v = rets_v[np.isfinite(rets_v)]
+        ann_vol = float(np.std(rets_v) * np.sqrt(252)) if len(rets_v) > 1 else 0.0
+        ann_ret = total_return * (252 / max(len(values), 1))
         sharpe = ann_ret / ann_vol if ann_vol > 0 else 0.0
+        # nav-based risk metrics
+        rets_n = np.diff(nav_series) / nav_series[:-1]
+        rets_n = rets_n[np.isfinite(rets_n)]
+        nav_ann_vol = float(np.std(rets_n) * np.sqrt(252)) if len(rets_n) > 1 else 0.0
 
-        cummax = np.maximum.accumulate(navs)
-        dd = (cummax - navs) / cummax
+        cummax = np.maximum.accumulate(nav_series)
+        dd = (cummax - nav_series) / cummax
         max_dd = float(np.max(dd)) if len(dd) > 0 else 0.0
 
         n_trades = len(gctx['trade_log'])
         n_buys = sum(1 for t in gctx['trade_log'] if t['action'] == 'buy')
 
         logging.info(
-            f'[{name}]   Group {gid}: N={len(navs)}d, '
-            f'final_nav={final_nav:,.0f}, return={total_return:.2%}, '
-            f'ann_ret={ann_ret:.2%}, ann_vol={ann_vol:.2%}, '
+            f'[{name}]   Group {gid}: N={len(values)}d, '
+            f'final_value={final_value:,.0f}, final_nav={final_nav:.4f}, '
+            f'return={total_return:.2%}, ann_ret={ann_ret:.2%}, '
+            f'ann_vol={ann_vol:.2%}, nav_ann_vol={nav_ann_vol:.2%}, '
             f'sharpe={sharpe:.2f}, max_dd={max_dd:.2%}, '
             f'trades={n_trades} ({n_buys} buys)'
         )
@@ -560,10 +597,12 @@ def strategy_epilogue(name: str, context: dict[str, Any] | None) -> None:
         # ---- MLflow 指标 ----
         if run_id:
             mlflow_log_metrics(run_id, f'{name}_summary.g{gid}', {
+                'final_value': final_value,
                 'final_nav': final_nav,
                 'total_return': total_return,
                 'ann_return': ann_ret,
-                'ann_volatility': ann_vol,
+                'ann_volatility_value': ann_vol,
+                'ann_volatility_nav': nav_ann_vol,
                 'sharpe_ratio': sharpe,
                 'max_drawdown': max_dd,
                 'n_trades': float(n_trades),

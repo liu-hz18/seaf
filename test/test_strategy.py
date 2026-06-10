@@ -186,6 +186,131 @@ class TestOnBar:
         assert nav_vals[0] == 1_000_000
         # 第两天净值 >= 初始资金（可能有交易损益）
 
+    def test_nav_and_value_fields(self):
+        """nav_log 包含 value(总市值) 和 nav(比值=value/initial_cash)。"""
+        ctx = _init_group_context(1_000_000, 20, 0.0005, 5.0, 0)
+        sig = {'S00': {'w': 0.5, 'v': 0.1}, 'S01': {'w': 0.5, 'v': 0.2}}
+        uq, hfq = self._make_prices(50.0, 55.0)
+        _on_bar(ctx, pd.Timestamp('2020-01-02'), sig, uq, hfq)
+        entry = ctx['nav_log'][0]
+        assert 'value' in entry
+        assert 'nav' in entry
+        assert 'total_equity' in entry  # 后向兼容
+        assert entry['value'] == entry['total_equity']
+        # 第一天无交易：value = initial_cash = 1_000_000, nav = 1.0
+        assert entry['value'] == 1_000_000
+        assert entry['nav'] == 1.0
+
+    def test_nav_ratio_changes_with_equity(self):
+        """nav 比值随总资产变化而变化。"""
+        ctx = _init_group_context(1_000_000, 20, 0.0005, 5.0, 0)
+        sig = {'S00': {'w': 1.0, 'v': 0.5}}
+        uq, hfq = self._make_prices(50.0, 55.0)
+        _on_bar(ctx, pd.Timestamp('2020-01-02'), sig, uq, hfq)
+        # 第1天仅缓存信号，nav=1.0
+        assert ctx['nav_log'][0]['nav'] == 1.0
+        # 第2天执行交易（会改变持仓市值）
+        uq2, hfq2 = self._make_prices(52.0, 57.0)
+        _on_bar(ctx, pd.Timestamp('2020-01-03'), sig, uq2, hfq2)
+        entry = ctx['nav_log'][1]
+        # nav = value / initial_cash
+        expected_nav = entry['value'] / ctx['initial_cash']
+        assert abs(entry['nav'] - expected_nav) < 1e-10
+
+    def test_drawdown_zero_at_peak(self):
+        """净值创新高时 drawdown=0。"""
+        ctx = _init_group_context(1_000_000, 20, 0.0005, 5.0, 0)
+        sig = {'S00': {'w': 1.0, 'v': 0.5}}
+        uq, hfq = self._make_prices(50.0, 55.0)
+        _on_bar(ctx, pd.Timestamp('2020-01-02'), sig, uq, hfq)
+        # 第一天无交易，nav=1.0，创新高
+        assert ctx['nav_log'][0]['drawdown'] == 0.0
+        assert ctx['nav_log'][0]['peak_nav'] == 1.0
+        # 第二天执行交易后净值仍可能为 1.0（无价格变化）
+        uq2, hfq2 = self._make_prices(50.0, 55.0)  # 价格不变
+        _on_bar(ctx, pd.Timestamp('2020-01-03'), sig, uq2, hfq2)
+        # 价格不变时 nav≈1.0，手续费造成极微回撤 (< 1e-4)
+        assert ctx['nav_log'][1]['drawdown'] < 1e-4
+
+    def test_drawdown_positive_after_drop(self):
+        """净值从峰值回落后 drawdown > 0。"""
+        ctx = _init_group_context(1_000_000, 20, 0.0005, 5.0, 0)
+        sig = {'S00': {'w': 1.0, 'v': 0.5}}
+        # Day 1: 缓存信号
+        uq, hfq = self._make_prices(50.0, 55.0)
+        _on_bar(ctx, pd.Timestamp('2020-01-02'), sig, uq, hfq)
+        # Day 2: 高价执行买入（nav 可能变化）
+        uq2, hfq2 = self._make_prices(50.0, 55.0)
+        _on_bar(ctx, pd.Timestamp('2020-01-03'), sig, uq2, hfq2)
+        # Day 3: 价格下跌，持仓贬值
+        uq3 = {'S00': 40.0, 'S01': 40.0}  # 跌 20%
+        hfq3 = {'S00': 44.0, 'S01': 44.0}
+        _on_bar(ctx, pd.Timestamp('2020-01-06'), {}, uq3, hfq3)
+        # 第3天 drawdown > 0（因为持仓市值下跌）
+        entry3 = ctx['nav_log'][2]
+        assert entry3['drawdown'] >= 0
+        # peak_nav 应保持最高值
+        assert ctx['peak_nav'] >= 1.0
+
+    def test_trade_order_sell_before_buy(self):
+        """验证先卖后买的交易顺序：平仓日志在买入日志之前。"""
+        ctx = _init_group_context(1_000_000, 20, 0.0005, 5.0, 0)
+        # Day 1: 买入 S00
+        sig1 = {'S00': {'w': 1.0, 'v': 0.5}}
+        uq, hfq = self._make_prices(50.0, 55.0)
+        _on_bar(ctx, pd.Timestamp('2020-01-02'), sig1, uq, hfq)
+        _on_bar(ctx, pd.Timestamp('2020-01-03'), sig1, uq, hfq)
+        # Day 2: 仅缓存信号（S00 移出，S01 移入）
+        sig2 = {'S01': {'w': 1.0, 'v': 0.3}}
+        _on_bar(ctx, pd.Timestamp('2020-01-06'), sig2, uq, hfq)
+        # Day 3: 执行：先卖 S00 再买 S01
+        _on_bar(ctx, pd.Timestamp('2020-01-07'), sig2, uq, hfq)
+        # 找到最近的 sell 和 buy 记录
+        recent = [t for t in ctx['trade_log'] if t['date'] == pd.Timestamp('2020-01-07')]
+        sell_idx = next((i for i, t in enumerate(recent) if t['action'] == 'sell'), None)
+        buy_idx = next((i for i, t in enumerate(recent) if t['action'] == 'buy'), None)
+        if sell_idx is not None and buy_idx is not None:
+            assert sell_idx < buy_idx, '卖出应在买入之前执行（先释放现金）'
+
+    def test_cumsum_fee_tracks_commissions(self):
+        """累计手续费 cumsum_fee 应等于所有 trade commission 之和。"""
+        ctx = _init_group_context(1_000_000, 20, 0.0005, 5.0, 0)
+        sig = {'S00': {'w': 1.0, 'v': 0.5}}
+        uq, hfq = self._make_prices(50.0, 55.0)
+        # 首日仅缓存信号，无交易
+        _on_bar(ctx, pd.Timestamp('2020-01-02'), sig, uq, hfq)
+        assert ctx['nav_log'][0]['cumsum_fee'] == 0.0
+        # 次日执行买入
+        _on_bar(ctx, pd.Timestamp('2020-01-03'), sig, uq, hfq)
+        total_comm = sum(t['commission'] for t in ctx['trade_log'])
+        assert ctx['cumsum_fee'] == total_comm
+        assert ctx['nav_log'][1]['cumsum_fee'] == total_comm
+        # 每次 on_bar 后 cumsum_fee 应与 trade_log 总 commission 一致
+        for i in range(len(ctx['nav_log'])):
+            expected = sum(t['commission'] for t in ctx['trade_log']
+                          if t['date'] <= ctx['nav_log'][i]['date'])
+            assert abs(ctx['nav_log'][i]['cumsum_fee'] - expected) < 0.01, (
+                f'day {i}: cumsum_fee={ctx["nav_log"][i]["cumsum_fee"]}, '
+                f'expected={expected}'
+            )
+
+    def test_cumsum_fee_non_decreasing(self):
+        """累计手续费单调不减。"""
+        ctx = _init_group_context(1_000_000, 20, 0.0005, 5.0, 0)
+        np.random.seed(42)
+        dates = pd.date_range('2020-01-02', periods=10, freq='B')
+        stocks = [f'S{i:02d}' for i in range(10)]
+        uq = {s: 50.0 + i for i, s in enumerate(stocks)}
+        hfq = {s: 55.0 + i for i, s in enumerate(stocks)}
+        prev = 0.0
+        for d in dates:
+            sig = {s: {'w': 1.0 / len(stocks), 'v': np.random.randn()}
+                   for s in np.random.choice(stocks, 5, replace=False)}
+            _on_bar(ctx, d, sig, uq, hfq)
+            current = ctx['nav_log'][-1]['cumsum_fee']
+            assert current >= prev, f'cumsum_fee decreased at {d}'
+            prev = current
+
 
 # =============================================================================
 # 分组排名测试

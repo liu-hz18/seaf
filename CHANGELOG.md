@@ -825,3 +825,31 @@ with warnings.catch_warnings():
 
 - 修复前：`test_model_node.py` 47 tests，20 warnings（16 个 FeatureNameWarning）
 - 修复后：47 tests 全部通过，warning 降至 4 个（均为非 FeatureNameWarning）
+
+---
+
+## [Fix] 2026-06-10 策略节点增强：NAV/Value 区分 + 交易顺序 + 回撤 + 手续费 + IC skew
+
+### 更改
+
+**策略节点**（`seafquant/strategy.py`）：
+
+1. **NAV 与 Value 区分**：
+   - `nav_log` 新增 `nav`（净值比值 = value / initial_cash，基期=1.0）和 `value`（总市值）字段，保留 `total_equity` 后向兼容
+   - MLflow 逐日 metrics 同时记录 `nav` 和 `value`
+   - Epilogue 区分 value-based / nav-based 波动率，spread metrics 新增 value 维度
+
+2. **交易顺序修正**：close（先卖）→ delta（调整）→ new（后买），优先释放现金
+
+3. **逐日回撤**：`peak_nav` 追踪历史最高净值，`drawdown = (peak_nav - nav) / peak_nav`，记录在 nav_log 和 MLflow
+
+4. **累计手续费**：`_init_group_context` 新增 `cumsum_fee` 状态，交易后累加当日 commission，记录在 nav_log 和 MLflow
+
+**IC 分析节点**（`seafquant/ic_analysis.py`）：
+
+5. **逐日 raw_ret_skew**：截面收益率偏度 `pd.Series(fwd_valid).skew()`，记录在 MLflow
+
+### 测试
+
+- `test_strategy.py` 从 28 增至 33 tests（+5：nav/value、drawdown×2、交易顺序、cumsum_fee×2）
+- 全量 88 tests 通过，syntax / git-whitespace verifier 通过

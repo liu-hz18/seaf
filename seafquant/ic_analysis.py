@@ -40,6 +40,7 @@ def ic_analysis_fn(name: str, f3d: Frame3D, context: Any) -> Frame3D:
     context.setdefault('pearson_ic_history', [])
     context.setdefault('rank_ic_history', [])
     context.setdefault('raw_ret_std_history', [])
+    context.setdefault('raw_ret_skew_history', [])
     context.setdefault('cumsum_pearson_ic', 0.0)
     context.setdefault('cumsum_rank_ic', 0.0)
     context.setdefault('day_count', 0)
@@ -82,6 +83,9 @@ def ic_analysis_fn(name: str, f3d: Frame3D, context: Any) -> Frame3D:
         # Raw return std（未经 cs_zscore 的截面收益率标准差）
         raw_ret_std = float(np.nanstd(fwd_valid))
         context['raw_ret_std_history'].append(raw_ret_std)
+        # Raw return skew（截面收益率偏度）
+        raw_ret_skew = float(pd.Series(fwd_valid).skew())
+        context['raw_ret_skew_history'].append(raw_ret_skew)
 
         # 截面标准化（与 model label 定义一致）
         cs_mean = np.nanmean(fwd_valid)
@@ -116,6 +120,7 @@ def ic_analysis_fn(name: str, f3d: Frame3D, context: Any) -> Frame3D:
             'pearson_ic': pearson_ic,
             'rank_ic': rank_ic,
             'raw_ret_std': raw_ret_std,
+            'raw_ret_skew': raw_ret_skew,
             'cumsum_pearson_ic': context['cumsum_pearson_ic'],
             'cumsum_rank_ic': context['cumsum_rank_ic'],
         }, step=trading_step(context.get('start_date', ''), pred_t))
@@ -128,6 +133,7 @@ def ic_analysis_fn(name: str, f3d: Frame3D, context: Any) -> Frame3D:
                 f'signal_day={pred_t} buy={buy_t} sell={sell_t} '
                 f'pearson_ic={pearson_ic:.4f} rank_ic={rank_ic:.4f} '
                 f'raw_ret_std={raw_ret_std:.6f} '
+                f'raw_ret_skew={raw_ret_skew:.4f} '
                 f'cumsum_p={context["cumsum_pearson_ic"]:.4f} '
                 f'cumsum_r={context["cumsum_rank_ic"]:.4f} '
                 f'recent10_p_mean={np.mean(recent_p):.4f} '
