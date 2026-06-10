@@ -735,4 +735,93 @@ n_stocks=50、n_times=1000 运行动辄被系统 kill。根本原因：
   不再捕获 `ValueError`，避免将因子计算运行时错误误判为"缺少 context 参数"
 - 框架既有的 `try-except-finally` 结构能正确终止崩溃节点并发送 stop_signal 到下游：
   异常 → `except`（日志 + traceback）→ `finally`（`global_exit.set()` +
-  `stop_signal` 推送上/下游 queue）→ 下游通过心跳超时检测并依次退出
+   `stop_signal` 推送上/下游 queue）→ 下游通过心跳超时检测并依次退出
+
+---
+
+## [Refactor] 2026-06-10 Counting 因子重构：离散化阈值 → 纯计数算子
+
+### 问题诊断
+
+旧版 counting 因子（16个）包含 6 个基于离散化阈值的因子：
+- `vol_spike_20d/60d`：`volume > 1.5 * vol_ma20` 的二值化 + 滚动求和
+- `vol_shrink_20d`：`volume < 0.5 * vol_ma20` 的二值化 + 滚动求和
+- `big_move_20d/60d`：`|ret| > 0.02` 的二值化 + 滚动求和
+- `amp_break_20d`：`amp > 1.5 * amp_ma20` 的二值化 + 滚动求和
+
+在 `noise_ratio=0.5` 参数下，这些离散化因子出现严重的截面退化：
+- `big_move` 连续 70 天没有任何股票触发 `|ret|>0.02`，全部为零 → zscore 后 20 只股票完全同值
+- `vol_spike`、`vol_shrink` 等仅有少量离散值，截面唯一值 < 10/20
+
+### 设计原则
+
+计数因子应使用无法用连续值替代的纯计数算子，而非人为阈值离散化：
+- **countpos/countneg**：正/负收益天数 — 方向一致性的计数
+- **tillnow**：累计收益/回撤 — 窗口内的累计统计
+- **consec**：连续涨跌天数 — 趋势持续性的计数
+- **新高新低**：历史极值突破计数
+
+离散化阈值（如 |ret|>0.02）所衡量的维度（异常收益、成交量异常、振幅异常）在 volatility / liquidity / momentum 中已有连续值版本覆盖。
+
+### 新因子清单（17个）
+
+| 类别 | 因子 | 数量 |
+|------|------|------|
+| CountPos/CountNeg | `countpos_10d/60d`, `countneg_10d/60d` | 4 |
+| Streak | `consec_up_10d`, `consec_down_10d` | 2 |
+| RunPct | `run_pct_20d/60d` | 2 |
+| TillNow | `tillnow_ret_20d/60d`, `tillnow_dd_20d/60d` | 4 |
+| 新高新低 | `new_high_20d/60d`, `new_low_60d` | 3 |
+| Turnover Rank | `turnover_rank_chg_20d/60d` | 2 |
+
+### 移除的因子
+
+`vol_spike_20d/60d`, `vol_shrink_20d`, `big_move_20d/60d`, `amp_break_20d`, `composite`
+
+### 新增工具函数
+
+- `_tillnow_ret_2d`：向量化滚动累计收益 `cumprod(1+ret)-1`
+- `_tillnow_dd_2d`：向量化滚动最大回撤 `min(price/cummax(price))-1`
+- `_new_high_count`, `_new_low_count` 提升为模块级函数（原为内部闭包）
+
+### Bug 修复
+
+- **`arr` 引用被覆盖**：`_tillnow_ret_2d` 接收的 `arr` 是 `ret_pivot.values` 的引用，而后者在 streak 操作中被 `iloc[:,:] = up/down/rp` 逐次覆盖。修复：`arr = ret_pivot.values.copy()`。
+
+### 测试更新
+
+- `test_factors_crossval_counting.py`：重写 10 个对拍测试（覆盖全部 17 因子），pivot→numpy→flatten 方式逐元素验证
+- `test_factors.py`：`expected_cols` 16→17
+- 测试结果：80 crossval cases + 13 factors cases 全部通过
+
+---
+
+## [Fix] 2026-06-10 抑制 LGBMRegressor 的 FeatureNameWarning
+
+### 问题
+
+运行 pipeline 时持续出现：
+```
+UserWarning: X does not have valid feature names, but LGBMRegressor was fitted with feature names
+```
+
+### 根因
+
+LightGBM 的 `LGBMRegressor.fit(X, y)` 内部会将 numpy 输入转为 DataFrame 再调用 sklearn 基类，导致 `feature_names_in_` 被填充为 DataFrame 的自动生成列名（如 `[0, 1, 2, ...]`）。后续 `predict()` 传入 numpy 数组时，sklearn ≥1.2 的 `_check_feature_names` 检测到模型有 `feature_names_in_` 但输入无列名，触发 UserWarning。
+
+### 修复
+
+`_SklearnWrapper.predict()` 中用 `warnings.catch_warnings` 局部忽略该特定 warning。管道全程使用 numpy 数组，无列名，不存在真实特征名不匹配风险。
+
+```python
+with warnings.catch_warnings():
+    warnings.filterwarnings('ignore',
+        message='X does not have valid feature names',
+        category=UserWarning)
+    return self._model.predict(np.asarray(X, dtype=float))
+```
+
+### 测试验证
+
+- 修复前：`test_model_node.py` 47 tests，20 warnings（16 个 FeatureNameWarning）
+- 修复后：47 tests 全部通过，warning 降至 4 个（均为非 FeatureNameWarning）
