@@ -35,7 +35,9 @@ class TestFactorModules:
 
     def _test_category(self, f3d, category, expected_cols):
         func = FACTOR_REGISTRY[category]
-        result = func(category, f3d, None)
+        # 传入副本以避免某些因子函数（如 quality_merged）直接修改输入 f3d，
+        # 防止 scope='class' 的 fixture 在测试间交叉污染。
+        result = func(category, f3d.copy(), None)
         assert isinstance(result, type(f3d)), f'{category}: output must be Frame3D'
         cols = [c for c in result.df.columns if not c.startswith('_')]
         assert len(cols) == expected_cols, (
@@ -71,7 +73,7 @@ class TestFactorModules:
         self._test_category(f3d, 'quality_autocorr', expected_cols=4)
 
     def test_counting(self, f3d):
-        self._test_category(f3d, 'counting', expected_cols=16)
+        self._test_category(f3d, 'counting', expected_cols=17)
 
     def test_cross_section(self, f3d):
         self._test_category(f3d, 'cross_section', expected_cols=10)
@@ -90,8 +92,8 @@ class TestRollingAlignment:
 
     def _make_deterministic_f3d(self, n_times=20, n_stocks=5):
         """每只股票价格 = stock_id * 100 + t，rolling mean 可精确预测。"""
-        import numpy as np
         import pandas as pd
+
         from qpipe.frame3d import Frame3D
 
         records = []
@@ -116,6 +118,7 @@ class TestRollingAlignment:
     def test_rolling_mean_no_cross_contamination(self):
         """验证 groupby rolling mean / max / min 不会跨股票错位。"""
         import numpy as np
+
         from seafquant.factor.value import compute_value_factors
 
         # 需要足够数据填充 max window=120, min_periods=60
@@ -131,11 +134,11 @@ class TestRollingAlignment:
             if col.startswith('_'):
                 continue
             vals = cs_df[col].values
-            if np.allclose(vals[0], vals):
+            if (np.allclose(vals[0], vals)
+                    and ('dist_ma' in col or 'inv_price' in col or 'log_mcap' in col)):
                 # 如果所有股票在该因子上完全相同，很可能是 bug
                 # 但对某些因子（如 dd_60d 在完全趋势性数据上可能接近），
                 # 只对预期有差异的因子严格检查
-                if 'dist_ma' in col or 'inv_price' in col or 'log_mcap' in col:
                     raise AssertionError(
                         f'{col}: all {len(vals)} stocks have identical value {vals[0]:.6f} '
                         f'— likely cross-stock contamination'
@@ -143,9 +146,8 @@ class TestRollingAlignment:
 
     def test_rolling_mean_values_correct(self):
         """验证 rolling 值精确匹配手工计算。"""
-        import numpy as np
         import pandas as pd
-        from qpipe.frame3d import Frame3D
+
 
         f3d = self._make_deterministic_f3d(10, 3)
         df = f3d.df.copy()

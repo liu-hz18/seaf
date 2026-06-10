@@ -1,8 +1,11 @@
 """
-计数因子（合并：Volume/Rank + Streak + 新高新低） — 16 个因子。
-成交量：成交量放量 ×2, 缩量 ×1, 换手率排名变化 ×2, 大涨大跌 ×2, 振幅突破 ×1, 复合 ×1。
-Streak：连续涨跌 ×2, 同向占比 ×2。
-新高新低：创新高 ×2, 创新低 ×1。
+计数因子（纯计数算子，无离散化阈值） — 17 个因子。
+
+Streak（连续涨跌）：consec_up/down ×2, run_pct ×2 = 4
+CountPos/CountNeg（正负收益天数）：countpos ×2, countneg ×2 = 4
+TillNow（累计收益/回撤）：tillnow_ret ×2, tillnow_dd ×2 = 4
+新高新低：new_high ×2, new_low ×1 = 3
+Turnover Rank Change：rank_chg ×2 = 2
 """
 
 from __future__ import annotations
@@ -54,8 +57,70 @@ def _run_pct_2d(arr: np.ndarray, window: int) -> np.ndarray:
     return out
 
 
+def _tillnow_ret_2d(arr: np.ndarray, window: int) -> np.ndarray:
+    """向量化滚动累计收益：cumprod(1+ret) - 1。"""
+    T, S = arr.shape
+    if window > T:
+        return np.full((T, S), np.nan)
+    one_plus = 1.0 + arr
+    clean = np.where(np.isfinite(one_plus), one_plus, 1.0)
+    win = sliding_window_view(clean, window, axis=0)
+    out = np.full((T, S), np.nan)
+    out[window - 1 :] = np.prod(win, axis=-1) - 1.0
+    return out
+
+
+def _tillnow_dd_2d(price: np.ndarray, window: int) -> np.ndarray:
+    """向量化滚动最大回撤：min(price / cummax(price)) - 1。"""
+    T, S = price.shape
+    if window > T:
+        return np.full((T, S), np.nan)
+    win = sliding_window_view(price, window, axis=0)
+    cummax = np.maximum.accumulate(win, axis=-1)
+    dd = win / np.where(cummax == 0, 1.0, cummax) - 1.0
+    out = np.full((T, S), np.nan)
+    out[window - 1 :] = np.min(dd, axis=-1)
+    return out
+
+
+def _new_high_count(series, window):
+    """逐股票创新高天数计数。"""
+    arr = series.values.astype(float)
+    n = len(arr)
+    if n < window:
+        return np.full(n, np.nan)
+    clean = np.where(np.isnan(arr), -np.inf, arr)
+    cmax = np.maximum.accumulate(clean)
+    is_nh = np.zeros(n, dtype=np.float64)
+    for i in range(1, n):
+        if arr[i] > cmax[i - 1] and cmax[i - 1] != -np.inf:
+            is_nh[i] = 1.0
+    win = sliding_window_view(is_nh, window)
+    out = np.full(n, np.nan)
+    out[window - 1 :] = win.sum(axis=1)
+    return out
+
+
+def _new_low_count(series, window):
+    """逐股票创新低天数计数。"""
+    arr = series.values.astype(float)
+    n = len(arr)
+    if n < window:
+        return np.full(n, np.nan)
+    clean = np.where(np.isnan(arr), np.inf, arr)
+    cmin = np.minimum.accumulate(clean)
+    is_nl = np.zeros(n, dtype=np.float64)
+    for i in range(1, n):
+        if arr[i] < cmin[i - 1] and cmin[i - 1] != np.inf:
+            is_nl[i] = 1.0
+    win = sliding_window_view(is_nl, window)
+    out = np.full(n, np.nan)
+    out[window - 1 :] = win.sum(axis=1)
+    return out
+
+
 def compute_counting_factors(name: str, f3d: Frame3D, context) -> Frame3D:
-    """计算 16 个计数因子。"""
+    """计算 17 个纯计数因子（无离散化阈值）。"""
     result = f3d.copy()
     close, high, low = f3d.df['close'], f3d.df['high'], f3d.df['low']
     ret = f3d.ts_pct_change('close', 1).df['close']
@@ -63,48 +128,24 @@ def compute_counting_factors(name: str, f3d: Frame3D, context) -> Frame3D:
     df['_ret'] = ret
     grp = df.index.get_level_values('name')
 
-    def _roll(src, dst, window, agg):
-        df[dst] = (
-            df.groupby('name')[src]
-            .rolling(window, min_periods=max(1, window // 2))
-            .agg(agg)
-            .reset_index(level=0, drop=True)
-        )
+    # ===== CountPos / CountNeg：4 cols =====
+    pos_mask = (ret > 0).astype(float)
+    neg_mask = (ret < 0).astype(float)
+    df['_pos'] = pos_mask
+    df['_neg'] = neg_mask
+    for w, label_pos, label_neg in [(10, '10d', '10d'), (60, '60d', '60d')]:
+        for src, dst in [('_pos', f'factor_cnt_countpos_{label_pos}'),
+                         ('_neg', f'factor_cnt_countneg_{label_neg}')]:
+            df[dst] = (
+                df.groupby('name')[src]
+                .rolling(w, min_periods=max(1, w // 2))
+                .sum()
+                .reset_index(level=0, drop=True)
+            )
 
-    # ===== Vol/Rank：9 cols =====
-    volume = f3d.df['volume']
-    df['_vol'] = volume
-    _roll('_vol', '_vol_ma20', 20, 'mean')
-    vol_ma20 = df['_vol_ma20']
-
-    df['factor_cnt_vol_spike_20d'] = (volume > 1.5 * vol_ma20).astype(float)
-    _roll('factor_cnt_vol_spike_20d', 'factor_cnt_vol_spike_20d', 20, 'sum')
-    df['factor_cnt_vol_spike_60d'] = (volume > 1.5 * vol_ma20).astype(float)
-    _roll('factor_cnt_vol_spike_60d', 'factor_cnt_vol_spike_60d', 60, 'sum')
-    df['factor_cnt_vol_shrink_20d'] = (volume < 0.5 * vol_ma20).astype(float)
-    _roll('factor_cnt_vol_shrink_20d', 'factor_cnt_vol_shrink_20d', 20, 'sum')
-
-    to_rank = result.cs_rank('turnover').df['turnover']
-    df['_rk'] = to_rank
-    df['_rk_d1'] = df.groupby('name')['_rk'].shift(1)
-    df['_rc'] = np.abs(df['_rk'] - df['_rk_d1'])
-    _roll('_rc', 'factor_cnt_turnover_rank_chg_20d', 20, 'mean')
-    _roll('_rc', 'factor_cnt_turnover_rank_chg_60d', 60, 'mean')
-
-    df['factor_cnt_big_move_20d'] = (np.abs(ret) > 0.02).astype(float)
-    _roll('factor_cnt_big_move_20d', 'factor_cnt_big_move_20d', 20, 'sum')
-    df['factor_cnt_big_move_60d'] = (np.abs(ret) > 0.02).astype(float)
-    _roll('factor_cnt_big_move_60d', 'factor_cnt_big_move_60d', 60, 'sum')
-
-    amp = (high - low) / close
-    df['_amp'] = amp
-    _roll('_amp', '_amp_ma20', 20, 'mean')
-    df['factor_cnt_amp_break_20d'] = (amp > 1.5 * df['_amp_ma20']).astype(float)
-    _roll('factor_cnt_amp_break_20d', 'factor_cnt_amp_break_20d', 20, 'sum')
-
-    # ===== Streak：4 cols (pivot→numpy→flatten) =====
-    ret_pivot = df['_ret'].unstack(level='name')
-    arr = ret_pivot.values.astype(np.float64)
+    # ===== Streak + RunPct：4 cols (pivot→numpy→flatten) =====
+    ret_pivot = df['_ret'].unstack(level='name').astype(np.float64)
+    arr = ret_pivot.values.copy()
     up, down = _streaks_2d(arr)
     rp20 = _run_pct_2d(arr, 20)
     rp60 = _run_pct_2d(arr, 60)
@@ -117,46 +158,36 @@ def compute_counting_factors(name: str, f3d: Frame3D, context) -> Frame3D:
     ret_pivot.iloc[:, :] = rp60
     df['factor_cnt_run_pct_60d'] = ret_pivot.stack()
 
+    # ===== TillNow：4 cols (pivot→numpy→flatten) =====
+    close_pivot = close.unstack(level='name').astype(np.float64)
+    tr20 = _tillnow_ret_2d(arr, 20)
+    tr60 = _tillnow_ret_2d(arr, 60)
+    dd20 = _tillnow_dd_2d(close_pivot.values, 20)
+    dd60 = _tillnow_dd_2d(close_pivot.values, 60)
+    ret_pivot.iloc[:, :] = tr20
+    df['factor_cnt_tillnow_ret_20d'] = ret_pivot.stack()
+    ret_pivot.iloc[:, :] = tr60
+    df['factor_cnt_tillnow_ret_60d'] = ret_pivot.stack()
+    ret_pivot.iloc[:, :] = dd20
+    df['factor_cnt_tillnow_dd_20d'] = ret_pivot.stack()
+    ret_pivot.iloc[:, :] = dd60
+    df['factor_cnt_tillnow_dd_60d'] = ret_pivot.stack()
+
+    # ===== Turnover Rank Change：2 cols =====
+    to_rank = result.cs_rank('turnover').df['turnover']
+    df['_rk'] = to_rank
+    df['_rk_d1'] = df.groupby('name')['_rk'].shift(1)
+    df['_rc'] = np.abs(df['_rk'] - df['_rk_d1'])
+    for w, label in [(20, '20d'), (60, '60d')]:
+        col = f'factor_cnt_turnover_rank_chg_{label}'
+        df[col] = (
+            df.groupby('name')['_rc']
+            .rolling(w, min_periods=max(1, w // 2))
+            .mean()
+            .reset_index(level=0, drop=True)
+        )
+
     # ===== 新高新低：3 cols =====
-    # 复合必须先于 add_column（否则 result 引用不同步）
-    df['factor_cnt_composite'] = (
-        df['factor_cnt_vol_spike_20d'] / 20
-        + df['factor_cnt_big_move_20d'] / 20
-        - df['factor_cnt_vol_shrink_20d'] / 20
-    ) / 3
-
-    def _new_high_count(series, window):
-        arr = series.values.astype(float)
-        n = len(arr)
-        if n < window:
-            return np.full(n, np.nan)
-        clean = np.where(np.isnan(arr), -np.inf, arr)
-        cmax = np.maximum.accumulate(clean)
-        is_nh = np.zeros(n, dtype=np.float64)
-        for i in range(1, n):
-            if arr[i] > cmax[i - 1] and cmax[i - 1] != -np.inf:
-                is_nh[i] = 1.0
-        win = sliding_window_view(is_nh, window)
-        out = np.full(n, np.nan)
-        out[window - 1 :] = win.sum(axis=1)
-        return out
-
-    def _new_low_count(series, window):
-        arr = series.values.astype(float)
-        n = len(arr)
-        if n < window:
-            return np.full(n, np.nan)
-        clean = np.where(np.isnan(arr), np.inf, arr)
-        cmin = np.minimum.accumulate(clean)
-        is_nl = np.zeros(n, dtype=np.float64)
-        for i in range(1, n):
-            if arr[i] < cmin[i - 1] and cmin[i - 1] != np.inf:
-                is_nl[i] = 1.0
-        win = sliding_window_view(is_nl, window)
-        out = np.full(n, np.nan)
-        out[window - 1 :] = win.sum(axis=1)
-        return out
-
     result = result.add_column(
         'factor_cnt_new_high_20d',
         close.groupby(grp).transform(lambda x: _new_high_count(x, 20)),
@@ -173,6 +204,7 @@ def compute_counting_factors(name: str, f3d: Frame3D, context) -> Frame3D:
         cp=False,
     )
 
+    # ===== 截面标准化 =====
     factor_cols = [c for c in result.df.columns if c.startswith('factor_cnt_')]
     result = result.cs_zscore_batch(factor_cols, cp=False)
     return Frame3D(result.df[factor_cols].copy())
