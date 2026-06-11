@@ -62,6 +62,7 @@ def _init_group_context(
         'trade_log': [],
         'position_log': [],
         'nav_log': [],
+        'daily_plans': [],      # 每日交易计划 DataFrame 列表（epilogue 时统一导出）
     }
 
 
@@ -380,6 +381,111 @@ def _on_bar(
 
 
 # =============================================================================
+# 次日交易计划生成
+# =============================================================================
+
+
+def _generate_daily_plan(
+    ctx: dict, date, dc: int,
+    signal: dict[str, dict[str, float]],
+    close_uq: dict[str, float],
+    close_hfq: dict[str, float],
+) -> pd.DataFrame:
+    """生成 T+1 日交易计划（基于 T 日收盘信息估算）。
+
+    T 日收盘后，基于 T 日信号 + T 日收盘价，估算次日每笔交易的目标市值和占比。
+    交易顺序：先卖后买（卖=0,1；买=2,3）。
+
+    返回 DataFrame 列：
+        date, group_id, stock_id, action, target_value, weight, signal_value, order
+    """
+    dc_tomorrow = dc + 1
+
+    # 构建复权因子
+    f_today: dict[str, float] = {}
+    for sid, puq in close_uq.items():
+        phfq = close_hfq.get(sid, 0.0)
+        if puq > 0 and phfq > 0:
+            f_today[sid] = phfq / puq
+
+    # 到期持仓
+    maturing: dict[str, list] = defaultdict(list)
+    for key, pos in list(ctx['positions'].items()):
+        if pos['mature_dc'] == dc_tomorrow:
+            maturing[pos['stock_id']].append(key)
+
+    total_equity = _compute_total_equity(ctx, close_uq, close_hfq)
+    slice_capital = max(total_equity, 1.0) / ctx['fwd']
+
+    sig_sids = set(signal.keys())
+    mat_sids = set(maturing.keys())
+
+    plans: list[dict] = []
+
+    # ---- 1. 纯卖：到期且不在新信号中 → 全部平仓 (order=0) ----
+    for sid in mat_sids - sig_sids:
+        pos_value = sum(
+            _get_position_value(ctx['positions'][k], close_hfq)
+            for k in maturing[sid]
+        )
+        plans.append({
+            'date': date,
+            'group_id': ctx['group_id'],
+            'stock_id': sid,
+            'action': 'sell',
+            'target_value': round(pos_value, 2),
+            'weight': round(pos_value / total_equity, 6) if total_equity > 0 else 0.0,
+            'signal_value': 0.0,
+            'order': 0,
+        })
+
+    # ---- 2. 差额：到期且在新信号中 → 减仓(order=1) / 补仓(order=2) ----
+    for sid in sig_sids & mat_sids:
+        sw = signal[sid]['w']
+        sv = signal[sid]['v']
+        target_val = slice_capital * sw
+        current_val = sum(
+            _get_position_value(ctx['positions'][k], close_hfq)
+            for k in maturing[sid]
+        )
+        delta = target_val - current_val
+        if abs(delta) < 1.0:
+            continue  # 变化太小，跳过
+        action = 'sell' if delta < 0 else 'buy'
+        plans.append({
+            'date': date,
+            'group_id': ctx['group_id'],
+            'stock_id': sid,
+            'action': action,
+            'target_value': round(abs(delta), 2),
+            'weight': sw,
+            'signal_value': sv,
+            'order': 1 if action == 'sell' else 2,
+        })
+
+    # ---- 3. 纯买：新信号中的新开仓 (order=3) ----
+    for sid in sig_sids - mat_sids:
+        sw = signal[sid]['w']
+        sv = signal[sid]['v']
+        target_val = slice_capital * sw
+        plans.append({
+            'date': date,
+            'group_id': ctx['group_id'],
+            'stock_id': sid,
+            'action': 'buy',
+            'target_value': round(target_val, 2),
+            'weight': sw,
+            'signal_value': sv,
+            'order': 3,
+        })
+
+    if not plans:
+        return pd.DataFrame()
+
+    return pd.DataFrame(plans).sort_values('order')
+
+
+# =============================================================================
 # 信号 ranking → 分组字典
 # =============================================================================
 
@@ -487,6 +593,19 @@ def strategy_fn(name: str, f3d: Frame3D, context: Any) -> Frame3D:
         gid = gctx['group_id']
         sig = group_signals.get(gid, {})
         _on_bar(gctx, t_curr, sig, close_uq_t, close_hfq_t)
+
+    # ---- 生成次日交易计划（T 日收盘后可立即给出） ----
+    for gctx in context['groups']:
+        gid = gctx['group_id']
+        sig = group_signals.get(gid, {})
+        if sig and gctx['pending_signal']:
+            dc = gctx['day_counter']
+            plan_df = _generate_daily_plan(
+                gctx, t_curr, dc, gctx['pending_signal'],
+                close_uq_t, close_hfq_t,
+            )
+            if not plan_df.empty:
+                gctx['daily_plans'].append(plan_df)
 
     # ---- MLflow 逐日指标 ----
     run_id = context.get('mlflow_run_id', '')
@@ -619,11 +738,27 @@ def strategy_epilogue(name: str, context: dict[str, Any] | None) -> None:
                 _export_artifact(run_id, f'{name}_g{gid}', 'positions',
                                  pd.DataFrame(gctx['position_log']))
 
+        # ---- MLflow artifact: 每日交易计划 CSV（每组一个文件夹，每日一个文件） ----
+        if run_id and gctx['daily_plans']:
+            all_plans = pd.concat(gctx['daily_plans'], ignore_index=True)
+            if not all_plans.empty:
+                # 按日期分组，每日写一个 CSV
+                for plan_date, day_df in all_plans.groupby('date', sort=True):
+                    _export_artifact(
+                        run_id, f'{name}_g{gid}', f'daily_plan_{plan_date}',
+                        day_df, artifact_subdir=f'strategy/{name}_g{gid}/daily_plans',
+                    )
+                logging.info(
+                    f'[{name}]   Group {gid}: {len(all_plans)} plan rows '
+                    f'({all_plans["date"].nunique()} days) exported'
+                )
+
     logging.info(f'[{name}] ==========================================')
 
 
 def _export_artifact(
     run_id: str, prefix: str, kind: str, df: pd.DataFrame,
+    artifact_subdir: str = '',
 ) -> None:
     """将 DataFrame 写入 CSV 并上传到 MLflow artifact。"""
     import os
@@ -637,7 +772,8 @@ def _export_artifact(
         tmp_path = os.path.join(tmp_dir, f'{prefix}_{kind}.csv')
         try:
             df.to_csv(tmp_path, index=False)
-            mlflow.log_artifact(tmp_path, artifact_path=f'strategy/{prefix}', run_id=run_id)
+            art_path = artifact_subdir or f'strategy/{prefix}'
+            mlflow.log_artifact(tmp_path, artifact_path=art_path, run_id=run_id)
         finally:
             with suppress(Exception):
                 os.unlink(tmp_path)

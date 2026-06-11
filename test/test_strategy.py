@@ -226,8 +226,8 @@ class TestOnBar:
         # 价格不变时 nav≈1.0，手续费造成极微回撤 (< 1e-4)
         assert ctx['nav_log'][1]['drawdown'] < 1e-4
 
-    def test_drawdown_positive_after_drop(self):
-        """净值从峰值回落后 drawdown > 0。"""
+    def test_drawdown_negative_after_drop(self):
+        """净值从峰值回落后 drawdown < 0（公式: (nav-peak)/peak）。"""
         ctx = _init_group_context(1_000_000, 20, 0.0005, 5.0, 0)
         sig = {'S00': {'w': 1.0, 'v': 0.5}}
         # Day 1: 缓存信号
@@ -240,9 +240,9 @@ class TestOnBar:
         uq3 = {'S00': 40.0, 'S01': 40.0}  # 跌 20%
         hfq3 = {'S00': 44.0, 'S01': 44.0}
         _on_bar(ctx, pd.Timestamp('2020-01-06'), {}, uq3, hfq3)
-        # 第3天 drawdown > 0（因为持仓市值下跌）
+        # 第3天 drawdown 应为负值（nav 相对 peak 下跌）
         entry3 = ctx['nav_log'][2]
-        assert entry3['drawdown'] >= 0
+        assert entry3['drawdown'] < 0
         # peak_nav 应保持最高值
         assert ctx['peak_nav'] >= 1.0
 
