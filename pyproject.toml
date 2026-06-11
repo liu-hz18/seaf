@@ -54,6 +54,40 @@ exclude = [
 "seafquant/model_wrappers.py" = ["N803"]
 "test/crossval_helpers.py" = ["PLW0603"]
 
+[tool.pyright]
+typeCheckingMode = "standard"
+pythonVersion = "3.12"
+
+reportMissingTypeStubs = false
+reportUnknownMemberType = false
+reportUnknownArgumentType = false
+reportUnknownVariableType = false
+reportUnknownParameterType = false
+reportAttributeAccessIssue = false
+reportArgumentType = false
+
+# 噪音抑制：条件导入 + torch stubs
+reportPossiblyUnboundVariable = false
+reportPrivateImportUsage = false
+reportCallIssue = false
+
+# 排除纯脚本目录
+exclude = ["scripts/**", "mlruns/**"]
+
+[[tool.pyright.executionEnvironments]]
+root = "."
+extraPaths = ["."]
+
+# test 目录：放宽类型推断噪音
+[[tool.pyright.executionEnvironments]]
+root = "test"
+reportGeneralTypeIssues = false
+reportIndexIssue = false
+reportOperatorIssue = false
+reportOptionalMemberAccess = false
+reportReturnType = false
+reportUnusedExpression = false
+
 [tool.ruff.format]
 quote-style = "single"
 

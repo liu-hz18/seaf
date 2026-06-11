@@ -411,7 +411,7 @@ class TestCpFalseEdgeCases:
         # f3d 内部 df 已变：time=0 应为 NaN
         assert pd.isna(f3d.df.loc[(0, 'A'), 'col_d'])
         # time=1 的值已变为 pct_change
-        (f3d.df.loc[(1, 'A'), 'col_d'] - orig_val) / orig_val
+        (f3d.df.loc[(1, 'A'), 'col_d'] - orig_val) / orig_val  # pyright: ignore[reportUnusedExpression]
         # 验证确实变了（不再等于原始值）
         assert not np.isclose(f3d.df.loc[(1, 'A'), 'col_d'], orig_val)
 

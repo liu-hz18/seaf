@@ -42,6 +42,7 @@ def ic_analysis_fn(name: str, f3d: Frame3D, context: Any) -> Frame3D:
     context.setdefault('raw_ret_std_history', [])
     context.setdefault('raw_ret_skew_history', [])
     context.setdefault('cumsum_pearson_ic', 0.0)
+    context.setdefault('cumsum_vol_pearson_ic', 0.0)
     context.setdefault('cumsum_raw_ret_std', 0.0)
     context.setdefault('cumsum_rank_ic', 0.0)
     context.setdefault('day_count', 0)
@@ -113,6 +114,7 @@ def ic_analysis_fn(name: str, f3d: Frame3D, context: Any) -> Frame3D:
         context['pearson_ic_history'].append(pearson_ic)
         context['rank_ic_history'].append(rank_ic)
         context['cumsum_pearson_ic'] += pearson_ic
+        context['cumsum_vol_pearson_ic'] += pearson_ic * raw_ret_std
         context['cumsum_rank_ic'] += rank_ic
         context['day_count'] += 1
 
@@ -121,22 +123,23 @@ def ic_analysis_fn(name: str, f3d: Frame3D, context: Any) -> Frame3D:
         # 理论 top-bottom 对数净值差（逐日）
         num_groups = context.get('num_groups', 10)
         cc = context['day_count']
-        theo_log_spread = 0.0
+        theo_log_nav_spread = 0.0
         if cc > 0 and num_groups >= 2:
             from scipy.stats import norm  # 延迟导入
             phi_inv = float(norm.ppf(1.0 / num_groups))
             phi_val = float(norm.pdf(phi_inv))
-            mean_ret_std = context['cumsum_raw_ret_std'] / cc
-            theo_log_spread = (
-                2.0 * num_groups * phi_val * mean_ret_std * context['cumsum_pearson_ic']
+            # mean_ret_std = context['cumsum_raw_ret_std'] / cc
+            theo_log_nav_spread = (
+                2.0 * num_groups * phi_val * raw_ret_std * context['cumsum_pearson_ic'] / (fwd-1)  # NOTE: we actually hold fwd-1 days
             )
         mlflow_log_metrics(mlflow_run_id, name, {
             'pearson_ic': pearson_ic,
             'rank_ic': rank_ic,
             'raw_ret_std': raw_ret_std,
             'raw_ret_skew': raw_ret_skew,
-            'theo_log_nav_spread': theo_log_spread,
+            'theo_log_nav_spread': theo_log_nav_spread,
             'cumsum_pearson_ic': context['cumsum_pearson_ic'],
+            'cumsum_vol_pearson_ic': context['cumsum_vol_pearson_ic'],
             'cumsum_rank_ic': context['cumsum_rank_ic'],
         }, step=trading_step(context.get('start_date', ''), pred_t))
 
@@ -149,11 +152,12 @@ def ic_analysis_fn(name: str, f3d: Frame3D, context: Any) -> Frame3D:
                 f'pearson_ic={pearson_ic:.4f} rank_ic={rank_ic:.4f} '
                 f'raw_ret_std={raw_ret_std:.6f} '
                 f'raw_ret_skew={raw_ret_skew:.4f} '
-                f'theo_log_spread={theo_log_spread:.6f} '
-                f'cumsum_p={context["cumsum_pearson_ic"]:.4f} '
-                f'cumsum_r={context["cumsum_rank_ic"]:.4f} '
-                f'recent10_p_mean={np.mean(recent_p):.4f} '
-                f'recent10_r_mean={np.mean(recent_r):.4f}'
+                f'theo_log_nav_spread={theo_log_nav_spread:.6f} '
+                f'cumsum_pearson_ic={context["cumsum_pearson_ic"]:.4f} '
+                f'cumsum_rank_ic={context["cumsum_rank_ic"]:.4f} '
+                f'cumsum_vol_pearson_ic={context["cumsum_vol_pearson_ic"]:.4f} '
+                f'recent10_pic_mean={np.mean(recent_p):.4f} '
+                f'recent10_ric_mean={np.mean(recent_r):.4f}'
             )
     else:
         context['pearson_ic_history'].append(np.nan)
@@ -214,7 +218,7 @@ def ic_epilogue(name: str, context: dict[str, Any] | None) -> None:
         logging.info(
             f'[{name}]   Final theoretical log NAV spread: {final_theo:.6f} '
             f'(N={num_groups}, mean_ret_std={mean_ret_std:.6f}, '
-            f'Σ_pearson_ic={cumsum_p:.4f})'
+            f'cumsum_pearson_ic={cumsum_p:.4f})'
         )
 
     logging.info(f'[{name}] ======================================')

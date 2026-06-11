@@ -472,7 +472,7 @@ class TestStrategyFnEmptyOutput:
         result = strategy_fn('test', f3d, ctx)
         assert not result.df.empty  # 非空，含 _dummy 占位列
         max_key = result.df.index.get_level_values(0).max()
-        assert not pd.isna(max_key)  # 有效的 Timestamp
+        assert not pd.isna(max_key)  # pyright: ignore[reportGeneralTypeIssues]
 
     def test_trading_step_on_valid_result(self):
         """strategy_fn 返回有效 t_curr → max_key 有效 → trading_step 正确计算。"""

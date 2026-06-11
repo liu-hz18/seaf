@@ -56,7 +56,7 @@ def _cs_zscore_manual(f3d: Frame3D, cols: list[str]) -> Frame3D:
 
 def _roll_manual(df: pd.DataFrame, col: str, window: int, agg: str) -> pd.Series:
     """逐股票时序滚动聚合。"""
-    return df.groupby('name')[col].transform(
+    return df.groupby('name')[col].transform(  # pyright: ignore[reportReturnType]
         lambda x: x.rolling(window=window, min_periods=max(1, window // 2)).agg(agg)
     )
 
@@ -82,7 +82,7 @@ def _compare_factor_output(
     for col in expected_cols:
         actual_vals = actual_f3d.df[col].values
         expected_vals = expect_f3d.df[col].values
-        diff = np.abs(actual_vals - expected_vals)
+        diff = np.abs(actual_vals - expected_vals)  # pyright: ignore[reportOperatorIssue]
         max_diff = np.nanmax(diff)
         if max_diff >= atol:
             n_bad = int(np.sum(diff >= atol))

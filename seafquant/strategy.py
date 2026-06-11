@@ -143,7 +143,7 @@ def _process_delta_trade(
 ) -> None:
     """差额交易：到期持仓 + 新信号继续持有 → 补仓/减仓，锚点重置。"""
     p_uq = close_uq.get(sid, 0.0)
-    p_hfq = close_hfq.get(sid, p_uq)
+    p_hfq = (close_hfq or {}).get(sid, p_uq)
     if p_uq <= 0:
         for key in maturing_keys:
             ctx['positions'][key]['mature_dc'] = dc + 1
@@ -239,7 +239,7 @@ def _process_close_trade(
 ) -> None:
     """全部平仓：到期持仓不在新信号中。"""
     p_uq = close_uq.get(sid, 0.0)
-    p_hfq = close_hfq.get(sid, p_uq)
+    p_hfq = (close_hfq or {}).get(sid, p_uq)
     if p_uq <= 0:
         for key in maturing_keys:
             ctx['positions'][key]['mature_dc'] = dc + 1
@@ -386,7 +386,7 @@ def _on_bar(
 
 def _rank_into_groups(
     signal_series: pd.Series, num_groups: int,
-) -> dict[int, dict[str, float]]:
+) -> dict[int, dict[str, dict[str, float]]]:
     """按截面 signal 排名分为 num_groups 组，等权分配。
 
     group 0 = top 信号分位，group N-1 = bottom。
