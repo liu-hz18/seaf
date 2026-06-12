@@ -9,6 +9,7 @@ import gc
 import inspect
 import logging
 import multiprocessing as mp
+import os
 import sys
 import threading
 import time
@@ -155,6 +156,11 @@ class MultiInputNode(mp.Process):
             format=f'[%(levelname)s][%(asctime)s][%(filename)s:%(lineno)d][{self.name}] %(message)s',
             handlers=[FlushStreamHandler(stream=sys.stdout)],
         )
+        # ---- 日志文件：子进程也写入同一个 logs/{run_id}.txt ----
+        _run_id = self.context.get('mlflow_run_id', '') if isinstance(self.context, dict) else ''
+        if _run_id:
+            os.makedirs('logs', exist_ok=True)
+            logging.getLogger().addHandler(logging.FileHandler(f'logs/{_run_id}.txt', encoding='utf-8'))
         logging.info(f'Node {self.name} started, w={self.window}, mp={self.min_periods}.')
 
         num_workers = len(self.input_queues)
@@ -485,6 +491,11 @@ class SourceNode(mp.Process):
             format=f'[%(levelname)s][%(asctime)s][%(filename)s:%(lineno)d][{self.name}] %(message)s',
             handlers=[FlushStreamHandler(stream=sys.stdout)],
         )
+        # ---- 日志文件：子进程也写入同一个 logs/{run_id}.txt ----
+        _run_id = self.context.get('mlflow_run_id', '') if isinstance(self.context, dict) else ''
+        if _run_id:
+            os.makedirs('logs', exist_ok=True)
+            logging.getLogger().addHandler(logging.FileHandler(f'logs/{_run_id}.txt', encoding='utf-8'))
         logging.info('SourceNode started.')
         current_context: Any = self.context
         day_index = 0

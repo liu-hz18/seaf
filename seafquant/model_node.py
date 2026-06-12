@@ -165,9 +165,20 @@ def _log_feature_importance(
     model_type: str,
     step: int,
 ) -> None:
-    """记录特征重要性到日志和 MLflow artifact。"""
+    """记录特征重要性到日志和 MLflow artifact。
+    自动做 min-max 归一化，使得不同模型计算出的特征重要性可相互比较。
+    """
     if not fi:
         return
+    # ---- min-max 归一化到 [0, 1] ----
+    vals = list(fi.values())
+    vmin, vmax = min(vals), max(vals)
+    if vmax > vmin:
+        fi = {k: (v - vmin) / (vmax - vmin) for k, v in fi.items()}
+    else:
+        fi = dict.fromkeys(fi, 0.0)
+    # ---- 按值降序排序 ----
+    fi = dict(sorted(fi.items(), key=lambda x: x[1], reverse=True))
     top_n = min(10, len(fi))
     top_items = list(fi.items())[:top_n]
     logging.info(

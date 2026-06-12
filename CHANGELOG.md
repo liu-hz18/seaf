@@ -1087,3 +1087,22 @@ with warnings.catch_warnings():
 
 - `ruff check .`：All checks passed
 - 110 tests passed（data_generator + factors + crossval + model_node + strategy）
+
+---
+
+## [Feat] 2026-06-12 日志文件持久化 + MLflow run_name + Feature Importance min-max 归一化
+
+### 1. 日志文件写入
+
+多进程日志统一写入 `logs/{run_id}.txt`：
+
+- **`pipeline.py`**：`basicConfig` 改为 `handlers=[StreamHandler]` 形式；mlflow 初始化后向 root logger 添加 `FileHandler`
+- **`qpipe/node.py`**：`MultiInputNode.run()` / `SourceNode.run()` 中 `basicConfig` 后从 `self.context['mlflow_run_id']` 读取 run_id，添加同名 `FileHandler`
+
+### 2. MLflow run_name
+
+`mlflow.start_run(run_name=...)` 命名规则：`{model_type}-w{model_window}-f{fwd}-{start_date}`，例如 `lgbm-w200-f20-2020-01-02`
+
+### 3. Feature Importance min-max 归一化
+
+`_log_feature_importance()` 新增预处理：`(v - vmin) / (vmax - vmin)` 归一化到 `[0, 1]`，再按值降序排序。确保 lgbm（gain）和 ridge（|coef|）等不同模型的特征重要性可横向比较。

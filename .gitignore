@@ -8,5 +8,6 @@ mlruns/
 backup**
 .deepseek
 *.db
+logs/**
 
 !requirements.txt

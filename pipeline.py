@@ -67,7 +67,7 @@ def main() -> None:
     logging.basicConfig(
         level=getattr(logging, args.log_level),
         format='[%(levelname)s][%(asctime)s][%(filename)s:%(lineno)d] %(message)s',
-        stream=sys.stdout
+        handlers=[logging.StreamHandler(sys.stdout)],
     )
 
     logging.info(f"args: {args}")
@@ -89,10 +89,20 @@ def main() -> None:
 
         mlflow.set_tracking_uri('sqlite:///mlruns.db')
         mlflow.set_experiment(experiment_name)
-        mlflow_run = mlflow.start_run()
+        run_name = f'{args.model_type}-w{args.model_window}-f{args.fwd}-{args.start_date}'
+        mlflow_run = mlflow.start_run(run_name=run_name)
         mlflow_run_id: str = mlflow_run.info.run_id
     else:
         mlflow_run_id = ''
+
+    # ---- 日志文件：主进程写入 logs/{run_id}.txt ----
+    _log = logging.getLogger(__name__)
+    if mlflow_run_id:
+        os.makedirs('logs', exist_ok=True)
+        _log.addHandler(logging.FileHandler(f'logs/{mlflow_run_id}.txt', encoding='utf-8'))
+    else:
+        os.makedirs('logs', exist_ok=True)
+        _log.addHandler(logging.FileHandler('logs/no_mlflow.txt', encoding='utf-8'))
 
     flow = Flow(queue_maxsize=GLOBAL_MAX_FACTOR_WINDOW)
 
