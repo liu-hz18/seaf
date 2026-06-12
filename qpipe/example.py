@@ -41,7 +41,7 @@ def gen_source_frames(name, price_base) -> Iterator[Frame3D]:
             pd.to_datetime([f'2025-01-{i + 1:02d}' for j in range(stocks_per_iter)]),
             ['A', 'B'],
         ]
-        mi = pd.MultiIndex.from_arrays(arrays, names=['key', 'name'])
+        mi = pd.MultiIndex.from_arrays(arrays, names=['key', 'code'])
         df = pd.DataFrame(
             {
                 f'{name}_price': [price_base + i, price_base + 2 + i],

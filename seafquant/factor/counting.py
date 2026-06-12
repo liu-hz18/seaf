@@ -126,7 +126,7 @@ def compute_counting_factors(name: str, f3d: Frame3D, context) -> Frame3D:
     ret = f3d.ts_pct_change('close', 1).df['close']
     df = result.df
     df['_ret'] = ret
-    grp = df.index.get_level_values('name')
+    grp = df.index.get_level_values('code')
 
     # ===== CountPos / CountNeg：4 cols =====
     pos_mask = (ret > 0).astype(float)
@@ -137,14 +137,14 @@ def compute_counting_factors(name: str, f3d: Frame3D, context) -> Frame3D:
         for src, dst in [('_pos', f'factor_cnt_countpos_{label_pos}'),
                          ('_neg', f'factor_cnt_countneg_{label_neg}')]:
             df[dst] = (
-                df.groupby('name')[src]
+                df.groupby('code')[src]
                 .rolling(w, min_periods=max(1, w // 2))
                 .sum()
                 .reset_index(level=0, drop=True)
             )
 
     # ===== Streak + RunPct：4 cols (pivot→numpy→flatten) =====
-    ret_pivot = df['_ret'].unstack(level='name').astype(np.float64)
+    ret_pivot = df['_ret'].unstack(level='code').astype(np.float64)
     arr = ret_pivot.values.copy()
     up, down = _streaks_2d(arr)
     rp20 = _run_pct_2d(arr, 20)
@@ -159,7 +159,7 @@ def compute_counting_factors(name: str, f3d: Frame3D, context) -> Frame3D:
     df['factor_cnt_run_pct_60d'] = ret_pivot.stack()
 
     # ===== TillNow：4 cols (pivot→numpy→flatten) =====
-    close_pivot = close.unstack(level='name').astype(np.float64)
+    close_pivot = close.unstack(level='code').astype(np.float64)
     tr20 = _tillnow_ret_2d(arr, 20)
     tr60 = _tillnow_ret_2d(arr, 60)
     dd20 = _tillnow_dd_2d(close_pivot.values, 20)
@@ -176,12 +176,12 @@ def compute_counting_factors(name: str, f3d: Frame3D, context) -> Frame3D:
     # ===== Turnover Rank Change：2 cols =====
     to_rank = result.cs_rank('turnover').df['turnover']
     df['_rk'] = to_rank
-    df['_rk_d1'] = df.groupby('name')['_rk'].shift(1)
+    df['_rk_d1'] = df.groupby('code')['_rk'].shift(1)
     df['_rc'] = np.abs(df['_rk'] - df['_rk_d1'])
     for w, label in [(20, '20d'), (60, '60d')]:
         col = f'factor_cnt_turnover_rank_chg_{label}'
         df[col] = (
-            df.groupby('name')['_rc']
+            df.groupby('code')['_rc']
             .rolling(w, min_periods=max(1, w // 2))
             .mean()
             .reset_index(level=0, drop=True)

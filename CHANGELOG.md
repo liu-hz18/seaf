@@ -1037,3 +1037,53 @@ with warnings.catch_warnings():
 
 - `ruff check .`：All checks passed
 - 测试套件：全量通过（含新增 4 个测试文件）
+
+---
+
+## [Refactor] 2026-06-12 全代码库 MultiIndex `name`→`code` 重命名 + `stock_name` 中文名 + `--precision` 参数贯穿
+
+### 概述
+
+两项正交重构同时落地：
+1. **索引语义修正**：全代码库将 MultiIndex 第二层统一为 `code`（股票代码），与 Frame3D 框架约定对齐。新增 `stock_name` 列存储随机中文名。
+2. **价格精度可配置**：新增 `--precision` 参数（默认 2），贯穿 data_generator / strategy_core / strategy_daily 所有 `round` 调用。
+
+### 1. `name` → `code` 全局重命名
+
+**背景**：data_generator 中 `_init_stock` 的 `'name'` 字段实为股票代码（如 S0001），但命名与 Frame3D 的 index level 名 `name` 混淆，且之前部分代码使用 `'code'` 作为 level 名不一致。
+
+**data_generator.py**：
+- `_init_stock` 字典 key `'name'` → `'code'`，变量 `active_names` → `active_codes`
+- 新增 `_CHINESE_CHARS` 常见汉字字符池 + `_random_chinese_name(rng)` 函数（3-5 个随机字）
+- DataFrame 新增 `stock_name` 列存储中文名，`code` 列的值仍为 index level `code`
+- `close_uq` 生成约束 `close_uq ≤ close`（用 `-|ε|`）
+
+**qpipe/frame3d.py**：9 处 `.groupby('name')` / `get_level_values('name')` → `'code'`
+
+**全部 9 个因子模块**：所有 `.groupby('name')` → `.groupby('code')`：
+- counting, cross_section, interaction, liquidity, momentum, quality_autocorr, quality_merged, quality_pattern, trend, value, volatility
+
+**全部测试文件**（10+ 文件）：`names=['key', 'name']` → `names=['key', 'code']` + `.groupby('name')` → `.groupby('code')` + 行记录的 `'name'` key → `'code'`
+
+**seafquant/strategy.py**：`strategy_fn` 输出改为逐股逐组持仓市值 Frame3D（`gN_mv` 列）
+
+### 2. `--precision` 参数贯穿
+
+**pipeline.py**：新增 `--precision` argparse（`type=int, default=2`），写入全部 5 个 context 字典 + DataSourceCallable
+
+**data_generator.py**：`generate_synthetic_data` 新增 `precision: int=2` 参数，5 处 `np.round(..., 2)` → `np.round(..., precision)`
+
+**strategy_core.py**：
+- `_calc_commission` 新增 `precision` 参数（调用链穿透至 `_process_delta/new/close_trade`）
+- `_compute_total_equity` 新增 `precision` 参数
+- `_log_trade` 中 `round(price/value/commission/hfq_price, 2)` → `round(..., ctx.get('precision', 2))`
+
+**strategy_daily.py**：
+- `_on_bar` 中 6 处 `round(..., 2)` → `round(..., ctx.get('precision', 2))`
+- `_generate_daily_plan` 中 7 处 `round(..., 2)` → `round(..., ctx.get('precision', 2))`
+- 3 处 `_compute_total_equity` 调用传入 `ctx.get('precision', 2)`
+
+### 验证
+
+- `ruff check .`：All checks passed
+- 110 tests passed（data_generator + factors + crossval + model_node + strategy）

@@ -16,11 +16,11 @@ def compute_trend_factors(name: str, f3d: Frame3D, context) -> Frame3D:
     result = f3d.copy()
     close = f3d.df['close']
     df = result.df
-    grp = df.index.get_level_values('name')
+    grp = df.index.get_level_values('code')
 
     def _roll(src, dst, window, agg):
         df[dst] = (
-            df.groupby('name')[src].rolling(window, min_periods=max(1, window // 2)).agg(agg).reset_index(level=0, drop=True)
+            df.groupby('code')[src].rolling(window, min_periods=max(1, window // 2)).agg(agg).reset_index(level=0, drop=True)
         )
 
     # ===== MA 偏离 + 交叉 (8 cols) =====

@@ -23,7 +23,7 @@ def make_test_frame3d() -> Frame3D:
     """
     times = [0, 0, 0, 1, 1, 1, 2, 2, 2]
     stocks = ['A', 'B', 'C', 'A', 'B', 'C', 'A', 'B', 'C']
-    mi = pd.MultiIndex.from_arrays([times, stocks], names=['key', 'name'])
+    mi = pd.MultiIndex.from_arrays([times, stocks], names=['key', 'code'])
     rng = np.random.default_rng(42)
     df = pd.DataFrame(
         {
@@ -42,7 +42,7 @@ def make_single_stock_frame3d() -> Frame3D:
     """单 stock 边界测试数据。"""
     times = [0, 1, 2]
     stocks = ['A', 'A', 'A']
-    mi = pd.MultiIndex.from_arrays([times, stocks], names=['key', 'name'])
+    mi = pd.MultiIndex.from_arrays([times, stocks], names=['key', 'code'])
     df = pd.DataFrame(
         {
             'val': [1.0, 2.0, 3.0],
@@ -57,7 +57,7 @@ def make_constant_frame3d() -> Frame3D:
     """全常数列测试 std=0 边界。"""
     times = [0, 0, 1, 1]
     stocks = ['A', 'B', 'A', 'B']
-    mi = pd.MultiIndex.from_arrays([times, stocks], names=['key', 'name'])
+    mi = pd.MultiIndex.from_arrays([times, stocks], names=['key', 'code'])
     df = pd.DataFrame(
         {
             'flat': [3.0, 3.0, 3.0, 3.0],
@@ -270,7 +270,7 @@ class TestFilterStocks:
         mask = pd.Series([True, True, False], index=['A', 'B', 'C'])
         result = f3d.filter_stocks(mask)
         df = result.df
-        assert 'C' not in df.index.get_level_values('name')
+        assert 'C' not in df.index.get_level_values('code')
 
 
 # ========== 边界测试 ==========

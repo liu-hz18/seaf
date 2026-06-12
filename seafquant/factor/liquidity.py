@@ -27,7 +27,7 @@ def compute_liquidity_factors(name: str, f3d: Frame3D, context) -> Frame3D:
 
     def _roll(src, dst, window, agg):
         df[dst] = (
-            df.groupby('name')[src].rolling(window, min_periods=max(1, window // 2)).agg(agg).reset_index(level=0, drop=True)
+            df.groupby('code')[src].rolling(window, min_periods=max(1, window // 2)).agg(agg).reset_index(level=0, drop=True)
         )
 
     # ===== 流动性：16 cols (prefix factor_liq_) =====
@@ -55,7 +55,7 @@ def compute_liquidity_factors(name: str, f3d: Frame3D, context) -> Frame3D:
     with np.errstate(divide='ignore'):
         df['factor_liq_dollar_vol'] = np.where(dollar_vol > 0, np.log(dollar_vol), np.nan)
     df['_dv'] = dollar_vol
-    df['factor_liq_dollar_vol_chg'] = df.groupby('name')['_dv'].pct_change(20, fill_method=None)
+    df['factor_liq_dollar_vol_chg'] = df.groupby('code')['_dv'].pct_change(20, fill_method=None)
     df['_to_vol'] = turnover
     _roll('_to_vol', 'factor_liq_turnover_vol_20d', 20, 'std')
     df['factor_liq_composite'] = -df['factor_liq_amihud_20d'] - df['factor_liq_turnover_vol_20d']
@@ -66,14 +66,14 @@ def compute_liquidity_factors(name: str, f3d: Frame3D, context) -> Frame3D:
     df['factor_size_cs_rank'] = f3d.cs_rank('market_cap').df['market_cap']
 
     for p in [5, 20, 60]:
-        df[f'factor_size_mcap_chg_{p}d'] = df.groupby('name')['market_cap'].pct_change(p, fill_method=None)
+        df[f'factor_size_mcap_chg_{p}d'] = df.groupby('code')['market_cap'].pct_change(p, fill_method=None)
 
-    df['_mcap_ret'] = df.groupby('name')['market_cap'].pct_change(1, fill_method=None)
+    df['_mcap_ret'] = df.groupby('code')['market_cap'].pct_change(1, fill_method=None)
     _roll('_mcap_ret', 'factor_size_mcap_vol_20d', 20, 'std')
     _roll('_mcap_ret', 'factor_size_mcap_vol_60d', 60, 'std')
 
-    df['factor_size_mcap_mom_5d'] = df.groupby('name')['market_cap'].pct_change(5, fill_method=None)
-    df['factor_size_mcap_mom_20d'] = df.groupby('name')['market_cap'].pct_change(20, fill_method=None)
+    df['factor_size_mcap_mom_5d'] = df.groupby('code')['market_cap'].pct_change(5, fill_method=None)
+    df['factor_size_mcap_mom_20d'] = df.groupby('code')['market_cap'].pct_change(20, fill_method=None)
 
     df['factor_size_mcap_sqrt'] = -np.sqrt(mcap)
     df['factor_size_mcap_cube_root'] = -np.cbrt(mcap)

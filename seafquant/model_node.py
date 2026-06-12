@@ -235,7 +235,7 @@ def model_train_predict(name: str, f3d: Frame3D, context: Any) -> Frame3D:
     # —— 时间维度 ——
     times = sorted(df.index.get_level_values('key').unique())
     n_times = len(times)
-    n_stocks = df.index.get_level_values('name').nunique()
+    n_stocks = df.index.get_level_values('code').nunique()
     latest_t = times[-1]
 
     if n_times < fwd + 2:
@@ -309,7 +309,7 @@ def model_train_predict(name: str, f3d: Frame3D, context: Any) -> Frame3D:
 
         # 4. 构建 wrapper
         wrapper_cls = WRAPPER_REGISTRY[model_type]
-        wrapper = wrapper_cls(context)
+        wrapper = wrapper_cls(context)  # 每次训练重新构建模型
 
         # 5. 交叉验证
         cv_scores, _ = _run_cv(name, wrapper, X, y)

@@ -102,7 +102,7 @@ class TestRollingAlignment:
                 price = float(s * 100 + t)
                 row = {
                     'key': t,
-                    'name': f'S{s:03d}',
+                    'code': f'S{s:03d}',
                     'close': price,
                     'open': price * 0.99,
                     'high': price * 1.02,
@@ -112,7 +112,7 @@ class TestRollingAlignment:
                     'market_cap': float((s + 1) * 1e4),
                 }
                 records.append(row)
-        df = pd.DataFrame(records).set_index(['key', 'name'])
+        df = pd.DataFrame(records).set_index(['key', 'code'])
         return Frame3D(df)
 
     def test_rolling_mean_no_cross_contamination(self):
@@ -156,7 +156,7 @@ class TestRollingAlignment:
         ma3_manual = stock1_data.rolling(3, min_periods=1).mean()
 
         # 模拟 _roll 的正确实现
-        rolled = df.groupby('name')['close'].rolling(3, min_periods=1).mean()
+        rolled = df.groupby('code')['close'].rolling(3, min_periods=1).mean()
         df['ma3_correct'] = rolled.reset_index(level=0, drop=True)
 
         # 比较 S001 的值

@@ -1,5 +1,12 @@
 需要人来做的事情：
+0. 增加日志写入到文件的功能，文件名就是 mlflow 的 run_id
 1. IC skew 的负向问题研究
+2. lgbm 模型 IC性能下降的原因研究，经过排查 precision 参数，发现是价格精度下降导致的，如何补偿这部分精度损失 ?
+    观察到的现象：价格精度降低后，模型节点的 train mse 上升了，代表训练表现变差；IC节点计算结果显示 pearson ic 也下降了，代表样本外的测试表现也变差了。
+价格节点里增加一个 有效数字 的因子？引入 vwap 数据作为价格特征？将价格的舍入机制对齐到训练环节？
+mlp 出现了类似的性能下降。整体上：
+mlp(precision=6) > lgbm(precision=6) > mlp(precision=2) > lgbm(precision=2)
+3. feature importance 计算完应该做一个 min-max 归一化，统一尺度
 
 作为资深的机器学习量化研究员，我们的模型训练的 label 为 cs_zscore(close_{t+N} / close_{t+1} - 1), 这代表未来 N 日个股截面超额收益，也说明我们会在模型给出预测后的 t+1 收盘时进行买入，t+N 日收盘时进行卖出。并且，我们的交易是逐日进行的，尽管模型的预测周期是N, 但是我们在将资金分摊到了 N 天来进行预测和交易。这样既降低了滑点成本，也使得交易样本数量增加，从而与模型训练阶段的信号绩效更加对齐。至于损失函数，我们的模型训练应该最大化 截面IC, 也就是截面上 预测收益率向量 和 实际收益率向量的 pearson 相关系数。可以看到，对于一个支持做多和做空的市场，预测信号的截面IC就是该日风险调整后的相对于大盘收益均值的超额收益，截面IC越大，则预测越准确，策略将在单位波动率下获得更大的超额收益。这使得模型的训练、预测和实盘交易的指标更加对齐。此外，为了方便调试，你还需要在 model 节点的各个关键功能处给出充分的日志记录，用于前期团队对该节点的正确性和完整性进行测试和评估。你需要审视 model_node.py 查看是否有与上述要求不一致的地方，结合框架全局和业务特点，给出系统性的model节点搭建方案。
 
@@ -535,3 +542,35 @@ $\rho_t$ 或 $IC_t$：第 $t$ 期的截面 Pearson IC
 3. strategy 节点中已经有了 top-bottom 对数净值差 的实际计算结果，已经记录在 mlflow 的 metric 中了，方便我们后续对比两者是否一致。
 
 seafquant\strategy.py 策略文件中，因为我们针对 T日收盘后由前续节点计算出的信号，T+1日收盘才会进行交易。所以实际上 T日收盘后应该给出次日的交易计划，即次日交易哪些股票，每只股票交易的市值是多少、占总资产的比例（但此时还不知道次日实际的股价，因此算不出股数，只能有计划交易的市值）。请将每组每日的次日交易计划记录在 mlflow artifact 中，每组一个文件夹，每组的文件夹内每日是一个csv文件。你还需要注意交易的先后顺序，应该是先卖后买的。这个计划应该在调用函数的当日就可以给出了，而不需要等到次日的调用。请理解上述需求，结合框架结构和基本逻辑，设计方案并实现
+
+1. strategy/strategy_g*/strategy_g*_trades.csv|strategy_g*_positions.csv 中的价格并没有保留两位小数，理论上讲，这个价格是由上游传过来的，上游的价格都是保留了两位小数，但是这两个 mlflow artifact 却没有，请排查问题
+2. strategy/strategy_g*/strategy_g*_trades.csv|strategy_g*_positions.csv，strategy/strategy_g*/daily_plans/strategy_g*_daily_plan_xxxx-xx-xx.csv 中没有 stock_name 列，只有 stock_id 列，请排查问题。并且其他节点的数据中 stock_id 都是称为 name 列，strategy 节点注意保持和其他节点列属性含义的一致。
+3. 将框架中所有的代表股票代码的 name 列替换为 code 列（更改列名，即原来 (key, name) 的 multiindex 修改为 (key, code)）
+4. seafquant\data_generator.py 中 code 列的生成方式保持不变，stock_name 列采用随机常用汉字（3或4个）来生成（即随机汉字名）。注意到，该文件中
+```
+def _init_stock(si: int, t: int, name_prefix: str) -> dict:
+    """创建并返回一个股票的初始状态。"""
+    return {
+        'log_price': rng.normal(0, 0.8),
+        'mcap': rng.lognormal(np.log(100), 1.2),
+        'active': True,
+        'active_since': t,
+        'name': name_prefix + str(si).zfill(4),
+    }
+
+# 初始化前 n_stocks 只股票
+for si in range(n_stocks):
+    stock_state.append(_init_stock(si, 0, 'S'))
+
+# 预初始化剩余 reserve 股票（暂未激活）
+for si in range(n_stocks, pool_size):
+    stock_state.append({
+        'log_price': 0.0,
+        'mcap': 0.0,
+        'active': False,
+        'active_since': -1,
+        'name': 'R' + str(si - n_stocks).zfill(4),
+    })
+```
+这部分有 'name' 属性，但是这里的name实际上是我们期望的 code，我希望你将列名修正，与我们框架的设定保持一致，否则容易混淆。此外，你还需要生成一个 stock_name 列, 由常见汉字组成。
+5. 整个代码库中的代码的价格属性/市值属性都用了 round(..., 2) 的舍入，以对齐真实股市和交易场景的价格/价值情况。我们要在 pipeline.py 中引入一个 precision 的 args 参数，用来代表舍入的精度。默认为2，但也可以由用户自行设置。所以代码中的 round 就变成了 round(..., precision). 节点代码中的 precision 可以通过 context 参数传入。请充分理解本多进程流式框架的结构和逻辑关系，完成本次迭代。

@@ -29,7 +29,7 @@ def compute_volatility_factors(name: str, f3d: Frame3D, context) -> Frame3D:
 
     def _roll(src, dst, window, agg):
         df[dst] = (
-            df.groupby('name')[src].rolling(window, min_periods=max(1, window // 2)).agg(agg).reset_index(level=0, drop=True)
+            df.groupby('code')[src].rolling(window, min_periods=max(1, window // 2)).agg(agg).reset_index(level=0, drop=True)
         )
 
     # ===== 波动率：16 cols (prefix factor_vol_) =====
@@ -74,7 +74,7 @@ def compute_volatility_factors(name: str, f3d: Frame3D, context) -> Frame3D:
     _roll('_itra', 'factor_intra_ret_mean_5d', 5, 'mean')
     _roll('_itra', 'factor_intra_ret_mean_20d', 20, 'mean')
 
-    df['_close_d1'] = df.groupby('name')['close'].shift(1)
+    df['_close_d1'] = df.groupby('code')['close'].shift(1)
     df['_gap'] = open_p / df['_close_d1'] - 1
     _roll('_gap', 'factor_intra_overnight_gap_5d', 5, 'mean')
     _roll('_gap', 'factor_intra_overnight_gap_20d', 20, 'mean')

@@ -32,6 +32,24 @@ DELIST_PRICE_THRESHOLD: float = 0.005
 # 股票池倍数：预生成的股票总数为 n_stocks * POOL_MULTIPLIER
 POOL_MULTIPLIER: int = 2
 
+# 随机中文名字符池（常见汉字，用于生成 stock_name 列）
+_CHINESE_CHARS: list[str] = list(
+    '科技发展创新未来东方集团国际控股股份实业投资管理'
+    '咨询服务贸易金融证券保险银行房地产建筑工程设计规划'
+    '医药生物制品医疗器械健康养老教育文化传媒娱乐体育'
+    '旅游餐饮酒店物流运输仓储供应链电子商务信息技术软件'
+    '硬件网络通信电力能源水务环保节能新能源材料化工精密'
+    '制造装备汽车航空船舶铁道高速公路桥梁港口航道水利'
+    '农业林业牧渔业食品饮料纺织服装家具造纸印刷包装广告'
+    '园林绿化环境治理安防军工航天航海探测资源开发'
+)
+
+
+def _random_chinese_name(rng, min_len=3, max_len=5):
+    """随机生成常见汉字名（3~5 个字）。"""
+    length = rng.integers(min_len, max_len + 1)
+    return ''.join(rng.choice(list(_CHINESE_CHARS), size=length).tolist())
+
 
 def _generate_hidden_factors(n_times: int, rng: np.random.Generator) -> np.ndarray:
     """生成 5 个隐藏因子，每个是 AR(1) 过程，衰减系数 0.95。
@@ -72,6 +90,7 @@ def generate_synthetic_data(
     noise_ratio: float = 0.3,
     seed: int = 42,
     start_date: str | None = None,
+    precision: int = 2,
 ) -> Iterator[Frame3D]:
     """主生成器：逐日 yield 包含 OHLC + turnover + volume + market_cap 的 Frame3D。
 
@@ -100,7 +119,7 @@ def generate_synthetic_data(
 
     # ---- 每个股票的运行时状态 ----
     # stock_state[si]: dict with keys:
-    #   log_price, mcap, active, active_since, name
+    #   log_price, mcap, active, active_since, code
     stock_state: list[dict] = []
 
     def _init_stock(si: int, t: int, name_prefix: str) -> dict:
@@ -110,7 +129,7 @@ def generate_synthetic_data(
             'mcap': rng.lognormal(np.log(100), 1.2),
             'active': True,
             'active_since': t,
-            'name': name_prefix + str(si).zfill(4),
+            'code': name_prefix + str(si).zfill(4),
         }
 
     # 初始化前 n_stocks 只股票
@@ -124,7 +143,7 @@ def generate_synthetic_data(
             'mcap': 0.0,
             'active': False,
             'active_since': -1,
-            'name': 'R' + str(si - n_stocks).zfill(4),
+            'code': 'R' + str(si - n_stocks).zfill(4),
         })
 
     # ---- 退市调度表：{stock_idx: delist_at_time} ----
@@ -150,19 +169,19 @@ def generate_synthetic_data(
                 stock_state[new_si] = _init_stock(new_si, t, 'N')
                 prev_log_prices[new_si] = None   # 新股无前日价格
                 logging.info(
-                    f'[DataGen][t={t}] Stock {stock_state[si]["name"]} delisted, '
-                    f'new stock {stock_state[new_si]["name"]} listed.'
+                    f'[DataGen][t={t}] Stock {stock_state[si]["code"]} delisted, '
+                    f'new stock {stock_state[new_si]["code"]} listed.'
                 )
             else:
                 logging.warning(
                     f'[DataGen][t={t}] Reserve pool exhausted. '
-                    f'Stock {stock_state[si]["name"]} delisted, no replacement.'
+                    f'Stock {stock_state[si]["code"]} delisted, no replacement.'
                 )
 
         # === 收集当日活跃股票 ===
         active_indices = [si for si, st in enumerate(stock_state) if st['active']]
         n_active = len(active_indices)
-        active_names = [stock_state[si]['name'] for si in active_indices]
+        active_codes = [stock_state[si]['code'] for si in active_indices]
 
         # === 当日 log_price ===
         log_prices_t = np.array([stock_state[si]['log_price'] for si in active_indices])
@@ -197,23 +216,26 @@ def generate_synthetic_data(
         turnover_t = volume_t / mcap_t
 
         # === 构建当日 Frame3D ===
-        arrays = [[tk] * n_active, active_names]
-        mi = pd.MultiIndex.from_arrays(arrays, names=['key', 'name'])
+        arrays = [[tk] * n_active, active_codes]
+        mi = pd.MultiIndex.from_arrays(arrays, names=['key', 'code'])
+
+        # 随机中文名（3~5 个常见汉字）
+        stock_names = [_random_chinese_name(rng) for _ in range(n_active)]
 
         # close_uq：不复权收盘价（模拟除权除息）。
         # 除权/分红只会让不复权价 ≤ 后复权价，故用 -|ε| 确保 close_uq ≤ close。
         close_uq_t = close_t * np.exp(-np.abs(rng.normal(0, 0.0005, n_active)))
 
-        # OHLC 价格精度对齐真实股市：统一 2 位小数
-        open_t = np.round(open_t, 2)
-        high_t = np.round(high_t, 2)
-        low_t = np.round(low_t, 2)
-        close_t = np.round(close_t, 2)
-        close_uq_t = np.round(np.minimum(close_uq_t, close_t), 2)
+        # OHLC 价格精度对齐真实股市（precision 位小数）
+        open_t = np.round(open_t, precision)
+        high_t = np.round(high_t, precision)
+        low_t = np.round(low_t, precision)
+        close_t = np.round(close_t, precision)
+        close_uq_t = np.round(np.minimum(close_uq_t, close_t), precision)
 
         df = pd.DataFrame(
             {
-                'stock_name': active_names,        # 股票名（便于 CSV 可读，主键仍是 index level 'name'）
+                'stock_name': stock_names,          # 随机中文名（3-5 个常见汉字）
                 'open': open_t,
                 'high': high_t,
                 'low': low_t,
@@ -258,7 +280,7 @@ def generate_synthetic_data(
                     + sigma[si] * (daily_signal + innovation[i])
                 )
 
-        time.sleep(0.2)
+        time.sleep(0.1)
 
 
 class DataSourceCallable:
@@ -271,12 +293,14 @@ class DataSourceCallable:
         noise_ratio: float,
         seed: int,
         start_date: str | None = None,
+        precision: int = 2,
     ) -> None:
         self.n_times = n_times
         self.n_stocks = n_stocks
         self.noise_ratio = noise_ratio
         self.seed = seed
         self.start_date: str | None = start_date
+        self.precision = precision
 
     def __call__(self):
         return generate_synthetic_data(
@@ -285,4 +309,5 @@ class DataSourceCallable:
             noise_ratio=self.noise_ratio,
             seed=self.seed,
             start_date=self.start_date,
+            precision=self.precision,
         )

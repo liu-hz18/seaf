@@ -26,7 +26,7 @@ def compute_cross_section_factors(name: str, f3d: Frame3D, context) -> Frame3D:
     # ---- 3-5: 排名变化 ----
     df['_rk_now'] = df['factor_cs_rank_close']
     for period in [5, 20, 60]:
-        df[f'_rk_d{period}'] = df.groupby('name')['_rk_now'].shift(period)
+        df[f'_rk_d{period}'] = df.groupby('code')['_rk_now'].shift(period)
         df[f'factor_cs_rank_delta_{period}d'] = df['_rk_now'] - df[f'_rk_d{period}']
 
     # ---- 6-8: 截面偏离度（时序Z-score） ----
@@ -44,6 +44,6 @@ def compute_cross_section_factors(name: str, f3d: Frame3D, context) -> Frame3D:
     result = result.cs_zscore_batch(factor_cols, cp=False)
 
     logging.debug(
-        f'[{name}] CrossSection NaN: { {c: result.df[c].isna().sum() for c in factor_cols} }'
+        f'CrossSection NaN: { {c: result.df[c].isna().sum() for c in factor_cols} }'
     )
     return Frame3D(result.df[factor_cols].copy())

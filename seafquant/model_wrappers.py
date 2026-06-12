@@ -239,6 +239,7 @@ class MLPWrapper(BaseWrapper):
                     val_loss = loss_fn(val_pred, y_val_t).item()
                 model.train()
 
+                # NOTE: 注意 mse 是越小越好。如果改成 ic 是越大越好
                 if val_loss < best_val_loss:
                     best_val_loss = val_loss
                     best_state = {k: v.clone() for k, v in model.state_dict().items()}

@@ -32,7 +32,7 @@ def _gen_func(n_stocks: int = 5, n_times: int = 30):
         dates = pd.date_range('2020-01-02', periods=n_times, freq='B')
         stocks = [f'S{i:04d}' for i in range(n_stocks)]
         for t in dates:
-            mi = pd.MultiIndex.from_product([[t], stocks], names=['key', 'name'])
+            mi = pd.MultiIndex.from_product([[t], stocks], names=['key', 'code'])
             df = pd.DataFrame({
                 'close': rng.normal(100, 10, size=len(stocks)),
                 'volume': rng.integers(1000, 10000, size=len(stocks)),

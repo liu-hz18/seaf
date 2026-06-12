@@ -147,7 +147,7 @@ def ic_analysis_fn(name: str, f3d: Frame3D, context: Any) -> Frame3D:
             recent_p = context['pearson_ic_history'][-10:]
             recent_r = context['rank_ic_history'][-10:]
             logging.info(
-                f'[{name}] IC#{context["day_count"]} '
+                f'IC#{context["day_count"]} '
                 f'signal_day={pred_t} buy={buy_t} sell={sell_t} '
                 f'pearson_ic={pearson_ic:.4f} rank_ic={rank_ic:.4f} '
                 f'raw_ret_std={raw_ret_std:.6f} '
@@ -197,6 +197,7 @@ def ic_epilogue(name: str, context: dict[str, Any] | None) -> None:
 
     first_day = context.get('first_signal_day', 'N/A')
     last_day = context.get('last_signal_day', 'N/A')
+    fwd = context.get('fwd', 20)
     logging.info('========== IC Summary ==========')
     logging.info(f' Signal range: [{first_day} .. {last_day}]')
     logging.info(f' N={len(ics)}, Rank IC: mean={mean_ic:.4f}, ICIR={icir:.4f}')
@@ -214,7 +215,7 @@ def ic_epilogue(name: str, context: dict[str, Any] | None) -> None:
         from scipy.stats import norm  # 延迟导入
         mean_ret_std = cumsum_raw / cc
         phi_val = float(norm.pdf(norm.ppf(1.0 / num_groups)))
-        final_theo = 2.0 * num_groups * phi_val * mean_ret_std * cumsum_p
+        final_theo = 2.0 * num_groups * phi_val * mean_ret_std * cumsum_p / (fwd-1)  # NOTE: we actually hold fwd-1 days
         logging.info(
             f' Final theoretical log NAV spread: {final_theo:.6f} '
             f'(N={num_groups}, mean_ret_std={mean_ret_std:.6f}, '

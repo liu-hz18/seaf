@@ -23,7 +23,7 @@ def _make_test_frame(time_val: int, stocks=None):
     if stocks is None:
         stocks = ['A', 'B']
     arrays = [[time_val] * len(stocks), list(stocks)]
-    mi = pd.MultiIndex.from_arrays(arrays, names=['key', 'name'])
+    mi = pd.MultiIndex.from_arrays(arrays, names=['key', 'code'])
     df = pd.DataFrame(
         {
             'val': np.arange(len(stocks), dtype=float),

@@ -362,7 +362,7 @@ class TestStrategyFn:
         if times is None:
             times = [pd.Timestamp('2020-01-02'), pd.Timestamp('2020-01-03')]
         stocks = [f'S{i:04d}' for i in range(n_stocks)]
-        mi = pd.MultiIndex.from_product([times, stocks], names=['key', 'name'])
+        mi = pd.MultiIndex.from_product([times, stocks], names=['key', 'code'])
         df = pd.DataFrame({
             'pred_signal': pred_signal if isinstance(pred_signal, np.ndarray) else np.full(len(stocks) * 2, pred_signal),
             'close': close if isinstance(close, np.ndarray) else np.full(len(stocks) * 2, close),
@@ -400,7 +400,7 @@ class TestStrategyFn:
         """空 Frame3D（不足 2 天）安全返回。"""
         ctx = {}
         stocks = ['S0001']
-        mi = pd.MultiIndex.from_product([[pd.Timestamp('2020-01-02')], stocks], names=['key', 'name'])
+        mi = pd.MultiIndex.from_product([[pd.Timestamp('2020-01-02')], stocks], names=['key', 'code'])
         df = pd.DataFrame({'pred_signal': [0.0], 'close': [100.0], 'close_uq': [98.0]}, index=mi)
         result = strategy_fn('test', Frame3D(df), ctx)
         assert result.df.empty
@@ -424,7 +424,7 @@ class TestStrategyFn:
         assert has_positions
         for g in ctx['groups']:
             for plog in g['position_log']:
-                assert 'stock_id' in plog
+                assert 'code' in plog
                 assert 'market_value' in plog
                 assert 'actual_shares' in plog
                 assert 'p_uq' in plog
@@ -473,8 +473,8 @@ class TestStrategyFnOutput:
         # 列应为 g0_mv, g1_mv, ..., gN_mv
         assert all(c.startswith('g') and c.endswith('_mv') for c in result.df.columns)
         # index 应为标准 (key, name) MultiIndex，name 为真实股票代码
-        assert result.df.index.names == ['key', 'name']
-        assert '_strategy_' not in result.df.index.get_level_values('name')
+        assert result.df.index.names == ['key', 'code']
+        assert '_strategy_' not in result.df.index.get_level_values('code')
         max_key = result.df.index.get_level_values(0).max()
         assert not pd.isna(max_key)  # pyright: ignore[reportGeneralTypeIssues]
 

@@ -122,6 +122,11 @@ def strategy_fn(name: str, f3d: Frame3D, context: Any) -> Frame3D:
     close_uq_t = df.xs(t_curr, level='key')['close_uq'].to_dict()
     close_hfq_t = df.xs(t_curr, level='key')['close'].to_dict()
 
+    # 股票名映射（artifact 导出用）
+    stock_name_map = {}
+    if 'stock_name' in df.columns:
+        stock_name_map = df.xs(t_curr, level='key')['stock_name'].to_dict()
+
     # ---- 首次调用：用 T-1 信号为每个 group 初始化 pending_signal ----
     if context.get('_primed') is None:
         signal_first = df.xs(t_prev, level='key')['pred_signal']
@@ -139,7 +144,7 @@ def strategy_fn(name: str, f3d: Frame3D, context: Any) -> Frame3D:
     for gctx in context['groups']:
         gid = gctx['group_id']
         sig = group_signals.get(gid, {})
-        _on_bar(gctx, t_curr, sig, close_uq_t, close_hfq_t)
+        _on_bar(gctx, t_curr, sig, close_uq_t, close_hfq_t, stock_name_map)
 
     # ---- 生成次日交易计划（T 日收盘后可立即给出） ----
     for gctx in context['groups']:
@@ -149,7 +154,7 @@ def strategy_fn(name: str, f3d: Frame3D, context: Any) -> Frame3D:
             dc = gctx['day_counter']
             plan_df = _generate_daily_plan(
                 gctx, t_curr, dc, gctx['pending_signal'],
-                close_uq_t, close_hfq_t,
+                close_uq_t, close_hfq_t, stock_name_map,
             )
             if not plan_df.empty:
                 gctx['daily_plans'].append(plan_df)
@@ -213,7 +218,7 @@ def strategy_fn(name: str, f3d: Frame3D, context: Any) -> Frame3D:
             if phfq > 0 and pos['f_buy'] > 0:
                 group_mv[sid] = group_mv.get(sid, 0.0) + pos['n_initial'] * (phfq / pos['f_buy'])
         data[col] = [group_mv.get(s, 0.0) for s in stocks_sorted]
-    latest_mi = pd.MultiIndex.from_product([[t_curr], stocks_sorted], names=['key', 'name'])
+    latest_mi = pd.MultiIndex.from_product([[t_curr], stocks_sorted], names=['key', 'code'])
     return Frame3D(pd.DataFrame(data, index=latest_mi))
 
 

@@ -39,7 +39,7 @@ class Frame3D:
     def __repr__(self) -> str:
         df = self._df
         n_times = df.index.get_level_values('key').nunique()
-        n_stocks = df.index.get_level_values('name').nunique()
+        n_stocks = df.index.get_level_values('code').nunique()
         n_cols = len(df.columns)
         total_cells = len(df) * n_cols
         valid_cells = df.notna().sum().sum() if total_cells > 0 else 0
@@ -57,7 +57,7 @@ class Frame3D:
         """时序滞后：将指定列在每个 stock 内部向下平移 periods 个时间单位。
         NaN 填充缺失值。cp=False 时原地操作，避免深拷贝。"""
         df = self._df.copy() if cp else self._df
-        df[col] = df.groupby('name')[col].shift(periods)
+        df[col] = df.groupby('code')[col].shift(periods)
         return Frame3D(df)
 
     def ts_delta(self, col: str, periods: int, cp: bool = True) -> Frame3D:
@@ -89,7 +89,7 @@ class Frame3D:
         相比多次调用 ts_pct_change，大幅减少深拷贝和 GroupBy 开销。
         """
         df = self._df.copy() if cp else self._df
-        grp = df.groupby('name')[col]
+        grp = df.groupby('code')[col]
         for p in periods:
             col_name = f'{prefix}_{p}d' if prefix else f'{col}_pct_{p}d'
             shifted = grp.shift(p)
@@ -106,7 +106,7 @@ class Frame3D:
         """
         min_periods = max(1, window // 2)
         df = self._df.copy() if cp else self._df
-        df[col] = df.groupby('name')[col].transform(
+        df[col] = df.groupby('code')[col].transform(
             lambda x: x.rolling(window=window, min_periods=min_periods).agg(agg_fn)
         )
         return Frame3D(df)
@@ -125,7 +125,7 @@ class Frame3D:
         for w in windows:
             col_name = f'{prefix}_{w}d' if prefix else f'{col}_{agg_fn}_{w}d'
             min_periods = max(1, w // 2)
-            df[col_name] = df.groupby('name')[col].transform(
+            df[col_name] = df.groupby('code')[col].transform(
                 lambda x, ww=w, mp=min_periods: x.rolling(window=ww, min_periods=mp).agg(agg_fn)
             )
         return Frame3D(df)
@@ -135,7 +135,7 @@ class Frame3D:
         min_periods = max(1, window // 2)。cp=False 时原地操作。"""
         min_periods = max(1, window // 2)
         df = self._df.copy() if cp else self._df
-        grp = df.groupby('name')[col]
+        grp = df.groupby('code')[col]
         roll_mean = grp.transform(
             lambda x: x.rolling(window=window, min_periods=min_periods).mean()
         )
@@ -148,7 +148,7 @@ class Frame3D:
         """时序排名：滚动窗口内当前值的百分位排名（0~1），每个 stock 独立。
         cp=False 时原地操作。"""
         df = self._df.copy() if cp else self._df
-        df[col] = df.groupby('name')[col].transform(
+        df[col] = df.groupby('code')[col].transform(
             lambda x: x.rolling(window=window, min_periods=2).apply(
                 lambda w: (w.rank().iloc[-1] - 1) / (len(w) - 1) if len(w) > 1 else np.nan,
                 raw=False,
@@ -272,7 +272,7 @@ class Frame3D:
 
     def get_ts_series(self, stock: str, col: str) -> pd.Series:
         """获取指定股票的时序 Series，index 为 time key。"""
-        mask = self._df.index.get_level_values('name') == stock
+        mask = self._df.index.get_level_values('code') == stock
         return self._df.loc[mask, col].droplevel('name')
 
     def add_column(self, name: str, values: pd.Series | np.ndarray, cp: bool = True) -> Frame3D:
@@ -301,5 +301,5 @@ class Frame3D:
         """
         df = self._df.copy() if cp else self._df
         valid_stocks = mask[mask].index
-        df = df[df.index.get_level_values('name').isin(valid_stocks)]
+        df = df[df.index.get_level_values('code').isin(valid_stocks)]
         return Frame3D(df)

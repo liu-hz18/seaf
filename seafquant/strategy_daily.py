@@ -28,6 +28,7 @@ from seafquant.strategy_core import (
 def _on_bar(
     ctx: dict, date, signal: dict[str, float],
     close_uq: dict[str, float], close_hfq: dict[str, float],
+    stock_name_map: dict[str, str] | None = None,
 ) -> None:
     """逐日调用：对齐信号、交易与净值。
 
@@ -53,7 +54,7 @@ def _on_bar(
             if pos['mature_dc'] == dc:
                 maturing[pos['stock_id']].append(key)
 
-        total_equity = _compute_total_equity(ctx, close_uq, close_hfq)
+        total_equity = _compute_total_equity(ctx, close_uq, close_hfq, ctx.get('precision', 2))
         slice_capital = max(total_equity, 1.0) / ctx['fwd']
 
         sig_sids = set(sig.keys())
@@ -62,24 +63,27 @@ def _on_bar(
         # 先卖后买：优先卖出释放现金，再买入分配资金
         # 1. 到期-信号 → 平仓（纯卖）
         for sid in mat_sids - sig_sids:
+            sname = (stock_name_map or {}).get(sid, '')
             _process_close_trade(
-                ctx, date, dc, sid, maturing[sid], close_uq, f_today,
+                ctx, date, dc, sid, sname, maturing[sid], close_uq, f_today,
                 close_hfq=close_hfq, signal_value=0.0,
             )
         # 2. 信号∩到期 → 差额交易（可能买卖，内部先判断方向）
         for sid in sig_sids & mat_sids:
             sw = sig[sid]['w']
             sv = sig[sid]['v']
+            sname = (stock_name_map or {}).get(sid, '')
             _process_delta_trade(
-                ctx, date, dc, sid, sw, slice_capital,
+                ctx, date, dc, sid, sname, sw, slice_capital,
                 maturing[sid], close_uq, close_hfq, f_today, signal_value=sv,
             )
         # 3. 信号-到期 → 新开仓（纯买，最后执行确保现金充足）
         for sid in sig_sids - mat_sids:
             sw = sig[sid]['w']
             sv = sig[sid]['v']
+            sname = (stock_name_map or {}).get(sid, '')
             _process_new_trade(
-                ctx, date, dc, sid, sw, slice_capital, close_uq, f_today,
+                ctx, date, dc, sid, sname, sw, slice_capital, close_uq, f_today,
                 close_hfq=close_hfq, signal_value=sv,
             )
 
@@ -91,7 +95,7 @@ def _on_bar(
     ctx['pending_signal'] = signal
 
     # Step 4: 净值记录
-    total_equity = _compute_total_equity(ctx, close_uq, close_hfq)
+    total_equity = _compute_total_equity(ctx, close_uq, close_hfq, ctx.get('precision', 2))
     initial_cash = ctx.get('initial_cash', total_equity)
     nav = total_equity / initial_cash if initial_cash > 0 else 0.0
     # 更新历史最高净值，计算回撤
@@ -102,13 +106,13 @@ def _on_bar(
     ctx['nav_log'].append({
         'date': date,
         'day_counter': dc,
-        'cash': round(ctx['cash'], 2),
-        'value': round(total_equity, 2),
-        'total_equity': round(total_equity, 2),
+        'cash': round(ctx['cash'], ctx.get('precision', 2)),
+        'value': round(total_equity, ctx.get('precision', 2)),
+        'total_equity': round(total_equity, ctx.get('precision', 2)),
         'nav': nav,
         'peak_nav': peak,
         'drawdown': drawdown,
-        'cumsum_fee': round(ctx['cumsum_fee'], 2),
+        'cumsum_fee': round(ctx['cumsum_fee'], ctx.get('precision', 2)),
         'position_value': total_equity - ctx['cash'],
         'n_positions': len(ctx['positions']),
     })
@@ -122,20 +126,22 @@ def _on_bar(
         market_value = _get_position_value(pos, close_hfq)
         mkt_pct = market_value / total_equity if total_equity > 0 else 0.0
         sig_info = signal.get(sid, {})
+        sname = (stock_name_map or {}).get(sid, '')
         ctx['position_log'].append({
             'date': date,
             'day_counter': dc,
-            'stock_id': sid,
+            'code': sid,
+            'stock_name': sname,
             'batch_dc': pos['batch_dc'],
             'n_initial': pos['n_initial'],
             'f_buy': pos['f_buy'],
             'f_today': f_today.get(sid),
             'actual_shares': actual_shares,
-            'market_value': market_value,
+            'market_value': round(market_value, ctx.get('precision', 2)),
             'market_value_pct': mkt_pct,
-            'p_uq': close_uq.get(sid, 0.0),
-            'p_hfq': close_hfq.get(sid, 0.0),
-            'signal_value': sig_info.get('v', 0.0),
+            'p_uq': round(close_uq.get(sid, 0.0), ctx.get('precision', 2)),
+            'p_hfq': round(close_hfq.get(sid, 0.0), ctx.get('precision', 2)),
+            'signal_value': round(sig_info.get('v', 0.0), 4),
             'mature_dc': pos['mature_dc'],
             'entry_date': pos['entry_date'],
         })
@@ -151,6 +157,7 @@ def _generate_daily_plan(
     signal: dict[str, dict[str, float]],
     close_uq: dict[str, float],
     close_hfq: dict[str, float],
+    stock_name_map: dict[str, str] | None = None,
 ) -> pd.DataFrame:
     """生成 T+1 日交易计划（基于 T 日收盘信息估算）。
 
@@ -168,13 +175,15 @@ def _generate_daily_plan(
         if pos['mature_dc'] == dc_tomorrow:
             maturing[pos['stock_id']].append(key)
 
-    total_equity = _compute_total_equity(ctx, close_uq, close_hfq)
+    total_equity = _compute_total_equity(ctx, close_uq, close_hfq, ctx.get('precision', 2))
     slice_capital = max(total_equity, 1.0) / ctx['fwd']
 
     sig_sids = set(signal.keys())
     mat_sids = set(maturing.keys())
 
     plans: list[dict] = []
+
+    sn_map = stock_name_map if stock_name_map else {}
 
     # ---- 1. 纯卖：到期且不在新信号中 → 全部平仓 (order=0) ----
     for sid in mat_sids - sig_sids:
@@ -185,9 +194,11 @@ def _generate_daily_plan(
         plans.append({
             'date': date,
             'group_id': ctx['group_id'],
-            'stock_id': sid,
+            'code': sid,
+            'stock_name': sn_map.get(sid, ''),
+            'type': "平仓",
             'action': 'sell',
-            'target_value': round(pos_value, 2),
+            'target_value': round(pos_value, ctx.get('precision', 2)),
             'weight': round(pos_value / total_equity, 6) if total_equity > 0 else 0.0,
             'signal_value': 0.0,
             'order': 0,
@@ -209,9 +220,11 @@ def _generate_daily_plan(
         plans.append({
             'date': date,
             'group_id': ctx['group_id'],
-            'stock_id': sid,
+            'code': sid,
+            'stock_name': sn_map.get(sid, ''),
+            'type': '减仓' if action == 'sell' else '加仓',
             'action': action,
-            'target_value': round(abs(delta), 2),
+            'target_value': round(abs(delta), ctx.get('precision', 2)),
             'weight': sw,
             'signal_value': sv,
             'order': 1 if action == 'sell' else 2,
@@ -225,9 +238,11 @@ def _generate_daily_plan(
         plans.append({
             'date': date,
             'group_id': ctx['group_id'],
-            'stock_id': sid,
+            'code': sid,
+            'stock_name': sn_map.get(sid, ''),
+            'type': "开仓",
             'action': 'buy',
-            'target_value': round(target_val, 2),
+            'target_value': round(target_val, ctx.get('precision', 2)),
             'weight': sw,
             'signal_value': sv,
             'order': 3,

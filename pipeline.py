@@ -58,6 +58,10 @@ def main() -> None:
         '--snapshot-interval', type=int, default=100,
         help='Snapshot input/output every N calls (0=disabled)',
     )
+    parser.add_argument(
+        '--precision', type=int, default=2,
+        help='Price/market-cap rounding precision (decimal places)',
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -94,7 +98,8 @@ def main() -> None:
 
     # ===== 1. 数据源节点 =====
     gen_callable = DataSourceCallable(
-        args.n_times, args.n_stocks, args.noise_ratio, args.seed, args.start_date
+        args.n_times, args.n_stocks, args.noise_ratio, args.seed, args.start_date,
+        precision=args.precision,
     )
     src_output_queues = [f'q_ohlc_to_{name}' for name, _ in factor_nodes]
     src_output_queues.extend(['q_close_to_model', 'q_close_to_ic', 'q_close_to_strategy'])
@@ -102,7 +107,7 @@ def main() -> None:
         'src_data',
         gen_callable,
         src_output_queues,
-        context={'mlflow_run_id': mlflow_run_id, 'start_date': args.start_date},
+        context={'mlflow_run_id': mlflow_run_id, 'start_date': args.start_date, 'precision': args.precision},
         snapshot_interval=args.snapshot_interval,
         log_level=args.log_level,
     )
@@ -124,7 +129,7 @@ def main() -> None:
             output_to=[q_out],
             window=fw['window'],
             min_periods=fw['min_periods'],
-            context={'mlflow_run_id': mlflow_run_id, 'start_date': args.start_date},
+            context={'mlflow_run_id': mlflow_run_id, 'start_date': args.start_date, 'precision': args.precision},
             snapshot_interval=args.snapshot_interval,
             log_level=args.log_level,
         )
@@ -139,6 +144,7 @@ def main() -> None:
         'model_window': MODEL_WINDOW,
         'mlflow_run_id': mlflow_run_id,
         'start_date': args.start_date,
+        'precision': args.precision,
         # 以下参数使用 model_node 默认值，此处仅为文档可读性显式列出
         # 'retrain_every': 20,
     }
@@ -164,6 +170,7 @@ def main() -> None:
     ic_context = {
         'fwd': fwd, 'num_groups': 10,
         'mlflow_run_id': mlflow_run_id, 'start_date': args.start_date,
+        'precision': args.precision,
     }
     flow.add_node(
         name='ic_analysis',
@@ -186,6 +193,7 @@ def main() -> None:
         'initial_cash': 10_000_000,
         'mlflow_run_id': mlflow_run_id,
         'start_date': args.start_date,
+        'precision': args.precision,
     }
     flow.add_node(
         name='strategy',
@@ -194,7 +202,7 @@ def main() -> None:
         output_to=[],
         window=2,
         min_periods=2,
-        input_columns=['pred_signal', 'close', 'close_uq'],
+        input_columns=['pred_signal', 'close', 'close_uq', 'stock_name'],
         epilogue_fn=strategy_epilogue,
         context=strategy_context,
         snapshot_interval=args.snapshot_interval,

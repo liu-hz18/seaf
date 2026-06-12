@@ -72,7 +72,7 @@ class TestDataGenerator:
         assert len(frames) == 50
 
         f3d = frames[0]
-        assert f3d.df.index.names == ['key', 'name']
+        assert f3d.df.index.names == ['key', 'code']
         assert len(f3d.df) == 20  # n_stocks
         for col in self.EXPECTED_COLUMNS:
             assert col in f3d.df.columns, f'Missing column: {col}'

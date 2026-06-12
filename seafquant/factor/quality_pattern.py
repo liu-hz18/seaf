@@ -19,11 +19,11 @@ def compute_quality_pattern_factors(name: str, f3d: Frame3D, context) -> Frame3D
     ret = f3d.ts_pct_change('close', 1).df['close']
     df = result.df
     df['_ret'] = ret
-    grp = df.index.get_level_values('name')
+    grp = df.index.get_level_values('code')
 
     def _roll(src, dst, window, agg):
         df[dst] = (
-            df.groupby('name')[src]
+            df.groupby('code')[src]
             .rolling(window, min_periods=max(1, window // 2))
             .agg(agg)
             .reset_index(level=0, drop=True)

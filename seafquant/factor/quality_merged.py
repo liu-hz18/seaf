@@ -26,11 +26,11 @@ def compute_quality_merged_factors(name: str, f3d: Frame3D, context) -> Frame3D:
     ret = f3d.ts_pct_change('close', 1).df['close']
     df = f3d.df
     df['_ret'] = ret
-    grp = df.index.get_level_values('name')
+    grp = df.index.get_level_values('code')
 
     def _roll(src, dst, window, agg):
         df[dst] = (
-            df.groupby('name')[src].rolling(window, min_periods=max(1, window // 2)).agg(agg).reset_index(level=0, drop=True)
+            df.groupby('code')[src].rolling(window, min_periods=max(1, window // 2)).agg(agg).reset_index(level=0, drop=True)
         )
 
     # ====================================================================
@@ -157,6 +157,6 @@ def compute_quality_merged_factors(name: str, f3d: Frame3D, context) -> Frame3D:
     result = result.cs_zscore_batch(factor_cols, cp=False)
 
     logging.debug(
-        f'[{name}] quality_merged NaN: { {c: result.df[c].isna().sum() for c in factor_cols} }'
+        f'quality_merged NaN: { {c: result.df[c].isna().sum() for c in factor_cols} }'
     )
     return Frame3D(result.df[factor_cols].copy())

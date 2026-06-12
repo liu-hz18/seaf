@@ -88,7 +88,7 @@ class TestWindowAlignment:
                               window=5, min_periods=3, context=ctx)
         dates = pd.date_range('2020-01-02', periods=2, freq='B')
         for t in dates:
-            mi = pd.MultiIndex.from_product([[t], ['S0']], names=['key', 'name'])
+            mi = pd.MultiIndex.from_product([[t], ['S0']], names=['key', 'code'])
             q_in.put(Frame3D(pd.DataFrame({'v': [1.0]}, index=mi)))
         q_in.put('__STOP__')
         node.start()
@@ -110,7 +110,7 @@ class TestWindowAlignment:
         n_days = 8
         dates = pd.date_range('2020-01-02', periods=n_days, freq='B')
         for t in dates:
-            mi = pd.MultiIndex.from_product([[t], ['S0']], names=['key', 'name'])
+            mi = pd.MultiIndex.from_product([[t], ['S0']], names=['key', 'code'])
             q_in.put(Frame3D(pd.DataFrame({'v': [1.0]}, index=mi)))
         q_in.put('__STOP__')
         node.start()
@@ -145,11 +145,11 @@ class TestIpoDelistAlignment:
         # 前 2 天：只有 S0
         dates = pd.date_range('2020-01-02', periods=2, freq='B')
         for t in dates:
-            mi = pd.MultiIndex.from_product([[t], ['S0']], names=['key', 'name'])
+            mi = pd.MultiIndex.from_product([[t], ['S0']], names=['key', 'code'])
             q_in.put(Frame3D(pd.DataFrame({'v': [float(t.day)]}, index=mi)))
         # 第 3 天：新增 S1
         t3 = pd.Timestamp('2020-01-06')
-        mi3 = pd.MultiIndex.from_product([[t3], ['S0', 'S1']], names=['key', 'name'])
+        mi3 = pd.MultiIndex.from_product([[t3], ['S0', 'S1']], names=['key', 'code'])
         q_in.put(Frame3D(pd.DataFrame({'v': [3.0, 30.0]}, index=mi3)))
         q_in.put('__STOP__')
         node.start()
@@ -174,10 +174,10 @@ class TestIpoDelistAlignment:
 
         dates = pd.date_range('2020-01-02', periods=3, freq='B')
         for t in dates:
-            mi = pd.MultiIndex.from_product([[t], ['S0', 'S1']], names=['key', 'name'])
+            mi = pd.MultiIndex.from_product([[t], ['S0', 'S1']], names=['key', 'code'])
             q_in.put(Frame3D(pd.DataFrame({'v': [1.0, 2.0]}, index=mi)))
         t4 = pd.Timestamp('2020-01-07')
-        mi4 = pd.MultiIndex.from_product([[t4], ['S0']], names=['key', 'name'])
+        mi4 = pd.MultiIndex.from_product([[t4], ['S0']], names=['key', 'code'])
         q_in.put(Frame3D(pd.DataFrame({'v': [100.0]}, index=mi4)))
         q_in.put('__STOP__')
         node.start()
@@ -210,11 +210,11 @@ class TestMultiInput:
                               epilogue_fn=EpilogueJsonWriter(epilogue_path))
 
         t = pd.Timestamp('2020-01-02')
-        mi = pd.MultiIndex.from_product([[t], ['S0']], names=['key', 'name'])
+        mi = pd.MultiIndex.from_product([[t], ['S0']], names=['key', 'code'])
         q_a.put(Frame3D(pd.DataFrame({'a': [1.0]}, index=mi)))
         q_b.put(Frame3D(pd.DataFrame({'b': [2.0]}, index=mi)))
         t2 = pd.Timestamp('2020-01-03')
-        mi2 = pd.MultiIndex.from_product([[t2], ['S0']], names=['key', 'name'])
+        mi2 = pd.MultiIndex.from_product([[t2], ['S0']], names=['key', 'code'])
         q_a.put(Frame3D(pd.DataFrame({'a': [3.0]}, index=mi2)))
         q_b.put(Frame3D(pd.DataFrame({'b': [4.0]}, index=mi2)))
         q_a.put('__STOP__')
@@ -244,7 +244,7 @@ class TestMultiInput:
 
         dates = pd.date_range('2020-01-02', periods=2, freq='B')
         for t in dates:
-            mi = pd.MultiIndex.from_product([[t], ['S0']], names=['key', 'name'])
+            mi = pd.MultiIndex.from_product([[t], ['S0']], names=['key', 'code'])
             q_in.put(Frame3D(pd.DataFrame({'a': [1.0], 'b': [2.0]}, index=mi)))
         q_in.put('__STOP__')
         node.start()
@@ -273,7 +273,7 @@ class TestMultiInput:
 
         dates = pd.date_range('2020-01-02', periods=2, freq='B')
         for t in dates:
-            mi = pd.MultiIndex.from_product([[t], ['S0']], names=['key', 'name'])
+            mi = pd.MultiIndex.from_product([[t], ['S0']], names=['key', 'code'])
             q_in.put(Frame3D(pd.DataFrame({'a': [5.0]}, index=mi)))
         q_in.put('__STOP__')
         node.start()
@@ -301,10 +301,10 @@ class TestErrorRecovery:
                               window=2, min_periods=2, context=ctx,
                               epilogue_fn=EpilogueJsonWriter(epilogue_path))
         t = pd.Timestamp('2020-01-02')
-        mi = pd.MultiIndex.from_product([[t], ['S0']], names=['key', 'name'])
+        mi = pd.MultiIndex.from_product([[t], ['S0']], names=['key', 'code'])
         q_in.put(Frame3D(pd.DataFrame({'a': [1.0]}, index=mi)))
         t2 = pd.Timestamp('2020-01-03')
-        mi2 = pd.MultiIndex.from_product([[t2], ['S0']], names=['key', 'name'])
+        mi2 = pd.MultiIndex.from_product([[t2], ['S0']], names=['key', 'code'])
         q_in.put(Frame3D(pd.DataFrame({'a': [2.0]}, index=mi2)))
         q_in.put('__STOP__')
         node.start()

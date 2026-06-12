@@ -30,7 +30,7 @@ def _make_f3d(
     rng = np.random.default_rng(seed)
     times = pd.date_range('2020-01-02', periods=n_times, freq='B')
     stocks = [f'S{i:04d}' for i in range(n_stocks)]
-    mi = pd.MultiIndex.from_product([times, stocks], names=['key', 'name'])
+    mi = pd.MultiIndex.from_product([times, stocks], names=['key', 'code'])
 
     if constant_close:
         close = np.full(len(stocks) * n_times, 100.0, dtype=float)
@@ -98,7 +98,7 @@ class TestIcAnalysisFn:
         rng = np.random.default_rng(42)
         times = pd.date_range('2020-01-02', periods=20, freq='B')
         stocks = [f'S{i:04d}' for i in range(10)]
-        mi = pd.MultiIndex.from_product([times, stocks], names=['key', 'name'])
+        mi = pd.MultiIndex.from_product([times, stocks], names=['key', 'code'])
         base = 100.0
         close_vals: list[float] = []
         for _ in range(20):

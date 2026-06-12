@@ -46,7 +46,7 @@ class TestTrendCrossVal:
         from seafquant.factor.trend import compute_trend_factors
         actual = compute_trend_factors('test', f3d, None)
         df = f3d.df.copy()
-        grp = df.index.get_level_values('name')
+        grp = df.index.get_level_values('code')
 
         def _ema(series, span):
             return series.ewm(span=span, adjust=False).mean()

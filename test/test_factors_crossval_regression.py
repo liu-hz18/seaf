@@ -21,7 +21,7 @@ class TestRollingAlignmentRegression:
                 price = float(s * 100 + t)
                 row = {
                     'key': t,
-                    'name': f'S{s:03d}',
+                    'code': f'S{s:03d}',
                     'close': price,
                     'open': price * 0.99,
                     'high': price * 1.02,
@@ -31,7 +31,7 @@ class TestRollingAlignmentRegression:
                     'market_cap': float((s + 1) * 1e4) * (1 + 0.08 * s),
                 }
                 records.append(row)
-        return Frame3D(pd.DataFrame(records).set_index(['key', 'name']))
+        return Frame3D(pd.DataFrame(records).set_index(['key', 'code']))
 
     @pytest.mark.parametrize('module_key', [
         'momentum', 'volatility', 'trend', 'value', 'liquidity',
@@ -73,7 +73,7 @@ class TestRollingAlignmentRegression:
         df = f3d.df.copy()
         stock1 = df.loc[(slice(None), 'S000'), 'close']
         ma3_manual = stock1.rolling(3, min_periods=1).mean()
-        rolled = df.groupby('name')['close'].rolling(3, min_periods=1).mean()
+        rolled = df.groupby('code')['close'].rolling(3, min_periods=1).mean()
         df['ma3'] = rolled.reset_index(level=0, drop=True)
         s000_calc = df.loc[(slice(None), 'S000'), 'ma3']
         pd.testing.assert_series_equal(

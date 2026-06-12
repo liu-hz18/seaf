@@ -140,7 +140,7 @@ class MultiInputNode(mp.Process):
             except Exception:
                 continue
             if obj == self.stop_signal:
-                logging.debug(f'[{self.name}][thread-{queue_idx}] stop signal.')
+                logging.debug(f'[thread-{queue_idx}] stop signal.')
                 ready_event.set()
                 break
             time_value = obj.df.index.get_level_values(0)[0]
@@ -252,7 +252,7 @@ class MultiInputNode(mp.Process):
                             )
                         if safe_dup and not dup_col_have_warned:
                             logging.warning(
-                                f'[{self.name}] Deduplicating {safe_dup} '
+                                f'Deduplicating {safe_dup} '
                                 f'(kept first of {dup_cols.count(safe_dup[0]) + 1} copies)'
                             )
                             dup_col_have_warned = True

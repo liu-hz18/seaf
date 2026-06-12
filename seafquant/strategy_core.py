@@ -50,10 +50,10 @@ def _init_group_context(
 # =============================================================================
 
 
-def _calc_commission(trade_value: float, rate: float, min_comm: float) -> float:
+def _calc_commission(trade_value: float, rate: float, min_comm: float, precision: int = 2) -> float:
     """手续费：万五，最低 5 元。"""
     raw = max(abs(trade_value) * rate, min_comm)
-    return round(raw, 2)
+    return round(raw, precision)
 
 
 def _get_actual_shares(pos: dict, f_today: dict[str, float]) -> float:
@@ -73,27 +73,32 @@ def _get_position_value(pos: dict, close_hfq: dict[str, float]) -> float:
 
 
 def _compute_total_equity(
-    ctx: dict, close_uq: dict, close_hfq: dict
+    ctx: dict, close_uq: dict, close_hfq: dict, precision: int = 2
 ) -> float:
     """总资产 = 现金 + 所有持仓市值（黄金公式）。"""
     total = ctx['cash']
     for pos in ctx['positions'].values():
         total += _get_position_value(pos, close_hfq)
-    return round(total, 2)
+    return round(total, precision)
 
 
 def _log_trade(
-    ctx: dict, date, stock_id: str, action: str,
+    ctx: dict, date, stock_id: str, stock_name: str, action: str,
     shares: float, price: float, value: float, commission: float,
     signal_value: float = 0.0,
     hfq_price: float = 0.0,
 ) -> None:
     ctx['trade_log'].append({
-        'date': date, 'stock_id': stock_id, 'action': action,
-        'shares': shares, 'price': price, 'value': value,
-        'commission': commission,
-        'signal_value': signal_value,
-        'hfq_price': hfq_price,
+        'date': date,
+        'code': stock_id,
+        'stock_name': stock_name,
+        'action': action,
+        'shares': shares,
+        'price': round(price, ctx.get('precision', 2)),
+        'value': round(value, ctx.get('precision', 2)),
+        'commission': round(commission, ctx.get('precision', 2)),
+        'signal_value': round(signal_value, 4),
+        'hfq_price': round(hfq_price, ctx.get('precision', 2)),
     })
 
 
@@ -117,7 +122,7 @@ def _create_position(
 
 
 def _process_delta_trade(
-    ctx: dict, date, dc: int, sid: str,
+    ctx: dict, date, dc: int, sid: str, sname: str,
     weight: float, slice_capital: float,
     maturing_keys: list, close_uq: dict, close_hfq: dict,
     f_today: dict, signal_value: float = 0.0,
@@ -140,20 +145,20 @@ def _process_delta_trade(
 
     if delta > 0:
         trade_value = delta * p_uq
-        commission = _calc_commission(trade_value, rate, min_comm)
+        commission = _calc_commission(trade_value, rate, min_comm, ctx.get('precision', 2))
         if ctx['cash'] >= trade_value + commission:
             ctx['cash'] -= (trade_value + commission)
-            _log_trade(ctx, date, sid, 'buy', delta, p_uq, trade_value, commission,
+            _log_trade(ctx, date, sid, sname, 'buy', delta, p_uq, trade_value, commission,
                        signal_value=signal_value, hfq_price=p_hfq)
         else:
             max_aff = max(0.0, ctx['cash'] - min_comm)
             buy_shares = math.floor(max_aff / p_uq / 100) * 100
             if buy_shares > 0:
                 trade_value = buy_shares * p_uq
-                commission = _calc_commission(trade_value, rate, min_comm)
+                commission = _calc_commission(trade_value, rate, min_comm, ctx.get('precision', 2))
                 if ctx['cash'] >= trade_value + commission:
                     ctx['cash'] -= (trade_value + commission)
-                    _log_trade(ctx, date, sid, 'buy', buy_shares, p_uq,
+                    _log_trade(ctx, date, sid, sname, 'buy', buy_shares, p_uq,
                                trade_value, commission,
                                signal_value=signal_value, hfq_price=p_hfq)
                     target_shares = old_shares + buy_shares
@@ -164,9 +169,9 @@ def _process_delta_trade(
     elif delta < 0:
         sell_shares = min(abs(delta), old_shares)
         trade_value = sell_shares * p_uq
-        commission = _calc_commission(trade_value, rate, min_comm)
+        commission = _calc_commission(trade_value, rate, min_comm, ctx.get('precision', 2))
         ctx['cash'] += (trade_value - commission)
-        _log_trade(ctx, date, sid, 'sell', sell_shares, p_uq, trade_value, commission,
+        _log_trade(ctx, date, sid, sname, 'sell', sell_shares, p_uq, trade_value, commission,
                    signal_value=signal_value, hfq_price=p_hfq)
         target_shares = old_shares - sell_shares
 
@@ -177,7 +182,7 @@ def _process_delta_trade(
 
 
 def _process_new_trade(
-    ctx: dict, date, dc: int, sid: str,
+    ctx: dict, date, dc: int, sid: str, sname: str,
     weight: float, slice_capital: float,
     close_uq: dict, f_today: dict,
     close_hfq: dict | None = None, signal_value: float = 0.0,
@@ -193,10 +198,10 @@ def _process_new_trade(
     if target_shares <= 0:
         return
     trade_value = target_shares * p_uq
-    commission = _calc_commission(trade_value, rate, min_comm)
+    commission = _calc_commission(trade_value, rate, min_comm, ctx.get('precision', 2))
     if ctx['cash'] >= trade_value + commission:
         ctx['cash'] -= (trade_value + commission)
-        _log_trade(ctx, date, sid, 'buy', target_shares, p_uq, trade_value, commission,
+        _log_trade(ctx, date, sid, sname, 'buy', target_shares, p_uq, trade_value, commission,
                    signal_value=signal_value, hfq_price=p_hfq)
         _create_position(ctx, sid, dc, target_shares, f_today[sid], date)
     else:
@@ -204,17 +209,17 @@ def _process_new_trade(
         buy_shares = math.floor(max_aff / p_uq / 100) * 100
         if buy_shares > 0:
             trade_value = buy_shares * p_uq
-            commission = _calc_commission(trade_value, rate, min_comm)
+            commission = _calc_commission(trade_value, rate, min_comm, ctx.get('precision', 2))
             if ctx['cash'] >= trade_value + commission:
                 ctx['cash'] -= (trade_value + commission)
-                _log_trade(ctx, date, sid, 'buy', buy_shares, p_uq,
+                _log_trade(ctx, date, sid, sname, 'buy', buy_shares, p_uq,
                            trade_value, commission,
                            signal_value=signal_value, hfq_price=p_hfq)
                 _create_position(ctx, sid, dc, buy_shares, f_today[sid], date)
 
 
 def _process_close_trade(
-    ctx: dict, date, dc: int, sid: str,
+    ctx: dict, date, dc: int, sid: str, sname: str,
     maturing_keys: list, close_uq: dict, f_today: dict,
     close_hfq: dict | None = None, signal_value: float = 0.0,
 ) -> None:
@@ -231,9 +236,9 @@ def _process_close_trade(
         actual_shares = _get_actual_shares(pos, f_today)
         if actual_shares > 0:
             trade_value = actual_shares * p_uq
-            commission = _calc_commission(trade_value, rate, min_comm)
+            commission = _calc_commission(trade_value, rate, min_comm, ctx.get('precision', 2))
             ctx['cash'] += (trade_value - commission)
-            _log_trade(ctx, date, sid, 'sell', actual_shares, p_uq,
+            _log_trade(ctx, date, sid, sname, 'sell', actual_shares, p_uq,
                        trade_value, commission,
                        signal_value=signal_value, hfq_price=p_hfq)
         del ctx['positions'][key]

@@ -52,7 +52,7 @@ class TestCountingCrossVal:
         actual = compute_counting_factors('test', f3d, None)
         ret = _ts_pct_manual(f3d.df, 'close', 1)
         # pivot (T, S)，手动算连续上涨
-        arr = ret.unstack(level='name').values.astype(np.float64)
+        arr = ret.unstack(level='code').values.astype(np.float64)
         T, S = arr.shape
         up = np.zeros((T, S), dtype=np.float64)
         for s in range(S):
@@ -75,7 +75,7 @@ class TestCountingCrossVal:
         from seafquant.factor.counting import compute_counting_factors
         actual = compute_counting_factors('test', f3d, None)
         ret = _ts_pct_manual(f3d.df, 'close', 1)
-        arr = ret.unstack(level='name').values.astype(np.float64)
+        arr = ret.unstack(level='code').values.astype(np.float64)
         T, S = arr.shape
         valid = np.isfinite(arr)
         same_dir = np.zeros((T, S), dtype=np.float64)
@@ -97,7 +97,7 @@ class TestCountingCrossVal:
         from seafquant.factor.counting import compute_counting_factors
         actual = compute_counting_factors('test', f3d, None)
         ret = _ts_pct_manual(f3d.df, 'close', 1)
-        arr = ret.unstack(level='name').values.astype(np.float64)
+        arr = ret.unstack(level='code').values.astype(np.float64)
         for w in [20, 60]:
             one_plus = 1.0 + arr
             clean = np.where(np.isfinite(one_plus), one_plus, 1.0)
@@ -112,7 +112,7 @@ class TestCountingCrossVal:
         """tillnow_dd_{p}d = min(price / cummax(price)) - 1 over window。"""
         from seafquant.factor.counting import compute_counting_factors
         actual = compute_counting_factors('test', f3d, None)
-        arr = f3d.df['close'].unstack(level='name').values.astype(np.float64)
+        arr = f3d.df['close'].unstack(level='code').values.astype(np.float64)
         for w in [20, 60]:
             win = sliding_window_view(arr, w, axis=0)
             cmax = np.maximum.accumulate(win, axis=-1)

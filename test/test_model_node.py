@@ -48,13 +48,13 @@ def _make_f3d(
     records = []
     for t in range(n_times):
         for s in range(n_stocks):
-            row = {'key': t, 'name': f'S{s:03d}'}
+            row = {'key': t, 'code': f'S{s:03d}'}
             for f in range(n_features):
                 row[f'factor_{f}'] = float(rng.normal(0, 1))
             if with_close:
                 row['close'] = float(100 + rng.normal(0, 5))
             records.append(row)
-    df = pd.DataFrame(records).set_index(['key', 'name'])
+    df = pd.DataFrame(records).set_index(['key', 'code'])
     return Frame3D(df)
 
 
@@ -73,12 +73,12 @@ def _make_f3d_with_signal(
     base_close = 100 + np.cumsum(rng.normal(0, 0.5, size=n_times))
     for t in range(n_times):
         for s in range(n_stocks):
-            row = {'key': t, 'name': f'S{s:03d}'}
+            row = {'key': t, 'code': f'S{s:03d}'}
             for f in range(n_features):
                 row[f'factor_{f}'] = float(rng.normal(0, 1))
             row['close'] = float(base_close[t] + rng.normal(0, 1))
             records.append(row)
-    df = pd.DataFrame(records).set_index(['key', 'name'])
+    df = pd.DataFrame(records).set_index(['key', 'code'])
     # 因子 0 = fwd_ret + noise，使模型能学到信号
     close_matrix = np.zeros((n_times, n_stocks))
     for t in range(n_times):
@@ -147,7 +147,7 @@ class TestEmptyResult:
         """返回 Frame3D 包含 n_stocks 个 pred_signal=0。"""
         idx = pd.MultiIndex.from_arrays(
             [[0, 0, 0], ['S001', 'S002', 'S003']],
-            names=['key', 'name'],
+            names=['key', 'code'],
         )
         result = _empty_result(3, idx)
         assert isinstance(result, Frame3D)
@@ -158,7 +158,7 @@ class TestEmptyResult:
     def test_index_preserved(self):
         """返回结果保留传入的 index。"""
         mi = pd.MultiIndex.from_arrays(
-            [[10, 10, 10], ['A', 'B', 'C']], names=['key', 'name']
+            [[10, 10, 10], ['A', 'B', 'C']], names=['key', 'code']
         )
         result = _empty_result(3, mi)
         assert result.df.index.equals(mi)
@@ -182,7 +182,7 @@ class TestPrepareTrainingData:
         X, y, cs_stats = _prepare_training_data('test', df, feature_cols, times, fwd)
 
         n_train_times = len(times) - fwd - 1  # 30 - 5 - 1 = 24
-        n_stocks = df.index.get_level_values('name').nunique()
+        n_stocks = df.index.get_level_values('code').nunique()
         assert X.shape == (n_train_times * n_stocks, len(feature_cols))
         assert len(y) == n_train_times * n_stocks
         assert len(cs_stats) == n_train_times
