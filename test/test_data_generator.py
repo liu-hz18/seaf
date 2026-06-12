@@ -91,7 +91,9 @@ class TestDataGenerator:
         frames1 = _collect_frames(gen1)
         frames2 = _collect_frames(gen2)
         for f1, f2 in zip(frames1, frames2, strict=False):
-            assert np.allclose(f1.df.values, f2.df.values), 'Same seed should give same data'
+            num_cols = [c for c in f1.df.columns if c != 'stock_name']
+            assert np.allclose(f1.df[num_cols].values, f2.df[num_cols].values), \
+                'Same seed should give same data'
 
     def test_different_seed_gives_different_data(self):
         """不同 seed 生成不同数据。"""
@@ -101,7 +103,8 @@ class TestDataGenerator:
         frames2 = _collect_frames(gen2)
         diff = False
         for f1, f2 in zip(frames1, frames2, strict=False):
-            if not np.allclose(f1.df.values, f2.df.values):
+            num_cols = [c for c in f1.df.columns if c != 'stock_name']
+            if not np.allclose(f1.df[num_cols].values, f2.df[num_cols].values):
                 diff = True
                 break
         assert diff, 'Different seeds should give different data'

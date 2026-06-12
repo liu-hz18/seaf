@@ -12,16 +12,15 @@ import numpy as np
 import pandas as pd
 
 from qpipe.frame3d import Frame3D
-from seafquant.strategy import (
+from seafquant.strategy import _rank_into_groups, strategy_fn
+from seafquant.strategy_core import (
     _calc_commission,
     _compute_total_equity,
     _get_actual_shares,
     _get_position_value,
     _init_group_context,
-    _on_bar,
-    _rank_into_groups,
-    strategy_fn,
 )
+from seafquant.strategy_daily import _on_bar
 
 # =============================================================================
 # 辅助函数测试
@@ -462,15 +461,20 @@ class TestTradingStep:
 # =============================================================================
 
 
-class TestStrategyFnEmptyOutput:
-    """strategy_fn 始终返回空 Frame3D；trading_step 必须在消费端安全处理 NaN。"""
+class TestStrategyFnOutput:
+    """strategy_fn 返回逐股逐组持仓市值 Frame3D（与 factor 节点格式对齐）。"""
 
-    def test_return_valid_time_key(self):
-        """strategy_fn 现在返回含 t_curr 的非空 Frame3D，确保 max_key 有效。"""
+    def test_return_format(self):
+        """返回非空 Frame3D，含逐股 index + gN_mv 列，max_key 有效。"""
         ctx = {}
         f3d = TestStrategyFn._make_f3d(0.0, 100.0, 98.0)
         result = strategy_fn('test', f3d, ctx)
-        assert not result.df.empty  # 非空，含 _dummy 占位列
+        assert not result.df.empty
+        # 列应为 g0_mv, g1_mv, ..., gN_mv
+        assert all(c.startswith('g') and c.endswith('_mv') for c in result.df.columns)
+        # index 应为标准 (key, name) MultiIndex，name 为真实股票代码
+        assert result.df.index.names == ['key', 'name']
+        assert '_strategy_' not in result.df.index.get_level_values('name')
         max_key = result.df.index.get_level_values(0).max()
         assert not pd.isna(max_key)  # pyright: ignore[reportGeneralTypeIssues]
 
@@ -482,4 +486,4 @@ class TestStrategyFnEmptyOutput:
         result = strategy_fn('test', f3d, ctx)
         max_key = result.df.index.get_level_values(0).max()
         step = trading_step('2020-01-02', max_key)
-        assert step >= 0  # 有效 step（不再因 NaN 崩溃）
+        assert step >= 0

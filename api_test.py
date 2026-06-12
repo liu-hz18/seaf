@@ -19,8 +19,8 @@ print('login respond error_code:' + lg.error_code)
 print('login respond  error_msg:' + lg.error_msg)
 
 code = 'sh.600000'
-start_date = '2025-06-00'
-end_date = '2025-06-12'
+start_date = '2026-06-01'
+end_date = '2026-06-11'
 
 #### 获取交易日信息 ####
 rs = bs.query_trade_dates(start_date=start_date, end_date=end_date)
@@ -51,7 +51,7 @@ print(result)
 # 11    2026-06-12              1
 
 
-#### 获取某日所有证券信息 ####
+#### 获取某个交易日所有证券信息 ####
 # 注意：每日都应该获取新的信息，因为有新上市/退市的股票。但是同时有调用次数限制，注意不要把调用次数消耗完
 # code prefix 含义如下：
 # sh.600/601/603/605 = 主板大盘股
@@ -59,7 +59,7 @@ print(result)
 # sz.000/001/002/003/004 开头 = 深市A股主板（含原中小板）
 # sz.300/301/302 开头 = 创业板
 # 其余的prefix是指数等，我们不需要
-rs = bs.query_all_stock(day=start_date)  #当参数“day”为空时，默认取当天日期。闭市后日K线数据更新，该接口才会返回当天数据，否则返回空。
+rs = bs.query_all_stock(day=start_date)  #当参数“day”为空时，默认取当天日期。闭市后日K线数据更新，该接口才会返回当天数据，否则返回空。[注意必须是真实的交易日才有数据]
 print('query_all_stock respond error_code:'+rs.error_code)
 print('query_all_stock respond  error_msg:'+rs.error_msg)
 

@@ -120,7 +120,7 @@ def ic_analysis_fn(name: str, f3d: Frame3D, context: Any) -> Frame3D:
 
         # ---- MLflow 逐日记录 ----
         mlflow_run_id = context.get('mlflow_run_id', '')
-        # 理论 top-bottom 对数净值差（逐日）
+        # 理论 top-bottom 对数净值差（逐日）NOTE: 这个数字比真实的持仓净值滞后 fwd 天
         num_groups = context.get('num_groups', 10)
         cc = context['day_count']
         theo_log_nav_spread = 0.0
@@ -128,9 +128,9 @@ def ic_analysis_fn(name: str, f3d: Frame3D, context: Any) -> Frame3D:
             from scipy.stats import norm  # 延迟导入
             phi_inv = float(norm.ppf(1.0 / num_groups))
             phi_val = float(norm.pdf(phi_inv))
-            # mean_ret_std = context['cumsum_raw_ret_std'] / cc
+            mean_ret_std = context['cumsum_raw_ret_std'] / cc
             theo_log_nav_spread = (
-                2.0 * num_groups * phi_val * raw_ret_std * context['cumsum_pearson_ic'] / (fwd-1)  # NOTE: we actually hold fwd-1 days
+                2.0 * num_groups * phi_val * mean_ret_std * context['cumsum_pearson_ic'] / (fwd-1)  # NOTE: we actually hold fwd-1 days
             )
         mlflow_log_metrics(mlflow_run_id, name, {
             'pearson_ic': pearson_ic,
@@ -197,13 +197,13 @@ def ic_epilogue(name: str, context: dict[str, Any] | None) -> None:
 
     first_day = context.get('first_signal_day', 'N/A')
     last_day = context.get('last_signal_day', 'N/A')
-    logging.info(f'[{name}] ========== IC Summary ==========')
-    logging.info(f'[{name}]   Signal range: [{first_day} .. {last_day}]')
-    logging.info(f'[{name}]   N={len(ics)}, Rank IC: mean={mean_ic:.4f}, ICIR={icir:.4f}')
-    logging.info(f'[{name}]   Pearson IC: mean={p_mean:.4f}, ICIR={p_icir:.4f}')
-    logging.info(f'[{name}]   WinRate={winrate:.2%}, CumSum Rank IC={cumsum[-1]:.4f}')
-    logging.info(f'[{name}]   IC Std={std_ic:.4f}, IC Skew={pd.Series(ics).skew():.4f}')
-    logging.info(f'[{name}]   Max CumSum DD={max_dd:.4f}')
+    logging.info('========== IC Summary ==========')
+    logging.info(f' Signal range: [{first_day} .. {last_day}]')
+    logging.info(f' N={len(ics)}, Rank IC: mean={mean_ic:.4f}, ICIR={icir:.4f}')
+    logging.info(f' Pearson IC: mean={p_mean:.4f}, ICIR={p_icir:.4f}')
+    logging.info(f' WinRate={winrate:.2%}, CumSum Rank IC={cumsum[-1]:.4f}')
+    logging.info(f' IC Std={std_ic:.4f}, IC Skew={pd.Series(ics).skew():.4f}')
+    logging.info(f' Max CumSum DD={max_dd:.4f}')
 
     # ---- 理论 top-bottom 对数净值差（逐日已记录，此处仅汇总日志） ----
     cc = context.get('day_count', 0)
@@ -216,9 +216,9 @@ def ic_epilogue(name: str, context: dict[str, Any] | None) -> None:
         phi_val = float(norm.pdf(norm.ppf(1.0 / num_groups)))
         final_theo = 2.0 * num_groups * phi_val * mean_ret_std * cumsum_p
         logging.info(
-            f'[{name}]   Final theoretical log NAV spread: {final_theo:.6f} '
+            f' Final theoretical log NAV spread: {final_theo:.6f} '
             f'(N={num_groups}, mean_ret_std={mean_ret_std:.6f}, '
             f'cumsum_pearson_ic={cumsum_p:.4f})'
         )
 
-    logging.info(f'[{name}] ======================================')
+    logging.info('======================================')

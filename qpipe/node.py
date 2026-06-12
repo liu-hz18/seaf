@@ -20,7 +20,7 @@ from typing import Any
 import pandas as pd
 
 from .frame3d import Frame3D
-from .utils import mlflow_log_metrics, snapshot_dataframe, trading_step
+from .utils import FlushStreamHandler, mlflow_log_metrics, snapshot_dataframe, trading_step
 
 try:
     import psutil
@@ -74,11 +74,13 @@ class MultiInputNode(mp.Process):
         min_periods: int = 3,
         input_columns: list[str] | None = None,
         output_columns: list[str] | None = None,
+        exclude_input_columns: list[str] | None = None,
         stop_signal: Any = None,
         context: Any = None,
         epilogue_fn: EpilogueFunc | None = None,
         output_queue_names: list[str] | None = None,
         snapshot_interval: int = 0,
+        log_level: str='INFO',
     ) -> None:
         super().__init__()
         self.name = name
@@ -90,10 +92,19 @@ class MultiInputNode(mp.Process):
         self.min_periods = min_periods
         self.input_columns = input_columns if input_columns else []
         self.output_columns = output_columns if output_columns else []
+        _exc = exclude_input_columns if exclude_input_columns else []
+        # 验证 input_columns / exclude_input_columns 无交集
+        _conflict = set(self.input_columns) & set(_exc)
+        if _conflict:
+            raise ValueError(
+                f'[{name}] input_columns ∩ exclude_input_columns conflict: {_conflict}'
+            )
+        self.exclude_input_columns = _exc
         self.stop_signal = stop_signal
         self.context = context if context is not None else {}
         self.epilogue_fn = epilogue_fn
         self.snapshot_interval = snapshot_interval
+        self.log_level = log_level
         self.buffers: list[dict[Any, Frame3D]] = [{} for _ in input_queues]
 
     def _call_func(self, name: str, f3d: Frame3D, ctx: Any) -> Frame3D:
@@ -140,9 +151,9 @@ class MultiInputNode(mp.Process):
     def run(self) -> None:
         """子进程主入口：协调接收线程和窗口计算循环。"""
         logging.basicConfig(
-            level=logging.INFO,
-            format=f'[%(levelname)s][{self.name}][%(asctime)s]: %(message)s',
-            stream=sys.stdout,
+            level=getattr(logging, self.log_level),
+            format=f'[%(levelname)s][%(asctime)s][%(filename)s:%(lineno)d][{self.name}] %(message)s',
+            handlers=[FlushStreamHandler(stream=sys.stdout)],
         )
         logging.info(f'Node {self.name} started, w={self.window}, mp={self.min_periods}.')
 
@@ -177,6 +188,7 @@ class MultiInputNode(mp.Process):
         window_tail_index = 0
         round_time = 0
         current_context: Any = self.context
+        dup_col_have_warned = False
 
         try:
             while True:
@@ -213,6 +225,7 @@ class MultiInputNode(mp.Process):
                 if shared_times:
                     for tval in sorted(shared_times):
                         with data_lock:
+                            # TODO: model 节点一般输出的key会晚一些，导致接收其他节点输出数据的buffer中可能有过早的数据永远得不到 delete
                             frame_list = [self.buffers[bi][tval] for bi in range(len(self.buffers))]
                             for bi in range(len(self.buffers)):
                                 del self.buffers[bi][tval]
@@ -224,17 +237,47 @@ class MultiInputNode(mp.Process):
                 for frame_list in frame_lists:
                     df_list = [f3d.df for f3d in frame_list]
                     merged_df = pd.concat(df_list, axis=1)
+                    # 去重：多路输入可能带重复列。
+                    # - 数值/因子列重名 → 硬报错（防止因子冲突导致数据静默丢失）
+                    # - 元数据列（stock_name 等）重名 → 日志记录 + 保留第一份
+                    DEDUP_SAFE_COLS = {'stock_name'}
+                    dup_cols = merged_df.columns[merged_df.columns.duplicated()].tolist()
+                    if dup_cols:
+                        safe_dup = [c for c in dup_cols if c in DEDUP_SAFE_COLS]
+                        bad_dup = [c for c in dup_cols if c not in DEDUP_SAFE_COLS]
+                        if bad_dup:
+                            raise ValueError(
+                                f'[{self.name}] Duplicate numeric/factor columns '
+                                f'after merge: {bad_dup}'
+                            )
+                        if safe_dup and not dup_col_have_warned:
+                            logging.warning(
+                                f'[{self.name}] Deduplicating {safe_dup} '
+                                f'(kept first of {dup_cols.count(safe_dup[0]) + 1} copies)'
+                            )
+                            dup_col_have_warned = True
+                        merged_df = merged_df.loc[:, ~merged_df.columns.duplicated()]
                     if self.input_columns:
                         miss = [c for c in self.input_columns if c not in merged_df.columns]
                         if miss:
                             raise ValueError(f'[{self.name}] Missing input cols: {miss}')
-                        merged_df = merged_df[self.input_columns]
+                        # 保留非数值元数据列（stock_name 等），确保下游 CSV 可读
+                        meta = [c for c in merged_df.columns
+                                if c not in self.input_columns
+                                and not pd.api.types.is_numeric_dtype(merged_df[c])]
+                        keep = self.input_columns + meta
+                        merged_df = merged_df[keep]
+                    # 排除列：在入队前删除，防止泄露到下游节点
+                    if self.exclude_input_columns:
+                        drop_cols = [c for c in self.exclude_input_columns if c in merged_df.columns]
+                        if drop_cols:
+                            merged_df = merged_df.drop(columns=drop_cols)
                     time_order_buffer.append(
                         (shared_times.pop() if shared_times else None, Frame3D(merged_df))
                     )
 
                 if len(time_order_buffer) > 0:
-                    logging.info(
+                    logging.debug(
                         f'time_order_buffer: {len(time_order_buffer)} '
                         f'[{time_order_buffer[0][0]}, {time_order_buffer[-1][0]}]'
                     )
@@ -291,10 +334,19 @@ class MultiInputNode(mp.Process):
                     current_context['_node_call_count'] = total_calls
                     run_id_s = current_context.get('mlflow_run_id', '')
                     ts = str(latest_t)[:10] if hasattr(latest_t, '__str__') else str(latest_t)
-                    if self.snapshot_interval > 0 and total_calls % self.snapshot_interval == 0:
+                    day_index = trading_step(current_context.get('start_date', ''), latest_t)
+                    if self.snapshot_interval > 0 and day_index > 0 and day_index % self.snapshot_interval == 0:
                         snapshot_dataframe(run_id_s, self.name, run_input_f3d.df, 'in', ts)
 
                     output_f3d = self._call_func(self.name, run_input_f3d, current_context)
+                    # 保留输入中的元数据列（name/stock_id 等字符串列），确保下游 CSV 可读
+                    meta_cols = [c for c in run_input_f3d.df.columns
+                                 if c not in output_f3d.df.columns
+                                 and not pd.api.types.is_numeric_dtype(run_input_f3d.df[c])]
+                    if meta_cols:
+                        meta_df = run_input_f3d.df[meta_cols].loc[output_f3d.df.index]
+                        output_df = pd.concat([output_f3d.df, meta_df], axis=1)
+                        output_f3d = Frame3D(output_df)
                     if self.output_columns:
                         miss_o = [c for c in self.output_columns if c not in output_f3d.df.columns]
                         if miss_o:
@@ -308,7 +360,7 @@ class MultiInputNode(mp.Process):
                     latest_f3d = Frame3D(latest_df.copy())
                     # float32 输出：将队列传输数据精度降为 fp32，内存减半
                     latest_f3d = _to_float32(latest_f3d)
-                    logging.info(
+                    logging.debug(
                         f'window_start_index:{window_start_index}, '
                         f'window_tail_index={window_tail_index}\n'
                         f'time_order_buffer: {len(time_order_buffer)}\n'
@@ -323,10 +375,10 @@ class MultiInputNode(mp.Process):
                     avg_time = sum(timings) / len(timings)
 
                     # ---- 快照：输出（复用 latest_f3d.df） ----
-                    if self.snapshot_interval > 0 and total_calls % self.snapshot_interval == 0:
+                    if self.snapshot_interval > 0 and day_index > 0 and day_index % self.snapshot_interval == 0:
                         snapshot_dataframe(run_id_s, self.name, latest_f3d.df, 'out', ts)
                         logging.info(
-                            f'[{self.name}] snapshot #{total_calls}: '
+                            f'snapshot day_index={day_index} (call#{total_calls}): '
                             f'in={run_input_f3d.df.shape}, out={latest_f3d.df.shape}'
                         )
 
@@ -380,7 +432,7 @@ class MultiInputNode(mp.Process):
                         )
 
                 if len(dead_workers) == num_workers:
-                    logging.info('All workers dead. Main process exited.')
+                    logging.info('All workers dead. Node process exited.')
                     break
                 round_time += 1
 
@@ -413,6 +465,7 @@ class SourceNode(mp.Process):
         epilogue_fn: EpilogueFunc | None = None,
         output_queue_names: list[str] | None = None,
         snapshot_interval: int = 0,
+        log_level: str='INFO',
     ) -> None:
         super().__init__()
         self.name = name
@@ -423,17 +476,18 @@ class SourceNode(mp.Process):
         self.context = context if context is not None else {}
         self.epilogue_fn = epilogue_fn
         self.snapshot_interval = snapshot_interval
+        self.log_level = log_level
 
     def run(self) -> None:
         """子进程主入口：迭代数据生成器，逐日输出最新截面。"""
         logging.basicConfig(
-            level=logging.INFO,
-            format=f'[%(levelname)s][{self.name}][%(asctime)s]: %(message)s',
-            stream=sys.stdout,
+            level=getattr(logging, self.log_level),
+            format=f'[%(levelname)s][%(asctime)s][%(filename)s:%(lineno)d][{self.name}] %(message)s',
+            handlers=[FlushStreamHandler(stream=sys.stdout)],
         )
         logging.info('SourceNode started.')
         current_context: Any = self.context
-        call_count = 0
+        day_index = 0
         try:
             for frame in self.gen_func():
                 max_key = frame.df.index.get_level_values(0).max()
@@ -442,9 +496,9 @@ class SourceNode(mp.Process):
                 # float32 输出：源数据精度降为 fp32，所有下游队列和缓冲受益
                 latest_f3d = _to_float32(latest_f3d)
 
-                call_count += 1
-                # ---- 快照采样 ----
-                if self.snapshot_interval > 0 and call_count % self.snapshot_interval == 0:
+                day_index = trading_step(current_context.get('start_date', ''), max_key)
+                # ---- 快照采样：按交易日序号对齐（替代私有 call_count） ----
+                if self.snapshot_interval > 0 and day_index > 0 and day_index % self.snapshot_interval == 0:
                     run_id = current_context.get('mlflow_run_id', '')
                     time_str = str(max_key)[:10] if hasattr(max_key, '__str__') else str(max_key)
                     # 输入快照：数据生成器产出的当日完整 frame
@@ -456,7 +510,7 @@ class SourceNode(mp.Process):
                         run_id, self.name, latest_f3d.df, 'out', time_str,
                     )
                     logging.info(
-                        f'[{self.name}] snapshot #{call_count}: '
+                        f'snapshot day_index={day_index}: '
                         f'in={frame.df.shape}, out={latest_f3d.df.shape}'
                     )
 

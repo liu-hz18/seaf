@@ -15,7 +15,6 @@ import os
 import subprocess
 import sys
 
-# mlflow 延迟导入 — 仅在非 --no-mlflow 时加载，节省 3.5s 启动时间
 sys.path.insert(0, os.path.dirname(__file__))
 
 from qpipe.flow import Flow
@@ -62,7 +61,9 @@ def main() -> None:
     args = parser.parse_args()
 
     logging.basicConfig(
-        level=getattr(logging, args.log_level), format='%(message)s', stream=sys.stdout
+        level=getattr(logging, args.log_level),
+        format='[%(levelname)s][%(asctime)s][%(filename)s:%(lineno)d] %(message)s',
+        stream=sys.stdout
     )
 
     logging.info(f"args: {args}")
@@ -103,6 +104,7 @@ def main() -> None:
         src_output_queues,
         context={'mlflow_run_id': mlflow_run_id, 'start_date': args.start_date},
         snapshot_interval=args.snapshot_interval,
+        log_level=args.log_level,
     )
 
     # ===== 2. 因子计算节点 =====
@@ -124,6 +126,7 @@ def main() -> None:
             min_periods=fw['min_periods'],
             context={'mlflow_run_id': mlflow_run_id, 'start_date': args.start_date},
             snapshot_interval=args.snapshot_interval,
+            log_level=args.log_level,
         )
 
     # ===== 3. 模型训练预测节点 =====
@@ -146,8 +149,13 @@ def main() -> None:
         output_to=['q_signal', 'q_signal_to_strategy'],
         window=MODEL_WINDOW,
         min_periods=MODEL_MIN_PERIODS,
+        # 排除原始 OHLCV 列：基建层在入队前删除，防止泄露到特征空间。
+        # close 保留用于 label 计算，model_node 内部会排除出特征列。
+        exclude_input_columns=['open', 'high', 'low', 'close_uq',
+                               'turnover', 'volume', 'market_cap'],
         context=model_context,
         snapshot_interval=args.snapshot_interval,
+        log_level=args.log_level,
     )
 
     # ===== 4. IC 分析节点 =====
@@ -168,6 +176,7 @@ def main() -> None:
         epilogue_fn=ic_epilogue,
         context=ic_context,
         snapshot_interval=args.snapshot_interval,
+        log_level=args.log_level,
     )
 
     # ===== 5. 策略绩效节点 =====
@@ -189,6 +198,7 @@ def main() -> None:
         epilogue_fn=strategy_epilogue,
         context=strategy_context,
         snapshot_interval=args.snapshot_interval,
+        log_level=args.log_level,
     )
 
     # ===== 记录启动参数与 git 版本 =====

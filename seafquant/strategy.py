@@ -22,8 +22,6 @@ context 配置（从 pipeline 传入）：
 from __future__ import annotations
 
 import logging
-import math
-from collections import defaultdict
 from typing import Any
 
 import numpy as np
@@ -31,459 +29,8 @@ import pandas as pd
 
 from qpipe.frame3d import Frame3D
 from qpipe.utils import mlflow_log_metrics, trading_step
-
-# =============================================================================
-# 初始化
-# =============================================================================
-
-
-def _init_group_context(
-    initial_cash: float,
-    fwd: int,
-    commission_rate: float,
-    min_commission: float,
-    group_id: int,
-) -> dict[str, Any]:
-    """初始化单个 group 的回测上下文。"""
-    return {
-        'group_id': group_id,
-        'initial_cash': initial_cash,
-        'fwd': fwd,
-        'commission_rate': commission_rate,
-        'min_commission': min_commission,
-        # 核心状态
-        'cash': initial_cash,
-        'peak_nav': 1.0,
-        'cumsum_fee': 0.0,
-        'positions': {},        # (sid, batch_dc) → dict
-        'pending_signal': None,  # T-1 日信号 {sid: weight}，待 T 日执行
-        'day_counter': 0,
-        # 输出日志
-        'trade_log': [],
-        'position_log': [],
-        'nav_log': [],
-        'daily_plans': [],      # 每日交易计划 DataFrame 列表（epilogue 时统一导出）
-    }
-
-
-# =============================================================================
-# 内部辅助函数
-# =============================================================================
-
-
-def _calc_commission(trade_value: float, rate: float, min_comm: float) -> float:
-    """手续费：万五，最低 5 元。"""
-    return max(abs(trade_value) * rate, min_comm)
-
-
-def _get_actual_shares(pos: dict, f_today: dict[str, float]) -> float:
-    """由锚定股数 + 复权因子推算当前实际股数（含送股零碎股）。"""
-    ft = f_today.get(pos['stock_id'])
-    if ft is None or pos['f_buy'] <= 0:
-        return 0.0
-    return pos['n_initial'] * (ft / pos['f_buy'])
-
-
-def _get_position_value(pos: dict, close_hfq: dict[str, float]) -> float:
-    """黄金公式：市值 = n_initial × (p_hfq / f_buy)。"""
-    p_hfq = close_hfq.get(pos['stock_id'], 0.0)
-    if p_hfq <= 0 or pos['f_buy'] <= 0:
-        return 0.0
-    return pos['n_initial'] * (p_hfq / pos['f_buy'])
-
-
-def _compute_total_equity(
-    ctx: dict, close_uq: dict, close_hfq: dict
-) -> float:
-    """总资产 = 现金 + 所有持仓市值（黄金公式）。"""
-    total = ctx['cash']
-    for pos in ctx['positions'].values():
-        total += _get_position_value(pos, close_hfq)
-    return total
-
-
-def _log_trade(
-    ctx: dict, date, stock_id: str, action: str,
-    shares: float, price: float, value: float, commission: float,
-    signal_value: float = 0.0,
-    hfq_price: float = 0.0,
-) -> None:
-    ctx['trade_log'].append({
-        'date': date, 'stock_id': stock_id, 'action': action,
-        'shares': shares, 'price': price, 'value': value,
-        'commission': commission,
-        'signal_value': signal_value,
-        'hfq_price': hfq_price,
-    })
-
-
-def _create_position(
-    ctx: dict, stock_id: str, dc: int, n_initial: float,
-    f_buy: float, date,
-) -> None:
-    ctx['positions'][(stock_id, dc)] = {
-        'stock_id': stock_id,
-        'batch_dc': dc,
-        'n_initial': n_initial,
-        'f_buy': f_buy,
-        'mature_dc': dc + ctx['fwd'],
-        'entry_date': date,
-    }
-
-
-# =============================================================================
-# 三种交易处理
-# =============================================================================
-
-
-def _process_delta_trade(
-    ctx: dict, date, dc: int, sid: str,
-    weight: float, slice_capital: float,
-    maturing_keys: list, close_uq: dict, close_hfq: dict,
-    f_today: dict, signal_value: float = 0.0,
-) -> None:
-    """差额交易：到期持仓 + 新信号继续持有 → 补仓/减仓，锚点重置。"""
-    p_uq = close_uq.get(sid, 0.0)
-    p_hfq = (close_hfq or {}).get(sid, p_uq)
-    if p_uq <= 0:
-        for key in maturing_keys:
-            ctx['positions'][key]['mature_dc'] = dc + 1
-        return
-
-    rate, min_comm = ctx['commission_rate'], ctx['min_commission']
-    old_shares = sum(
-        _get_actual_shares(ctx['positions'][k], f_today) for k in maturing_keys
-    )
-    target_value = slice_capital * weight
-    target_shares = math.floor(target_value / p_uq / 100) * 100
-    delta = target_shares - old_shares
-
-    if delta > 0:
-        trade_value = delta * p_uq
-        commission = _calc_commission(trade_value, rate, min_comm)
-        if ctx['cash'] >= trade_value + commission:
-            ctx['cash'] -= (trade_value + commission)
-            _log_trade(ctx, date, sid, 'buy', delta, p_uq, trade_value, commission,
-                       signal_value=signal_value, hfq_price=p_hfq)
-        else:
-            max_aff = max(0.0, ctx['cash'] - min_comm)
-            buy_shares = math.floor(max_aff / p_uq / 100) * 100
-            if buy_shares > 0:
-                trade_value = buy_shares * p_uq
-                commission = _calc_commission(trade_value, rate, min_comm)
-                if ctx['cash'] >= trade_value + commission:
-                    ctx['cash'] -= (trade_value + commission)
-                    _log_trade(ctx, date, sid, 'buy', buy_shares, p_uq,
-                               trade_value, commission,
-                               signal_value=signal_value, hfq_price=p_hfq)
-                    target_shares = old_shares + buy_shares
-                else:
-                    target_shares = old_shares
-            else:
-                target_shares = old_shares
-    elif delta < 0:
-        sell_shares = min(abs(delta), old_shares)
-        trade_value = sell_shares * p_uq
-        commission = _calc_commission(trade_value, rate, min_comm)
-        ctx['cash'] += (trade_value - commission)
-        _log_trade(ctx, date, sid, 'sell', sell_shares, p_uq, trade_value, commission,
-                   signal_value=signal_value, hfq_price=p_hfq)
-        target_shares = old_shares - sell_shares
-
-    for key in maturing_keys:
-        del ctx['positions'][key]
-    if target_shares > 0 and sid in f_today:
-        _create_position(ctx, sid, dc, target_shares, f_today[sid], date)
-
-
-def _process_new_trade(
-    ctx: dict, date, dc: int, sid: str,
-    weight: float, slice_capital: float,
-    close_uq: dict, f_today: dict,
-    close_hfq: dict | None = None, signal_value: float = 0.0,
-) -> None:
-    """新开仓：信号中的股票，当前无到期持仓。"""
-    p_uq = close_uq.get(sid, 0.0)
-    p_hfq = (close_hfq or {}).get(sid, p_uq)
-    if p_uq <= 0 or sid not in f_today:
-        return
-    rate, min_comm = ctx['commission_rate'], ctx['min_commission']
-    target_value = slice_capital * weight
-    target_shares = math.floor(target_value / p_uq / 100) * 100
-    if target_shares <= 0:
-        return
-    trade_value = target_shares * p_uq
-    commission = _calc_commission(trade_value, rate, min_comm)
-    if ctx['cash'] >= trade_value + commission:
-        ctx['cash'] -= (trade_value + commission)
-        _log_trade(ctx, date, sid, 'buy', target_shares, p_uq, trade_value, commission,
-                   signal_value=signal_value, hfq_price=p_hfq)
-        _create_position(ctx, sid, dc, target_shares, f_today[sid], date)
-    else:
-        max_aff = max(0.0, ctx['cash'] - min_comm)
-        buy_shares = math.floor(max_aff / p_uq / 100) * 100
-        if buy_shares > 0:
-            trade_value = buy_shares * p_uq
-            commission = _calc_commission(trade_value, rate, min_comm)
-            if ctx['cash'] >= trade_value + commission:
-                ctx['cash'] -= (trade_value + commission)
-                _log_trade(ctx, date, sid, 'buy', buy_shares, p_uq,
-                           trade_value, commission,
-                           signal_value=signal_value, hfq_price=p_hfq)
-                _create_position(ctx, sid, dc, buy_shares, f_today[sid], date)
-
-
-def _process_close_trade(
-    ctx: dict, date, dc: int, sid: str,
-    maturing_keys: list, close_uq: dict, f_today: dict,
-    close_hfq: dict | None = None, signal_value: float = 0.0,
-) -> None:
-    """全部平仓：到期持仓不在新信号中。"""
-    p_uq = close_uq.get(sid, 0.0)
-    p_hfq = (close_hfq or {}).get(sid, p_uq)
-    if p_uq <= 0:
-        for key in maturing_keys:
-            ctx['positions'][key]['mature_dc'] = dc + 1
-        return
-    rate, min_comm = ctx['commission_rate'], ctx['min_commission']
-    for key in maturing_keys:
-        pos = ctx['positions'][key]
-        actual_shares = _get_actual_shares(pos, f_today)
-        if actual_shares > 0:
-            trade_value = actual_shares * p_uq
-            commission = _calc_commission(trade_value, rate, min_comm)
-            ctx['cash'] += (trade_value - commission)
-            _log_trade(ctx, date, sid, 'sell', actual_shares, p_uq,
-                       trade_value, commission,
-                       signal_value=signal_value, hfq_price=p_hfq)
-        del ctx['positions'][key]
-
-
-# =============================================================================
-# 单日 on_bar — 执行 trading logic
-# =============================================================================
-
-
-def _on_bar(
-    ctx: dict, date, signal: dict[str, float],
-    close_uq: dict[str, float], close_hfq: dict[str, float],
-) -> None:
-    """逐日调用：对齐信号、交易与净值。
-
-    T 日收盘收到 signal_T → 存储为 pending；
-    同时执行 pending（signal_{T-1}），用 T 日不复权价撮合。
-    """
-    ctx['day_counter'] += 1
-    dc = ctx['day_counter']
-
-    # Step 1: 复权因子 F_T = hfq / uq
-    f_today: dict[str, float] = {}
-    for sid, puq in close_uq.items():
-        phfq = close_hfq.get(sid, 0.0)
-        if puq > 0 and phfq > 0:
-            f_today[sid] = phfq / puq
-
-    # Step 2: 执行昨日待执行信号
-    if ctx['pending_signal'] is not None:
-        n_trades_before = len(ctx['trade_log'])
-        sig = ctx['pending_signal']  # {sid: {'w': weight, 'v': signal_value}}
-        maturing: dict[str, list] = defaultdict(list)
-        for key, pos in list(ctx['positions'].items()):
-            if pos['mature_dc'] == dc:
-                maturing[pos['stock_id']].append(key)
-
-        total_equity = _compute_total_equity(ctx, close_uq, close_hfq)
-        slice_capital = max(total_equity, 1.0) / ctx['fwd']
-
-        sig_sids = set(sig.keys())
-        mat_sids = set(maturing.keys())
-
-        # 先卖后买：优先卖出释放现金，再买入分配资金
-        # 1. 到期-信号 → 平仓（纯卖）
-        for sid in mat_sids - sig_sids:
-            _process_close_trade(
-                ctx, date, dc, sid, maturing[sid], close_uq, f_today,
-                close_hfq=close_hfq, signal_value=0.0,
-            )
-        # 2. 信号∩到期 → 差额交易（可能买卖，内部先判断方向）
-        for sid in sig_sids & mat_sids:
-            sw = sig[sid]['w']
-            sv = sig[sid]['v']
-            _process_delta_trade(
-                ctx, date, dc, sid, sw, slice_capital,
-                maturing[sid], close_uq, close_hfq, f_today, signal_value=sv,
-            )
-        # 3. 信号-到期 → 新开仓（纯买，最后执行确保现金充足）
-        for sid in sig_sids - mat_sids:
-            sw = sig[sid]['w']
-            sv = sig[sid]['v']
-            _process_new_trade(
-                ctx, date, dc, sid, sw, slice_capital, close_uq, f_today,
-                close_hfq=close_hfq, signal_value=sv,
-            )
-
-        # 累加当日新增手续费
-        for t in ctx['trade_log'][n_trades_before:]:
-            ctx['cumsum_fee'] += t['commission']
-
-    # Step 3: 存储今日信号
-    ctx['pending_signal'] = signal
-
-    # Step 4: 净值记录
-    total_equity = _compute_total_equity(ctx, close_uq, close_hfq)
-    initial_cash = ctx.get('initial_cash', total_equity)
-    nav = total_equity / initial_cash if initial_cash > 0 else 0.0
-    # 更新历史最高净值，计算回撤
-    if nav > ctx.get('peak_nav', 0):
-        ctx['peak_nav'] = nav
-    peak = ctx['peak_nav']
-    drawdown = (nav - peak) / peak if peak > 0 else 0.0
-    ctx['nav_log'].append({
-        'date': date,
-        'day_counter': dc,
-        'cash': ctx['cash'],
-        'value': total_equity,
-        'total_equity': total_equity,
-        'nav': nav,
-        'peak_nav': peak,
-        'drawdown': drawdown,
-        'cumsum_fee': ctx['cumsum_fee'],
-        'position_value': total_equity - ctx['cash'],
-        'n_positions': len(ctx['positions']),
-    })
-
-    # Step 5: 持仓快照
-    for pos in ctx['positions'].values():
-        sid = pos['stock_id']
-        actual_shares = (
-            _get_actual_shares(pos, f_today) if sid in f_today else 0.0
-        )
-        market_value = _get_position_value(pos, close_hfq)
-        mkt_pct = market_value / total_equity if total_equity > 0 else 0.0
-        sig_info = signal.get(sid, {})
-        ctx['position_log'].append({
-            'date': date,
-            'day_counter': dc,
-            'stock_id': sid,
-            'batch_dc': pos['batch_dc'],
-            'n_initial': pos['n_initial'],
-            'f_buy': pos['f_buy'],
-            'f_today': f_today.get(sid),
-            'actual_shares': actual_shares,
-            'market_value': market_value,
-            'market_value_pct': mkt_pct,
-            'p_uq': close_uq.get(sid, 0.0),
-            'p_hfq': close_hfq.get(sid, 0.0),
-            'signal_value': sig_info.get('v', 0.0),
-            'mature_dc': pos['mature_dc'],
-            'entry_date': pos['entry_date'],
-        })
-
-
-# =============================================================================
-# 次日交易计划生成
-# =============================================================================
-
-
-def _generate_daily_plan(
-    ctx: dict, date, dc: int,
-    signal: dict[str, dict[str, float]],
-    close_uq: dict[str, float],
-    close_hfq: dict[str, float],
-) -> pd.DataFrame:
-    """生成 T+1 日交易计划（基于 T 日收盘信息估算）。
-
-    T 日收盘后，基于 T 日信号 + T 日收盘价，估算次日每笔交易的目标市值和占比。
-    交易顺序：先卖后买（卖=0,1；买=2,3）。
-
-    返回 DataFrame 列：
-        date, group_id, stock_id, action, target_value, weight, signal_value, order
-    """
-    dc_tomorrow = dc + 1
-
-    # 构建复权因子
-    f_today: dict[str, float] = {}
-    for sid, puq in close_uq.items():
-        phfq = close_hfq.get(sid, 0.0)
-        if puq > 0 and phfq > 0:
-            f_today[sid] = phfq / puq
-
-    # 到期持仓
-    maturing: dict[str, list] = defaultdict(list)
-    for key, pos in list(ctx['positions'].items()):
-        if pos['mature_dc'] == dc_tomorrow:
-            maturing[pos['stock_id']].append(key)
-
-    total_equity = _compute_total_equity(ctx, close_uq, close_hfq)
-    slice_capital = max(total_equity, 1.0) / ctx['fwd']
-
-    sig_sids = set(signal.keys())
-    mat_sids = set(maturing.keys())
-
-    plans: list[dict] = []
-
-    # ---- 1. 纯卖：到期且不在新信号中 → 全部平仓 (order=0) ----
-    for sid in mat_sids - sig_sids:
-        pos_value = sum(
-            _get_position_value(ctx['positions'][k], close_hfq)
-            for k in maturing[sid]
-        )
-        plans.append({
-            'date': date,
-            'group_id': ctx['group_id'],
-            'stock_id': sid,
-            'action': 'sell',
-            'target_value': round(pos_value, 2),
-            'weight': round(pos_value / total_equity, 6) if total_equity > 0 else 0.0,
-            'signal_value': 0.0,
-            'order': 0,
-        })
-
-    # ---- 2. 差额：到期且在新信号中 → 减仓(order=1) / 补仓(order=2) ----
-    for sid in sig_sids & mat_sids:
-        sw = signal[sid]['w']
-        sv = signal[sid]['v']
-        target_val = slice_capital * sw
-        current_val = sum(
-            _get_position_value(ctx['positions'][k], close_hfq)
-            for k in maturing[sid]
-        )
-        delta = target_val - current_val
-        if abs(delta) < 1.0:
-            continue  # 变化太小，跳过
-        action = 'sell' if delta < 0 else 'buy'
-        plans.append({
-            'date': date,
-            'group_id': ctx['group_id'],
-            'stock_id': sid,
-            'action': action,
-            'target_value': round(abs(delta), 2),
-            'weight': sw,
-            'signal_value': sv,
-            'order': 1 if action == 'sell' else 2,
-        })
-
-    # ---- 3. 纯买：新信号中的新开仓 (order=3) ----
-    for sid in sig_sids - mat_sids:
-        sw = signal[sid]['w']
-        sv = signal[sid]['v']
-        target_val = slice_capital * sw
-        plans.append({
-            'date': date,
-            'group_id': ctx['group_id'],
-            'stock_id': sid,
-            'action': 'buy',
-            'target_value': round(target_val, 2),
-            'weight': sw,
-            'signal_value': sv,
-            'order': 3,
-        })
-
-    if not plans:
-        return pd.DataFrame()
-
-    return pd.DataFrame(plans).sort_values('order')
-
+from seafquant.strategy_core import _init_group_context
+from seafquant.strategy_daily import _generate_daily_plan, _on_bar
 
 # =============================================================================
 # 信号 ranking → 分组字典
@@ -533,7 +80,7 @@ def strategy_fn(name: str, f3d: Frame3D, context: Any) -> Frame3D:
       2. 按信号排名分 num_groups 组
       3. 每组独立 on_bar
 
-    返回：空 Frame3D（策略节点无下游输出）。
+    返回：非空 Frame3D（含 t_curr），保证框架中 trading_step 正确计算 step。
     """
     if context is None:
         context = {}
@@ -648,14 +195,26 @@ def strategy_fn(name: str, f3d: Frame3D, context: Any) -> Frame3D:
         navs = [g['nav_log'][-1]['total_equity'] if g['nav_log'] else 0
                 for g in context['groups']]
         logging.info(
-            f'[{name}] day#{dc_global} date={t_curr}: '
-            f'navs=[{min(navs):.0f}..{max(navs):.0f}] '
-            f'total_nav={sum(navs):.0f}'
+            f'day#{dc_global} date={t_curr}: '
+            f'navs=[{min(navs):.2f}..{max(navs):.2f}] '
+            f'mean_nav={np.mean(navs):.2f}'
         )
 
-    # 返回非空 Frame3D（含 t_curr），保证框架中 max_key 有效 → trading_step 正确计算 step
-    latest_mi = pd.MultiIndex.from_tuples([(t_curr, '_strategy_')], names=['key', 'name'])
-    return Frame3D(pd.DataFrame({'_dummy': [0.0]}, index=latest_mi))
+    # 返回逐股逐组持仓市值 Frame3D（与 factor 节点格式对齐）
+    stocks_sorted = sorted(df.xs(t_curr, level='key').index)
+    ng = context['num_groups']
+    data: dict[str, list[float]] = {}
+    for g in range(ng):
+        gctx = context['groups'][g]
+        col = f'g{g}_mv'
+        group_mv: dict[str, float] = {}
+        for (sid, _), pos in gctx['positions'].items():
+            phfq = close_hfq_t.get(sid, 0.0)
+            if phfq > 0 and pos['f_buy'] > 0:
+                group_mv[sid] = group_mv.get(sid, 0.0) + pos['n_initial'] * (phfq / pos['f_buy'])
+        data[col] = [group_mv.get(s, 0.0) for s in stocks_sorted]
+    latest_mi = pd.MultiIndex.from_product([[t_curr], stocks_sorted], names=['key', 'name'])
+    return Frame3D(pd.DataFrame(data, index=latest_mi))
 
 
 # =============================================================================
@@ -666,13 +225,13 @@ def strategy_fn(name: str, f3d: Frame3D, context: Any) -> Frame3D:
 def strategy_epilogue(name: str, context: dict[str, Any] | None) -> None:
     """退出前汇总：每个 group 的绩效指标 + 数据导出到 MLflow artifact。"""
     if context is None or not context.get('groups'):
-        logging.warning(f'[{name}] Epilogue: No group data.')
+        logging.warning('Epilogue: No group data.')
         return
 
     run_id = context.get('mlflow_run_id', '')
     first_date = context.get('first_date', 'N/A')
     last_date = context.get('last_date', 'N/A')
-    logging.info(f'[{name}] ===== Strategy Summary [{first_date}..{last_date}] =====')
+    logging.info(f'===== Strategy Summary [{first_date}..{last_date}] =====')
 
     for gctx in context['groups']:
         gid = gctx['group_id']
@@ -705,7 +264,7 @@ def strategy_epilogue(name: str, context: dict[str, Any] | None) -> None:
         n_buys = sum(1 for t in gctx['trade_log'] if t['action'] == 'buy')
 
         logging.info(
-            f'[{name}]   Group {gid}: N={len(values)}d, '
+            f'Group {gid}: N={len(values)}d, '
             f'final_value={final_value:,.0f}, final_nav={final_nav:.4f}, '
             f'return={total_return:.2%}, ann_ret={ann_ret:.2%}, '
             f'ann_vol={ann_vol:.2%}, nav_ann_vol={nav_ann_vol:.2%}, '
@@ -738,22 +297,22 @@ def strategy_epilogue(name: str, context: dict[str, Any] | None) -> None:
                 _export_artifact(run_id, f'{name}_g{gid}', 'positions',
                                  pd.DataFrame(gctx['position_log']))
 
-        # ---- MLflow artifact: 每日交易计划 CSV（每组一个文件夹，每日一个文件） ----
+        # ---- MLflow artifact: 每日交易计划 CSV ----
         if run_id and gctx['daily_plans']:
             all_plans = pd.concat(gctx['daily_plans'], ignore_index=True)
             if not all_plans.empty:
-                # 按日期分组，每日写一个 CSV
                 for plan_date, day_df in all_plans.groupby('date', sort=True):
+                    date_str = str(plan_date)[:10]  # Timestamp → YYYY-MM-DD，避免冒号
                     _export_artifact(
-                        run_id, f'{name}_g{gid}', f'daily_plan_{plan_date}',
+                        run_id, f'{name}_g{gid}', f'daily_plan_{date_str}',
                         day_df, artifact_subdir=f'strategy/{name}_g{gid}/daily_plans',
                     )
                 logging.info(
-                    f'[{name}]   Group {gid}: {len(all_plans)} plan rows '
+                    f'Group {gid}: {len(all_plans)} plan rows '
                     f'({all_plans["date"].nunique()} days) exported'
                 )
 
-    logging.info(f'[{name}] ==========================================')
+    logging.info('==========================================')
 
 
 def _export_artifact(
@@ -779,5 +338,5 @@ def _export_artifact(
                 os.unlink(tmp_path)
             with suppress(Exception):
                 os.rmdir(tmp_dir)
-    except Exception:
-        pass
+    except Exception as e:
+        logging.error(f"mlflow artifact Exception: {e}")

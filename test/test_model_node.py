@@ -602,7 +602,7 @@ class TestLogFeatureImportance:
         """空特征重要性无日志输出。"""
         import logging
         caplog.set_level(logging.INFO)
-        _log_feature_importance('', 'test', {}, 'ridge')
+        _log_feature_importance('', 'test', {}, 'ridge', 0)
         assert 'Feature importance' not in caplog.text
 
     def test_logs_top_items(self, caplog):
@@ -610,13 +610,13 @@ class TestLogFeatureImportance:
         import logging
         caplog.set_level(logging.INFO)
         fi = {f'factor_{i}': 1.0 / (i + 1) for i in range(15)}
-        _log_feature_importance('', 'test', fi, 'ridge')
+        _log_feature_importance('', 'test', fi, 'ridge', 0)
         assert 'Feature importance top-10' in caplog.text
 
     def test_handles_mlflow_error(self):
         """MLflow 不可用时静默处理。"""
         fi = {'f0': 0.5, 'f1': 0.3, 'f2': 0.2}
         try:
-            _log_feature_importance('fake_run_id', 'test', fi, 'ridge')
+            _log_feature_importance('fake_run_id', 'test', fi, 'ridge', 0)
         except Exception as e:
             pytest.fail(f'_log_feature_importance raised: {e}')

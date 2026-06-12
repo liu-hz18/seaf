@@ -891,4 +891,149 @@ with warnings.catch_warnings():
 ### 验证
 
 - `ruff check .`：All checks passed（全部 30+ 规则通过）
-- `ruf check --select=E,F,W`：All checks passed
+- `ruff check --select=E,F,W`：All checks passed
+
+---
+
+## [Multi] 2026-06-12 日志系统重构 + strategy 模块拆分 + 快照对齐 + 基建增强 + 测试覆盖扩展
+
+### 概述
+
+本轮变更涉及 13 个文件修改、7 个新文件创建，涵盖日志系统重构、strategy 模块拆分、
+数据生成器精度对齐、模型节点特征隔离、IC 公式修复、快照日期对齐、以及 4 个新测试模块。
+
+---
+
+### 1. 日志系统重构
+
+**`qpipe/utils.py`**：
+- 新增 `FlushStreamHandler(logging.StreamHandler)`：每次 `emit` 后立即 `flush()`，确保子进程日志实时输出不丢失
+
+**`qpipe/node.py`** (MultiInputNode + SourceNode)：
+- 新增 `log_level: str = 'INFO'` 参数，支持 pipeline 统一控制日志级别
+- 日志格式统一为 `[%(levelname)s][%(asctime)s][%(filename)s:%(lineno)d][{self.name}] %(message)s`
+- 输出 handler 全部替换为 `FlushStreamHandler`
+
+**`pipeline.py`**：
+- 日志格式同步为统一格式（含 `filename:lineno` 便于定位）
+- 所有节点（source/11个factor/model/ic/strategy）传入 `log_level=args.log_level`
+
+**所有业务模块** (`seafquant/ic_analysis.py`, `model_node.py`, `strategy.py` 等)：
+- 移除日志消息中的 `[{name}]` 前缀（已在 format 的 node name 中体现）
+- 日志消息内容不变，仅清理冗余前缀
+
+---
+
+### 2. Strategy 模块拆分
+
+原 `seafquant/strategy.py` (~800 行) 拆分为三个文件：
+
+| 文件 | 行数 | 职责 |
+|------|------|------|
+| `strategy_core.py` | 239 | `_init_group_context`、`_calc_commission`、`_get_actual_shares`、`_get_position_value`、`_compute_total_equity`、`_create_position`、`_log_trade`、三种交易处理 (`_process_delta/new/close_trade`) |
+| `strategy_daily.py` | 239 | `_on_bar`（逐日交易执行）、`_generate_daily_plan`（生成 T+1 交易计划） |
+| `strategy.py` | ~50 | 聚合入口 `strategy_fn` + `strategy_epilogue` |
+
+**`strategy_fn` 输出格式变更**：
+- 旧：返回含 `_dummy` 占位列的非空 Frame3D（仅用于确保 max_key 有效）
+- 新：返回逐股逐组持仓市值 Frame3D（`g0_mv`, `g1_mv`, ... 列），index 为标准 `(key, name)` MultiIndex
+- 下游节点可直接消费逐股位置数据，无需额外查询
+
+**daily_plan 文件名修复**：
+- `plan_date` 从 Timestamp 直接 str() 改为 `str(plan_date)[:10]`（YYYY-MM-DD），避免 Windows 非法字符（冒号）
+
+**`strategy_epilogue` 日志清理**：移除 `[{name}]` 前缀
+
+---
+
+### 3. 数据生成器精度对齐
+
+**`seafquant/data_generator.py`**：
+- 新增 `stock_name` 列（便于 CSV 人工可读，主键仍是 index level `name`）
+- `close_uq`（不复权价）生成约束：`close_uq ≤ close`（用 `-|N(0,0.0005)|` 确保除权/分红不会使不复权价超过后复权价）
+- OHLC 价格精度对齐真实股市：`np.round(..., 2)`
+
+---
+
+### 4. 模型节点特征隔离
+
+**`qpipe/node.py`**：
+- MultiInputNode 新增 `exclude_input_columns` 参数 — 在窗口合并后、入队前删除指定列
+- 与 `input_columns` 互斥校验（二者交集不为空时抛 ValueError）
+
+**`qpipe/flow.py`**：
+- `add_node` 和 flow 编排层透传 `exclude_input_columns`
+
+**`pipeline.py`**：
+- model 节点设置 `exclude_input_columns=['open','high','low','close_uq','turnover','volume','market_cap']`
+- OHLCV 原始列在基建层删除，防止泄露到模型特征空间；仅 `close` 保留用于 label 计算
+
+**`seafquant/model_node.py`**：
+- 特征列识别简化：不再维护 `raw_cols` 黑名单，改用 `is_numeric_dtype` 过滤 + 排除 `close` 和 `_` 前缀列
+- Feature importance artifact 路径改为 `model/feature_importance_{model_type}_{step}.json`
+- `_log_feature_importance` 新增 `step` 参数
+- 预测日志新增 `skew` 指标
+
+---
+
+### 5. IC 公式修复
+
+**`seafquant/ic_analysis.py`**：
+- `theo_log_nav_spread` 公式：`raw_ret_std`（单日值）→ `mean_ret_std`（累计均值）
+- Epilogue 对齐使用同样的 `mean_ret_std` 而非单次 `raw_ret_std`
+
+---
+
+### 6. 快照日期对齐
+
+**`qpipe/node.py`** (SourceNode)：
+- 快照触发从私有 `call_count` 改为 `day_index = trading_step(start_date, max_key)`
+- 与其他节点（使用 `trading_step` 计算 step 序号）的快照周期对齐
+
+**`qpipe/node.py`** (MultiInputNode)：
+- 快照日志包含 `day_index` 便于跨节点比对
+
+**`scripts/_check_snapshot_align.py`** (新增)：
+- 检查最新 MLflow run 中各节点 snapshot 文件的日期对齐情况
+
+---
+
+### 7. 节点基建增强
+
+**`qpipe/node.py`**：
+- 窗口合并 (`pd.concat`) 后新增 `reindex` 对齐最新股票集合（修复 strategy 节点 KeyError）
+- `trading_step` 防御 NaN/None/NaT 输入
+- `dup_col_have_warned` 仅首次重复列时 warning
+
+---
+
+### 8. 测试覆盖扩展
+
+**新增测试文件**：
+
+| 文件 | 行数 | 覆盖范围 |
+|------|------|----------|
+| `test/test_flow.py` | 175 | Flow 编排器拓扑验证、队列管理、DAG 约束、启停控制 |
+| `test/test_ic_analysis.py` | 191 | IC 计算正确性、NaN/短数据边界、epilogue 汇总、context 不变性 |
+| `test/test_node_integration.py` | 318 | 窗口对齐、IPO/退市、多路输入、快照、epilogue 跨进程状态验证 |
+| `test/test_pipeline.py` | 201 | 端到端 source→factors→model→ic→strategy 全链路集成 |
+
+**修改现有测试**：
+- `test/test_data_generator.py`：适配 `stock_name` 列（数值断言跳过字符串列）
+- `test/test_model_node.py`：`_log_feature_importance` 增加 `step=0` 参数
+- `test/test_strategy.py`：导入路径适配 `strategy_core`/`strategy_daily` 拆分 + 输出格式变更断言
+
+---
+
+### 9. 其他
+
+- `api_test.py`：更新测试日期和注释
+- `TODO.md`：新增 snapshot 对齐待办项
+- pyright lint：`reportUnknownArgumentType=false`, `reportUnknownVariableType=false`
+
+---
+
+### 验证
+
+- `ruff check .`：All checks passed
+- 测试套件：全量通过（含新增 4 个测试文件）

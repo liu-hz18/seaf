@@ -126,7 +126,7 @@ def _run_cv(
     tscv = TimeSeriesSplit(n_splits=n_splits)
     cv_scores: list[float] = []
 
-    logging.info(f'[{name}] CV (TimeSeriesSplit, {n_splits} folds, IC metric):')
+    logging.info(f'CV (TimeSeriesSplit, {n_splits} folds, IC metric):')
     for fold, (train_idx, val_idx) in enumerate(tscv.split(X)):
         if len(val_idx) < 10:
             continue
@@ -171,7 +171,7 @@ def _log_feature_importance(
     top_n = min(10, len(fi))
     top_items = list(fi.items())[:top_n]
     logging.info(
-        f'[{name}] Feature importance top-{top_n}: '
+        f'Feature importance top-{top_n}: '
         + ', '.join(f'{k}={v:.4f}' for k, v in top_items)
     )
     if run_id:
@@ -180,7 +180,7 @@ def _log_feature_importance(
             mlflow.set_tracking_uri('sqlite:///mlruns.db')
             mlflow.log_dict(
                 fi,
-                f'feature_importance_{model_type}_{step}.json',
+                f'model/feature_importance_{model_type}_{step}.json',
                 run_id=run_id,
             )
         except Exception:
@@ -215,15 +215,19 @@ def model_train_predict(name: str, f3d: Frame3D, context: Any) -> Frame3D:
     model_type: str = context['model_type']
 
     # —— 因子列识别 ——
-    raw_cols = {'open', 'high', 'low', 'close', 'turnover', 'volume', 'market_cap'}
+    # 注意：OHLCV 等原始列已在基建层由 exclude_input_columns 删除，
+    # 此处仅排除 close（label 列）+ 内部 _ 列 + 非数值元数据列。
     if context['feature_cols'] is None:
         context['feature_cols'] = [
-            c for c in df.columns if c not in raw_cols and not c.startswith('_')
+            c for c in df.columns
+            if c != 'close'
+            and not c.startswith('_')
+            and pd.api.types.is_numeric_dtype(df[c])
         ]
     feature_cols: list[str] = context['feature_cols']
 
     if 'close' not in df.columns:
-        raise ValueError(f'[{name}] Model node requires "close" column')
+        raise ValueError(f'Model node requires "close" column: {df.columns}')
 
     mlflow_run_id: str = context.get('mlflow_run_id', '')
     start_date: str = context.get('start_date', '')
@@ -235,7 +239,7 @@ def model_train_predict(name: str, f3d: Frame3D, context: Any) -> Frame3D:
     latest_t = times[-1]
 
     if n_times < fwd + 2:
-        logging.warning(f'[{name}] Insufficient data: {n_times} < {fwd + 2}')
+        logging.warning(f'Insufficient data: {n_times} < {fwd + 2}')
         cs_mask = df.index.get_level_values('key') == latest_t
         return _empty_result(n_stocks, df.loc[cs_mask].index)
 
@@ -250,7 +254,7 @@ def model_train_predict(name: str, f3d: Frame3D, context: Any) -> Frame3D:
     # ========================================================================
     if should_train:
         logging.info(
-            f'[{name}] ===== RETRAIN START ===== '
+            f'===== RETRAIN START ===== '
             f'model={model_type}, fwd={fwd}, '
             f'retrain_every={context["retrain_every"]}, '
             f'days_since_train={context["days_since_train"]}'
@@ -259,14 +263,14 @@ def model_train_predict(name: str, f3d: Frame3D, context: Any) -> Frame3D:
         # 1. 准备训练数据
         n_train_times = n_times - fwd - 1
         if n_train_times < 10:
-            logging.warning(f'[{name}] Too few training times: {n_train_times}')
+            logging.warning(f'Too few training times: {n_train_times}')
             context['days_since_train'] = 0
             return _empty_result(n_stocks, df.loc[latest_t].index)
 
         X, y, cs_stats = _prepare_training_data(name, df, feature_cols, times, fwd)
 
         logging.info(
-            f'[{name}] Training set: {len(cs_stats)} cs x ~{n_stocks}s, '
+            f'Training set: {len(cs_stats)} cs x ~{n_stocks}s, '
             f'{len(y)} samples, {X.shape[1]} features'
         )
 
@@ -293,13 +297,13 @@ def model_train_predict(name: str, f3d: Frame3D, context: Any) -> Frame3D:
         X, y = X[valid], y[valid]
         X = np.nan_to_num(X, nan=0.0)  # 保留样本的 NaN → 0
         logging.info(
-            f'[{name}] NaN handling: {sum(~valid)} removed '
+            f'NaN handling: {sum(~valid)} removed '
             f'(y_nan={sum(y_nan)}, drop>{n_feats // 2}feat_nan={sum(drop_mask)}), '
-            f'{len(y)} remain, {np.sum(np.isnan(X))} NaN filled→0'
+            f'{len(y)} remain, {np.sum(np.isnan(X))} NaN filled->0'
         )
 
         if len(y) < 50:
-            logging.warning(f'[{name}] <50 samples after NaN removal')
+            logging.warning(f'{len(y)}<50 samples after NaN removal')
             context['days_since_train'] = 0
             return _empty_result(n_stocks, df.loc[latest_t].index)
 
@@ -338,9 +342,9 @@ def model_train_predict(name: str, f3d: Frame3D, context: Any) -> Frame3D:
         cv_mean = np.mean(cv_scores) if cv_scores else 0.0
         cv_std = np.std(cv_scores) if cv_scores else 0.0
         logging.info(
-            f'[{name}] ===== RETRAIN DONE ===== '
+            f'===== RETRAIN DONE ===== '
             f'samples={len(y):,}, feats={len(feature_cols)}, '
-            f'cv_ic={cv_mean:.4f}±{cv_std:.4f}, n_folds={len(cv_scores)}, '
+            f'cv_ic={cv_mean:.4f} +- {cv_std:.4f}, n_folds={len(cv_scores)}, '
             f'predict_day={latest_t}'
         )
 
@@ -354,7 +358,7 @@ def model_train_predict(name: str, f3d: Frame3D, context: Any) -> Frame3D:
     nan_rows = np.any(np.isnan(X_latest), axis=1)
     if nan_rows.any():
         logging.warning(
-            f'[{name}] {nan_rows.sum()}/{len(X_latest)} stocks NaN features, filled=0'
+            f'{nan_rows.sum()}/{len(X_latest)} stocks NaN features, filled=0'
         )
         X_latest = np.nan_to_num(X_latest, nan=0.0)
 
@@ -368,12 +372,13 @@ def model_train_predict(name: str, f3d: Frame3D, context: Any) -> Frame3D:
     }, step=trading_step(start_date, latest_t))
 
     logging.info(
-        f'[{name}] Predict day={latest_t} (fwd={fwd}): '
+        f'Predict day={latest_t} (fwd={fwd}): '
         f'n={len(pred_signal)}, '
         f'mean={float(np.mean(pred_signal)):.4f}, '
         f'std={float(np.std(pred_signal)):.4f}, '
         f'min={float(np.min(pred_signal)):.4f}, '
-        f'max={float(np.max(pred_signal)):.4f}'
+        f'max={float(np.max(pred_signal)):.4f}, '
+        f'skew={float(pd.Series(pred_signal).skew()):.4f}'
     )
 
     result_df = pd.DataFrame({'pred_signal': pred_signal}, index=df.loc[cs_mask_latest].index)

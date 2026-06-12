@@ -200,11 +200,20 @@ def generate_synthetic_data(
         arrays = [[tk] * n_active, active_names]
         mi = pd.MultiIndex.from_arrays(arrays, names=['key', 'name'])
 
-        # close_uq：不复权收盘价（模拟除权除息，与后复权 close 有微小偏离）
-        close_uq_t = close_t * np.exp(rng.normal(0, 0.0005, n_active))
+        # close_uq：不复权收盘价（模拟除权除息）。
+        # 除权/分红只会让不复权价 ≤ 后复权价，故用 -|ε| 确保 close_uq ≤ close。
+        close_uq_t = close_t * np.exp(-np.abs(rng.normal(0, 0.0005, n_active)))
+
+        # OHLC 价格精度对齐真实股市：统一 2 位小数
+        open_t = np.round(open_t, 2)
+        high_t = np.round(high_t, 2)
+        low_t = np.round(low_t, 2)
+        close_t = np.round(close_t, 2)
+        close_uq_t = np.round(np.minimum(close_uq_t, close_t), 2)
 
         df = pd.DataFrame(
             {
+                'stock_name': active_names,        # 股票名（便于 CSV 可读，主键仍是 index level 'name'）
                 'open': open_t,
                 'high': high_t,
                 'low': low_t,
