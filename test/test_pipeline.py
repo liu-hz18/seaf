@@ -7,11 +7,8 @@
 
 from __future__ import annotations
 
-import multiprocessing as mp
 import time
 
-import numpy as np
-import pandas as pd
 import pytest
 
 from qpipe.flow import Flow

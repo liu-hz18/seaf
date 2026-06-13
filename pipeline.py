@@ -62,6 +62,10 @@ def main() -> None:
         '--precision', type=int, default=2,
         help='Price/market-cap rounding precision (decimal places)',
     )
+    parser.add_argument(
+        '--loss', type=str, default='mse', choices=['mse', 'ic'],
+        help='Model training loss function (mse/ic)',
+    )
     args = parser.parse_args()
 
     # ===== 因子节点注册（由 FACTOR_REGISTRY 派生，10 个并行节点） =====
@@ -150,6 +154,7 @@ def main() -> None:
         'mlflow_run_id': mlflow_run_id,
         'start_date': args.start_date,
         'precision': args.precision,
+        'loss': args.loss,
         # 以下参数使用 model_node 默认值，此处仅为文档可读性显式列出
         # 'retrain_every': 20,
     }

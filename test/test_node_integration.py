@@ -9,17 +9,13 @@ from __future__ import annotations
 import json
 import multiprocessing as mp
 import os
-import sys
 import tempfile
 from typing import Any
 
-import numpy as np
 import pandas as pd
-import pytest
 
 from qpipe.frame3d import Frame3D
 from qpipe.node import MultiInputNode
-
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 模块级辅助函数（pickle 安全）
@@ -116,7 +112,7 @@ class TestWindowAlignment:
         node.start()
         node.join(timeout=10)
 
-        with open(epilogue_path, 'r', encoding='utf-8') as f:
+        with open(epilogue_path, encoding='utf-8') as f:
             epi = json.load(f)
         call_count = epi['context'].get('call_count', 0)
         assert call_count == n_days - 3 + 1  # 8-3+1=6
@@ -155,7 +151,7 @@ class TestIpoDelistAlignment:
         node.start()
         node.join(timeout=10)
 
-        with open(epilogue_path, 'r', encoding='utf-8') as f:
+        with open(epilogue_path, encoding='utf-8') as f:
             epi = json.load(f)
         assert epi['context'].get('call_count', 0) >= 1
         os.unlink(epilogue_path)
@@ -183,7 +179,7 @@ class TestIpoDelistAlignment:
         node.start()
         node.join(timeout=10)
 
-        with open(epilogue_path, 'r', encoding='utf-8') as f:
+        with open(epilogue_path, encoding='utf-8') as f:
             epi = json.load(f)
         assert epi['context'].get('call_count', 0) >= 1
         os.unlink(epilogue_path)
@@ -222,7 +218,7 @@ class TestMultiInput:
         node.start()
         node.join(timeout=10)
 
-        with open(epilogue_path, 'r', encoding='utf-8') as f:
+        with open(epilogue_path, encoding='utf-8') as f:
             epi = json.load(f)
         # epilogue 中 last_cols 序列化后是 list
         # 不强制检查（跨进程 dict 可能丢失），仅验证无异常退出
@@ -250,7 +246,7 @@ class TestMultiInput:
         node.start()
         node.join(timeout=10)
 
-        with open(epilogue_path, 'r', encoding='utf-8') as f:
+        with open(epilogue_path, encoding='utf-8') as f:
             epi = json.load(f)
         assert 'last_cols' in epi['context'] or node.exitcode is not None
         os.unlink(epilogue_path)
@@ -312,7 +308,7 @@ class TestErrorRecovery:
 
         # epilogue 应被调用
         assert os.path.exists(epilogue_path)
-        with open(epilogue_path, 'r', encoding='utf-8') as f:
+        with open(epilogue_path, encoding='utf-8') as f:
             epi = json.load(f)
         assert epi['name'] == 'test'
         os.unlink(epilogue_path)
