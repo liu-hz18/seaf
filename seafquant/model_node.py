@@ -133,7 +133,7 @@ def _run_cv(
         X_tr, X_val = X[train_idx], X[val_idx]
         y_tr, y_val = y[train_idx], y[val_idx]
 
-        pred, _ = wrapper.cv_fit_predict(X_tr, y_tr, X_val)
+        pred, _ = wrapper.cv_fit_predict(X_tr, y_tr, X_val, y_val=y_val)
 
         try:
             ic = spearmanr(pred, y_val).correlation

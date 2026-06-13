@@ -21,7 +21,7 @@ _EPS: float = 1e-8
 
 class LossFunction(ABC):
     """损失函数抽象协议：LGBM custom objective / PyTorch loss / early stopping 方向。"""
-
+    import torch
     name: str = ''
     lower_is_better: bool = True  # False for IC-like (higher = better)
 
@@ -31,7 +31,7 @@ class LossFunction(ABC):
     ) -> tuple[np.ndarray, np.ndarray]:
         """LGBM custom objective: return (grad, hess) per sample."""
 
-    def torch_fn(self):
+    def torch_fn(self) -> torch.nn.Module:
         """返回 PyTorch nn.Module loss（训练用）。"""
         import torch
         return torch.nn.MSELoss()
@@ -40,6 +40,7 @@ class LossFunction(ABC):
 class MSELossFn(LossFunction):
     """均方误差 — 默认。"""
 
+    import torch
     name = 'mse'
     lower_is_better = True
 
@@ -49,7 +50,7 @@ class MSELossFn(LossFunction):
         labels = train_data.get_label()
         return np.asarray(preds - labels, dtype=float), np.ones_like(preds, dtype=float)
 
-    def torch_fn(self):
+    def torch_fn(self) -> torch.nn.Module:
         import torch
         return torch.nn.MSELoss()
 
@@ -397,12 +398,14 @@ class MLPWrapper(BaseWrapper):
         return np.concatenate(preds)
 
     def cv_fit_predict(
-        self, X_tr: np.ndarray, y_tr: np.ndarray, X_val: np.ndarray
+        self, X_tr: np.ndarray, y_tr: np.ndarray, X_val: np.ndarray,
+        y_val: np.ndarray | None = None,
     ) -> tuple[np.ndarray, dict[str, float]]:
-        y_val_proxy = np.zeros(len(X_val))
+        if y_val is None:
+            y_val = np.zeros(len(X_val))
         metrics = self._train_epochs(
             X_tr, y_tr, self._epochs,
-            X_val=X_val, y_val=y_val_proxy,
+            X_val=X_val, y_val=y_val,
             record_val_loss=True,
         )
         return self.predict(X_val), metrics
