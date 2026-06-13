@@ -191,12 +191,12 @@ class LGBMWrapper(_SklearnWrapper):
         from lightgbm import LGBMRegressor
 
         kwargs: dict[str, Any] = {
-            'n_estimators': 100,
-            'max_depth': 6,
-            'num_leaves': 31,
-            'reg_alpha': 0.1,
-            'reg_lambda': 0.1,
-            'random_state': 42,
+            'n_estimators': context.get('lgbm_n_estimators', 10),
+            'max_depth': context.get('lgbm_max_depth', 6),
+            'num_leaves': context.get('lgbm_num_leaves', 31),
+            'reg_alpha': context.get('lgbm_reg_alpha', 0.1),
+            'reg_lambda': context.get('lgbm_reg_lambda', 0.1),
+            'random_state': context.get('seed', 42),
             'verbose': -1,
         }
         # 非 MSE 损失 → LGBM custom objective
@@ -226,7 +226,10 @@ class RidgeWrapper(_SklearnWrapper):
                 f'[ridge] Loss "{self._loss.name}" not supported by Ridge; '
                 f'falling back to MSE (ridge is L2-regularized least squares).'
             )
-        return Ridge(alpha=1.0, random_state=42)
+        return Ridge(
+            alpha=context.get('ridge_alpha', 42),
+            random_state=context.get('seed', 42)
+        )
 
     def _raw_importance(self) -> np.ndarray | None:
         try:
@@ -253,14 +256,20 @@ class MLPWrapper(BaseWrapper):
         self._torch = torch
         self._device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
+        # 可重入性：设置 torch 随机种子
+        torch_seed: int = context.get('seed', 42)
+        torch.manual_seed(torch_seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed(torch_seed)
+
         loss_name = context.get('loss', 'mse')
         self._loss: LossFunction = LOSS_REGISTRY.get(loss_name, MSELossFn())
 
         self._hidden_layers: list[int] = context.get('mlp_hidden', [128, 64, 32])
-        self._dropout: float = context.get('mlp_dropout', 0.3)
+        self._dropout: float = context.get('mlp_dropout', 0.5)
         self._lr: float = context.get('mlp_lr', 1e-3)
-        self._weight_decay: float = context.get('mlp_weight_decay', 0.01)
-        self._batch_size: int = context.get('mlp_batch_size', 1024)
+        self._weight_decay: float = context.get('mlp_weight_decay', 1e-2)
+        self._batch_size: int = context.get('mlp_batch_size', 512)
         self._epochs: int = 100
         self._patience: int = 10
 

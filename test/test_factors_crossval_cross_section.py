@@ -51,7 +51,7 @@ class TestCrossSectionCrossVal:
         df['_rk'] = df.groupby('key')['close'].transform(_cs_rank_pct)
         rk_now = df['_rk']
         for p in [5, 20, 60]:
-            rk_prev = df.groupby('name')['_rk'].shift(p)
+            rk_prev = df.groupby('code')['_rk'].shift(p)
             _compare_factor_output(
                 actual, {f'factor_cs_rank_delta_{p}d': (rk_now - rk_prev).values},
             )

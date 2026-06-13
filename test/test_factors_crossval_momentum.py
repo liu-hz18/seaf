@@ -34,7 +34,7 @@ class TestMomentumCrossVal:
         from seafquant.factor.momentum import compute_momentum_factors
         actual = compute_momentum_factors('test', f3d, None)
         df = f3d.df.copy()
-        daily_ret = df.groupby('name')['close'].pct_change(1)
+        daily_ret = df.groupby('code')['close'].pct_change(1)
         df['_ret'] = daily_ret
         expected = {}
         for p in [1, 3, 5, 10, 20, 40, 60, 120]:
@@ -50,7 +50,7 @@ class TestMomentumCrossVal:
         actual = compute_momentum_factors('test', f3d, None)
         df = f3d.df.copy()
         ret1 = _ts_pct_manual(df, 'close', 1)
-        close_d1 = df.groupby('name')['close'].shift(1)
+        close_d1 = df.groupby('code')['close'].shift(1)
         overnight = df['open'] / (close_d1 + EPS) - 1
         intraday = df['close'] / (df['open'] + EPS) - 1
         expected = {

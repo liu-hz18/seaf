@@ -19,11 +19,11 @@ class TestQualityAutocorrCrossVal:
         from seafquant.factor.quality_autocorr import compute_quality_autocorr_factors
         actual = compute_quality_autocorr_factors('test', f3d, None)
         df = f3d.df.copy()
-        df['_ret'] = df.groupby('name')['close'].pct_change(1)
+        df['_ret'] = df.groupby('code')['close'].pct_change(1)
         mp_map = {20: 10, 60: 20}
         expected = {}
         for p in [20, 60]:
-            expected[f'factor_qa_autocorr_{p}d'] = df.groupby('name')['_ret'].transform(
+            expected[f'factor_qa_autocorr_{p}d'] = df.groupby('code')['_ret'].transform(
                 lambda x, _p=p, _mp=mp_map[p]: x.rolling(_p, min_periods=_mp).corr(x.shift(1))
             ).values
         _compare_factor_output(actual, expected)
@@ -33,11 +33,11 @@ class TestQualityAutocorrCrossVal:
         from seafquant.factor.quality_autocorr import compute_quality_autocorr_factors
         actual = compute_quality_autocorr_factors('test', f3d, None)
         df = f3d.df.copy()
-        df['_ret'] = df.groupby('name')['close'].pct_change(1)
+        df['_ret'] = df.groupby('code')['close'].pct_change(1)
         mp_map = {60: 20, 120: 40}
         expected = {}
         for p in [60, 120]:
-            expected[f'factor_qa_tail_risk_{p}d'] = df.groupby('name')['_ret'].transform(
+            expected[f'factor_qa_tail_risk_{p}d'] = df.groupby('code')['_ret'].transform(
                 lambda x, _p=p, _mp=mp_map[p]: -x.where(x < 0).rolling(_p, min_periods=_mp).quantile(0.05)
             ).values
         _compare_factor_output(actual, expected)

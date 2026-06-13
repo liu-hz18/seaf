@@ -86,7 +86,7 @@ def main() -> None:
 
         mlflow.set_tracking_uri('sqlite:///mlruns.db')
         mlflow.set_experiment(experiment_name)
-        run_name = f'{args.model_type}-w{args.model_window}-f{args.fwd}-{args.start_date}'
+        run_name = f'{args.model_type}-w{args.model_window}-f{args.fwd}-{args.loss}-{args.start_date}'
         mlflow_run = mlflow.start_run(run_name=run_name)
         mlflow_run_id: str = mlflow_run.info.run_id
     else:
@@ -147,6 +147,7 @@ def main() -> None:
     # t+1买入、t+fwd卖出，对齐实盘交易执行和IC指标
     # model_context 显式列出所有可配置参数（与 model_node.setdefault 默认值对齐）
     model_context = {
+        'seed': args.seed,
         'mlflow_name': experiment_name,
         'model_type': args.model_type,
         'fwd': fwd,

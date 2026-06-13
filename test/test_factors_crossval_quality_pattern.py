@@ -84,5 +84,5 @@ class TestQualityPatternCrossVal:
 
         df = f3d.df.copy()
         df['_ret'] = _ts_pct_manual(df, 'close', 1)
-        mcp = df.groupby('name')['_ret'].transform(lambda x: _mcp_vec(x, 60))
+        mcp = df.groupby('code')['_ret'].transform(lambda x: _mcp_vec(x, 60))
         _compare_factor_output(actual, {'factor_qa_max_consec_pos_60d': mcp.values})

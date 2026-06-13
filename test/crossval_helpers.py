@@ -56,14 +56,14 @@ def _cs_zscore_manual(f3d: Frame3D, cols: list[str]) -> Frame3D:
 
 def _roll_manual(df: pd.DataFrame, col: str, window: int, agg: str) -> pd.Series:
     """逐股票时序滚动聚合。"""
-    return df.groupby('name')[col].transform(  # pyright: ignore[reportReturnType]
+    return df.groupby('code')[col].transform(  # pyright: ignore[reportReturnType]
         lambda x: x.rolling(window=window, min_periods=max(1, window // 2)).agg(agg)
     )
 
 
 def _ts_pct_manual(df: pd.DataFrame, col: str, period: int) -> pd.Series:
     """逐股票时序百分比变化。"""
-    shifted = df.groupby('name')[col].shift(period)
+    shifted = df.groupby('code')[col].shift(period)
     with np.errstate(divide='ignore', invalid='ignore'):
         return (df[col] - shifted) / shifted.replace(0, np.nan)
 

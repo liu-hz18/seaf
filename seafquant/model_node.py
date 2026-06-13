@@ -264,6 +264,8 @@ def model_train_predict(name: str, f3d: Frame3D, context: Any) -> Frame3D:
     # 训练阶段
     # ========================================================================
     if should_train:
+        from scipy.stats import pearsonr
+
         logging.info(
             f'===== RETRAIN START ===== '
             f'model={model_type}, fwd={fwd}, '
@@ -331,6 +333,7 @@ def model_train_predict(name: str, f3d: Frame3D, context: Any) -> Frame3D:
         # 7. 训练集 MSE
         pred_train = wrapper.predict(X)
         train_mse = float(np.mean((pred_train - y) ** 2))
+        train_npic = pearsonr(pred_train, y)[0]
 
         # 8. 特征重要性
         fi = wrapper.get_feature_importance(feature_cols)
@@ -347,6 +350,7 @@ def model_train_predict(name: str, f3d: Frame3D, context: Any) -> Frame3D:
             'train_features': float(len(feature_cols)),
             'train_nan_ratio': nan_ratio,
             'train_mse': train_mse,
+            'train_npic': train_npic,
             'cv_ic_mean': float(np.mean(cv_scores)) if cv_scores else 0.0,
         }, step=trading_step(start_date, times[n_train_times - 1]))
 
@@ -356,6 +360,7 @@ def model_train_predict(name: str, f3d: Frame3D, context: Any) -> Frame3D:
             f'===== RETRAIN DONE ===== '
             f'samples={len(y):,}, feats={len(feature_cols)}, '
             f'cv_ic={cv_mean:.4f} +- {cv_std:.4f}, n_folds={len(cv_scores)}, '
+            f"train_mse={train_mse:.3f}, train_npic={train_npic:.3f}, "
             f'predict_day={latest_t}'
         )
 

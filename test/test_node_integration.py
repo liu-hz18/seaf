@@ -219,7 +219,7 @@ class TestMultiInput:
         node.join(timeout=10)
 
         with open(epilogue_path, encoding='utf-8') as f:
-            epi = json.load(f)
+            _ = json.load(f)
         # epilogue 中 last_cols 序列化后是 list
         # 不强制检查（跨进程 dict 可能丢失），仅验证无异常退出
         assert node.exitcode is not None

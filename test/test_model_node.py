@@ -505,6 +505,41 @@ class TestMLPWrapper:
         assert pred.shape == (100,)
         assert 'train_loss' in metrics
 
+    def test_cv_fit_predict_with_ic_loss(self):
+        """MLP + IC loss: y_val 参数使 val_loss 有意义（不为零）。"""
+        rng = np.random.default_rng(42)
+        n = 200
+        X = rng.normal(0, 1, (n, 5))
+        y = 0.3 * X[:, 0] + rng.normal(0, 0.9, n)
+        wrapper = MLPWrapper({'mlp_hidden': [16, 8], 'mlp_epochs': 15, 'mlp_lr': 0.05, 'loss': 'ic'})
+        pred, metrics = wrapper.cv_fit_predict(X[:150], y[:150], X[150:], y_val=y[150:])
+        assert pred.shape == (50,)
+        v = metrics['val_loss']
+        assert v < 0.0, f'Expected negative val_loss for IC, got {v:.4f}'
+        assert abs(v) > 0.005, f'val_loss too close to 0 ({v:.6f})'
+
+    def test_cv_fit_predict_ic_improves(self):
+        """IC loss 下 best_epoch > 0 并且 final IC 为正。"""
+        rng = np.random.default_rng(7)
+        n = 300
+        X = rng.normal(0, 1, (n, 4))
+        y = 0.6 * X[:, 0] + rng.normal(0, 0.7, n)
+        wrapper = MLPWrapper({'mlp_hidden': [32, 16], 'mlp_epochs': 20, 'mlp_lr': 0.1, 'loss': 'ic'})
+        pred, metrics = wrapper.cv_fit_predict(X[:200], y[:200], X[200:], y_val=y[200:])
+        assert metrics['best_epoch'] > 0, f'best_epoch={metrics["best_epoch"]}, model should learn'
+        from scipy.stats import pearsonr
+        ic = pearsonr(pred, y[200:])[0]
+        assert ic > 0.1, f'Expected IC > 0.1, got {ic:.4f}'
+
+    def test_cv_fit_predict_backward_compat(self):
+        """旧签名（不传 y_val）向后兼容，不崩溃。"""
+        wrapper = MLPWrapper({'mlp_hidden': [16, 8], 'mlp_epochs': 5})
+        X = np.random.randn(100, 5)
+        y = np.random.randn(100)
+        pred, metrics = wrapper.cv_fit_predict(X[:70], y[:70], X[70:])
+        assert pred.shape == (30,)
+        assert 'val_loss' in metrics
+
     def test_cv_fit_predict(self):
         """MLP CV 单折返回预测和 loss 指标。"""
         wrapper = MLPWrapper({'mlp_hidden': [16, 8], 'mlp_epochs': 10})

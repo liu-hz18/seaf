@@ -146,7 +146,7 @@ class TestCountingCrossVal:
             out[window - 1 :] = win.sum(axis=1)
             return out
 
-        nh = f3d.df.groupby('name')['close'].transform(lambda x: _nh(x, 20))
+        nh = f3d.df.groupby('code')['close'].transform(lambda x: _nh(x, 20))
         _compare_factor_output(actual, {'factor_cnt_new_high_20d': nh.values})
 
     def test_new_low(self, f3d):
@@ -170,7 +170,7 @@ class TestCountingCrossVal:
             out[window - 1 :] = win.sum(axis=1)
             return out
 
-        nl = f3d.df.groupby('name')['close'].transform(lambda x: _nl(x, 60))
+        nl = f3d.df.groupby('code')['close'].transform(lambda x: _nl(x, 60))
         _compare_factor_output(actual, {'factor_cnt_new_low_60d': nl.values})
 
     # ── Turnover Rank Change ─────────────────────────────────────────
@@ -183,7 +183,7 @@ class TestCountingCrossVal:
         # 手动算 rank（按 key 分组，percentile rank）
         ranks = df.groupby('key')['turnover'].rank(pct=True)
         df['_rk'] = ranks.values
-        df['_rk_d1'] = df.groupby('name')['_rk'].shift(1)
+        df['_rk_d1'] = df.groupby('code')['_rk'].shift(1)
         df['_rc'] = np.abs(df['_rk'] - df['_rk_d1'])
         expected = {}
         for w in [20, 60]:

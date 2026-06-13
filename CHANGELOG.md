@@ -1106,3 +1106,34 @@ with warnings.catch_warnings():
 ### 3. Feature Importance min-max 归一化
 
 `_log_feature_importance()` 新增预处理：`(v - vmin) / (vmax - vmin)` 归一化到 `[0, 1]`，再按值降序排序。确保 lgbm（gain）和 ridge（|coef|）等不同模型的特征重要性可横向比较。
+
+---
+
+## [Fix] 2026-06-13 IC loss MLP val_losses 归零修复 + torch seed 可重入 + groupby 残余清理
+
+### 1. MLP IC 损失 CV 验证修复
+
+**根因**：`cv_fit_predict` 用 `y_val_proxy=np.zeros(len(X_val))` 作为验证标签，
+导致 `pearsonr(pred, zeros)` ≡ 0，IC 损失训练中所有 epoch 的 val_loss 恒为 -0.0000。
+
+**修复**：
+- `model_wrappers.py`: `cv_fit_predict` 新增 `y_val` 参数（默认 None 保持向后兼容）
+- `model_node.py`: `_run_cv` 传入真实 `y_val=y_val`
+
+**新增测试**（3 个）：
+- `test_cv_fit_predict_with_ic_loss` — y_val 参数使 val_loss 有意义
+- `test_cv_fit_predict_ic_improves` — best_epoch > 0 且 final IC > 0.1
+- `test_cv_fit_predict_backward_compat` — 旧签名不崩溃
+
+### 2. Torch 可重入性
+
+`MLPWrapper.__init__` 新增 `torch.manual_seed(seed)` + `torch.cuda.manual_seed(seed)`
+
+### 3. groupby name→code 残余清理
+
+`test/crossval_helpers.py` + 5 个 crossval 测试文件中 13 处 `groupby('name')` → `groupby('code')`
+
+### 验证
+
+- ruff: All checks passed
+- 681 tests passed; 2 E2E pipeline 测试超时跳过（CI 环境限制）
