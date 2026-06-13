@@ -86,7 +86,7 @@ def main() -> None:
 
         mlflow.set_tracking_uri('sqlite:///mlruns.db')
         mlflow.set_experiment(experiment_name)
-        run_name = f'{args.model_type}-w{args.model_window}-f{args.fwd}-{args.loss}-{args.start_date}'
+        run_name = f'{args.model_type}-w{args.model_window}-f{args.fwd}-{args.loss}-{args.start_date}-{experiment_name}'
         mlflow_run = mlflow.start_run(run_name=run_name)
         mlflow_run_id: str = mlflow_run.info.run_id
     else:
