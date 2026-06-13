@@ -175,6 +175,7 @@ def strategy_fn(name: str, f3d: Frame3D, context: Any) -> Frame3D:
                     'cumsum_fee': last_nav.get('cumsum_fee', 0.0),
                     'position_value': last_nav['position_value'],
                     'n_positions': float(last_nav['n_positions']),
+                    'turnover': last_nav.get('turnover', 0.0),
                 }, step=step)
         # top-bottom NAV spread
         ng = context['num_groups']
@@ -268,12 +269,17 @@ def strategy_epilogue(name: str, context: dict[str, Any] | None) -> None:
         n_trades = len(gctx['trade_log'])
         n_buys = sum(1 for t in gctx['trade_log'] if t['action'] == 'buy')
 
+        # ---- 平均换手率 ----
+        turnovers = [nl.get('turnover', 0.0) for nl in gctx['nav_log'] if nl.get('turnover') is not None]
+        avg_turnover = float(np.mean(turnovers)) if turnovers else 0.0
+
         logging.info(
             f'Group {gid}: N={len(values)}d, '
             f'final_value={final_value:,.0f}, final_nav={final_nav:.4f}, '
             f'return={total_return:.2%}, ann_ret={ann_ret:.2%}, '
             f'ann_vol={ann_vol:.2%}, nav_ann_vol={nav_ann_vol:.2%}, '
             f'sharpe={sharpe:.2f}, max_dd={max_dd:.2%}, '
+            f'avg_turnover={avg_turnover:.4%}, '
             f'trades={n_trades} ({n_buys} buys)'
         )
 

@@ -19,6 +19,12 @@ class FlushStreamHandler(logging.StreamHandler):
         self.flush()  # 每次输出后立刻刷新
 
 
+class UnbufferedFileHandler(logging.FileHandler):
+    def emit(self, record):
+        super().emit(record)  # 正常写入缓冲区
+        self.flush()          # 强制将缓冲区内容刷入磁盘
+
+
 def trading_step(start_date: str, dt) -> int:
     """交易日序号：start_date → dt 之间的工作日天数（0 = 起始日期当天）。
 

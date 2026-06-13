@@ -64,20 +64,13 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    logging.basicConfig(
-        level=getattr(logging, args.log_level),
-        format='[%(levelname)s][%(asctime)s][%(filename)s:%(lineno)d] %(message)s',
-        handlers=[logging.StreamHandler(sys.stdout)],
-    )
-
-    logging.info(f"args: {args}")
     # ===== 因子节点注册（由 FACTOR_REGISTRY 派生，10 个并行节点） =====
     factor_nodes = [(f'factor_{name}', func) for name, func in FACTOR_REGISTRY.items()]
 
     # 窗口参数
     # Model 节点独立于 Factor 节点：它接收的是因子输出（截面），需要独立的历史窗口来训练。
     fwd = args.fwd
-    MODEL_WINDOW = args.model_window + args.fwd
+    MODEL_WINDOW = args.model_window + fwd + 1
     MODEL_MIN_PERIODS = MODEL_WINDOW
     IC_WINDOW = fwd + 1
     IC_MIN_PERIODS = IC_WINDOW
@@ -93,16 +86,17 @@ def main() -> None:
         mlflow_run = mlflow.start_run(run_name=run_name)
         mlflow_run_id: str = mlflow_run.info.run_id
     else:
-        mlflow_run_id = ''
+        mlflow_run_id = experiment_name
 
     # ---- 日志文件：主进程写入 logs/{run_id}.txt ----
-    _log = logging.getLogger(__name__)
-    if mlflow_run_id:
-        os.makedirs('logs', exist_ok=True)
-        _log.addHandler(logging.FileHandler(f'logs/{mlflow_run_id}.txt', encoding='utf-8'))
-    else:
-        os.makedirs('logs', exist_ok=True)
-        _log.addHandler(logging.FileHandler('logs/no_mlflow.txt', encoding='utf-8'))
+    os.makedirs('logs', exist_ok=True)
+    logging.basicConfig(
+        level=getattr(logging, args.log_level),
+        format='[%(levelname)s][%(asctime)s][%(filename)s:%(lineno)d] %(message)s',
+        handlers=[logging.StreamHandler(sys.stdout), logging.FileHandler(f'logs/{experiment_name}.txt', encoding='utf-8')],
+    )
+
+    logging.info(f"args: {args}")
 
     flow = Flow(queue_maxsize=GLOBAL_MAX_FACTOR_WINDOW)
 
@@ -117,7 +111,7 @@ def main() -> None:
         'src_data',
         gen_callable,
         src_output_queues,
-        context={'mlflow_run_id': mlflow_run_id, 'start_date': args.start_date, 'precision': args.precision},
+        context={'mlflow_name': experiment_name, 'mlflow_run_id': mlflow_run_id, 'start_date': args.start_date, 'precision': args.precision},
         snapshot_interval=args.snapshot_interval,
         log_level=args.log_level,
     )
@@ -139,7 +133,7 @@ def main() -> None:
             output_to=[q_out],
             window=fw['window'],
             min_periods=fw['min_periods'],
-            context={'mlflow_run_id': mlflow_run_id, 'start_date': args.start_date, 'precision': args.precision},
+            context={'mlflow_name': experiment_name, 'mlflow_run_id': mlflow_run_id, 'start_date': args.start_date, 'precision': args.precision},
             snapshot_interval=args.snapshot_interval,
             log_level=args.log_level,
         )
@@ -149,6 +143,7 @@ def main() -> None:
     # t+1买入、t+fwd卖出，对齐实盘交易执行和IC指标
     # model_context 显式列出所有可配置参数（与 model_node.setdefault 默认值对齐）
     model_context = {
+        'mlflow_name': experiment_name,
         'model_type': args.model_type,
         'fwd': fwd,
         'model_window': MODEL_WINDOW,
@@ -178,6 +173,7 @@ def main() -> None:
     # IC：(fwd-1)日截面对数超额收益的 Spearman rank 相关系数
     # 与 model 节点的 label 定义对齐（ln(close[t+fwd]) - ln(close[t+1])）
     ic_context = {
+        'mlflow_name': experiment_name,
         'fwd': fwd, 'num_groups': 10,
         'mlflow_run_id': mlflow_run_id, 'start_date': args.start_date,
         'precision': args.precision,
@@ -201,6 +197,7 @@ def main() -> None:
         'fwd': fwd,
         'num_groups': 10,
         'initial_cash': 10_000_000,
+        'mlflow_name': experiment_name,
         'mlflow_run_id': mlflow_run_id,
         'start_date': args.start_date,
         'precision': args.precision,

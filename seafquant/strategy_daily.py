@@ -46,6 +46,8 @@ def _on_bar(
             f_today[sid] = phfq / puq
 
     # Step 2: 执行昨日待执行信号
+    day_trades: list[dict] = []
+    buy_value = sell_value = 0.0
     if ctx['pending_signal'] is not None:
         n_trades_before = len(ctx['trade_log'])
         sig = ctx['pending_signal']  # {sid: {'w': weight, 'v': signal_value}}
@@ -88,7 +90,10 @@ def _on_bar(
             )
 
         # 累加当日新增手续费
-        for t in ctx['trade_log'][n_trades_before:]:
+        day_trades = ctx['trade_log'][n_trades_before:]
+        buy_value = sum(t['value'] for t in day_trades if t['action'] == 'buy')
+        sell_value = sum(t['value'] for t in day_trades if t['action'] == 'sell')
+        for t in day_trades:
             ctx['cumsum_fee'] += t['commission']
 
     # Step 3: 存储今日信号
@@ -115,6 +120,7 @@ def _on_bar(
         'cumsum_fee': round(ctx['cumsum_fee'], ctx.get('precision', 2)),
         'position_value': total_equity - ctx['cash'],
         'n_positions': len(ctx['positions']),
+        'turnover': round((buy_value + sell_value) / total_equity, 6) if total_equity > 0 else 0.0,
     })
 
     # Step 5: 持仓快照

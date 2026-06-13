@@ -9,7 +9,6 @@ import gc
 import inspect
 import logging
 import multiprocessing as mp
-import os
 import sys
 import threading
 import time
@@ -28,9 +27,10 @@ try:
 
     def _rss_mb() -> float:
         return psutil.Process().memory_info().rss / 1024 / 1024
-except ImportError:
+except ImportError as e:
+    print(e)
     def _rss_mb() -> float:
-        return 0.0
+        return -1.0
 
 
 def _to_float32(f3d: Frame3D) -> Frame3D:
@@ -151,16 +151,12 @@ class MultiInputNode(mp.Process):
 
     def run(self) -> None:
         """子进程主入口：协调接收线程和窗口计算循环。"""
+        mlflow_name = self.context.get('mlflow_name', 'test') if isinstance(self.context, dict) else 'test'
         logging.basicConfig(
             level=getattr(logging, self.log_level),
             format=f'[%(levelname)s][%(asctime)s][%(filename)s:%(lineno)d][{self.name}] %(message)s',
-            handlers=[FlushStreamHandler(stream=sys.stdout)],
+            handlers=[FlushStreamHandler(stream=sys.stdout), logging.FileHandler(f'logs/{mlflow_name}.txt', encoding='utf-8')],
         )
-        # ---- 日志文件：子进程也写入同一个 logs/{run_id}.txt ----
-        _run_id = self.context.get('mlflow_run_id', '') if isinstance(self.context, dict) else ''
-        if _run_id:
-            os.makedirs('logs', exist_ok=True)
-            logging.getLogger().addHandler(logging.FileHandler(f'logs/{_run_id}.txt', encoding='utf-8'))
         logging.info(f'Node {self.name} started, w={self.window}, mp={self.min_periods}.')
 
         num_workers = len(self.input_queues)
@@ -407,7 +403,7 @@ class MultiInputNode(mp.Process):
                         gc.collect()
                         buf_sizes = {f'b{i}': len(b) for i, b in enumerate(self.buffers)}
                         logging.info(
-                            f'mem#{total_calls}: rss={rss:.0f}MB, '
+                            f'mem#{total_calls}: rss={rss:.2f}MB, '
                             f'tob_len={len(time_order_buffer)}, '
                             f'buf_sizes={buf_sizes}'
                         )
@@ -486,16 +482,13 @@ class SourceNode(mp.Process):
 
     def run(self) -> None:
         """子进程主入口：迭代数据生成器，逐日输出最新截面。"""
+        # ---- 日志文件：子进程也写入同一个 logs/{run_id}.txt ----
+        mlflow_name = self.context.get('mlflow_name', 'test') if isinstance(self.context, dict) else 'test'
         logging.basicConfig(
             level=getattr(logging, self.log_level),
             format=f'[%(levelname)s][%(asctime)s][%(filename)s:%(lineno)d][{self.name}] %(message)s',
-            handlers=[FlushStreamHandler(stream=sys.stdout)],
+            handlers=[FlushStreamHandler(stream=sys.stdout), logging.FileHandler(f'logs/{mlflow_name}.txt', encoding='utf-8')],
         )
-        # ---- 日志文件：子进程也写入同一个 logs/{run_id}.txt ----
-        _run_id = self.context.get('mlflow_run_id', '') if isinstance(self.context, dict) else ''
-        if _run_id:
-            os.makedirs('logs', exist_ok=True)
-            logging.getLogger().addHandler(logging.FileHandler(f'logs/{_run_id}.txt', encoding='utf-8'))
         logging.info('SourceNode started.')
         current_context: Any = self.context
         day_index = 0
