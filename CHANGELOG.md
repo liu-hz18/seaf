@@ -1133,6 +1133,40 @@ with warnings.catch_warnings():
 
 `test/crossval_helpers.py` + 5 个 crossval 测试文件中 13 处 `groupby('name')` → `groupby('code')`
 
+---
+
+## [Feat] 2026-06-15 MLP 抗过拟合增强 — ResMLP 残差块 + Kaiming 初始化 + Gradient Clipping + 噪声注入
+
+### 背景
+
+新增 precision 因子后 MLP 样本外 IC 下降，诊断原因为过拟合/噪声敏感。
+实施四项经典抗过拟合改进。
+
+### 改进内容
+
+| # | 改进 | 实现 | 机制 |
+|---|------|------|------|
+| 1 | **Residual Blocks** | `_ResidualMLP` 类：Pre-Norm (LayerNorm→Linear→ReLU→Dropout) + skip connection | 缓解梯度消失，允许更深网络；残差路径提供恒等快捷方式，模型可以自动学习跳过噪声层 |
+| 2 | **Kaiming 初始化** | `kaiming_normal_(mode='fan_in', nonlinearity='relu')` + 零偏置 | 适配 ReLU 的方差保持，初始梯度不会爆炸/消失 |
+| 3 | **Gradient Clipping** | `clip_grad_norm_(max_norm=5.0)` 在 `backward()` 后执行 | 限制单步梯度范数上限，防止异常样本（离群值/错误标签）导致参数剧烈震荡 |
+| 4 | **输入噪声正则化** | 每 batch 训练输入叠加 `N(0, 0.01²)` 噪声 | 等价于岭正则化的数据增强形式；期望上 `E[x+ε] = x`，方差上增加了模型的局部平滑性 |
+
+### 架构变更
+
+```
+旧: Linear → LayerNorm → ReLU → Dropout → ... → Linear(1)       (Sequential)
+新: input_proj → [LayerNorm → Linear → ReLU → Dropout → +skip] × N → head (Residual MLP)
+```
+
+### 预期效果
+
+- 残差连接：深网络（4-6 层）的梯度传播改善 → 训练稳定
+- 噪声注入 + clipping：模型学习到更平滑的决策边界 → 泛化 IC 提升
+
+### 影响范围
+
+仅 `MLPWrapper._build_network` 和 `_train_epochs`。LGBM / Ridge 不受影响。
+
 ### 验证
 
 - ruff: All checks passed

@@ -243,8 +243,104 @@ class RidgeWrapper(_SklearnWrapper):
 # =============================================================================
 
 
+class _ResidualMLP:
+    """残差 MLP：Pre-Norm Transformer 风格的残差块。
+
+    LayerNorm → Linear → ReLU → Dropout → +skip (若 dim 对齐)
+    残差连接允许训练更深的网络，缓解梯度消失。
+    """
+
+    def __init__(
+        self, nn: Any, input_dim: int, hidden: list[int],
+        dropout: float, device: Any,
+    ) -> None:
+        self.nn = nn
+        self.device = device
+        self.dropout_rate = dropout
+
+        self.input_proj = nn.Linear(input_dim, hidden[0]) if hidden else None
+        self.blocks: list[dict[str, Any]] = []
+        prev = hidden[0] if hidden else input_dim
+
+        for i, h in enumerate(hidden):
+            block: dict[str, Any] = {
+                'norm1': nn.LayerNorm(prev),
+                'lin1': nn.Linear(prev, h),
+                'dropout': nn.Dropout(dropout),
+            }
+            # 若维度变化，使用投影对齐残差
+            if prev != h:
+                block['proj'] = nn.Linear(prev, h)
+            # Kaiming 初始化
+            nn.init.kaiming_normal_(block['lin1'].weight, mode='fan_in', nonlinearity='relu')
+            nn.init.zeros_(block['lin1'].bias)
+            self.blocks.append(block)
+            prev = h
+
+        self.head = nn.Linear(prev, 1)
+        nn.init.xavier_normal_(self.head.weight)
+        nn.init.zeros_(self.head.bias)
+
+    def to(self, device: Any) -> '_ResidualMLP':
+        self.device = device
+        if self.input_proj is not None:
+            self.input_proj = self.input_proj.to(device)
+        for b in self.blocks:
+            b['norm1'] = b['norm1'].to(device)
+            b['lin1'] = b['lin1'].to(device)
+            b['dropout'] = b['dropout'].to(device)
+            if 'proj' in b:
+                b['proj'] = b['proj'].to(device)
+        self.head = self.head.to(device)
+        return self
+
+    def forward(self, x: Any) -> Any:
+        F = self.nn.functional
+        if self.input_proj is not None:
+            x = F.relu(self.input_proj(x))
+
+        for b in self.blocks:
+            residual = x
+            x = b['norm1'](x)
+            x = b['lin1'](x)
+            x = F.relu(x)
+            x = b['dropout'](x)
+            # 残差连接
+            if 'proj' in b:
+                residual = b['proj'](residual)
+            if x.shape[-1] == residual.shape[-1]:
+                x = x + residual
+
+        return self.head(x)
+
+    def state_dict(self) -> dict[str, Any]:
+        sd: dict[str, Any] = {}
+        if self.input_proj is not None:
+            sd['input_proj'] = self.input_proj.state_dict()
+        for i, b in enumerate(self.blocks):
+            sd[f'block_{i}'] = {k: v.state_dict() for k, v in b.items() if hasattr(v, 'state_dict')}
+        sd['head'] = self.head.state_dict()
+        return sd
+
+    def load_state_dict(self, sd: dict[str, Any]) -> None:
+        if self.input_proj is not None and 'input_proj' in sd:
+            self.input_proj.load_state_dict(sd['input_proj'])
+        for i, b in enumerate(self.blocks):
+            if f'block_{i}' in sd:
+                for k, v in b.items():
+                    if hasattr(v, 'state_dict') and k in sd[f'block_{i}']:
+                        v.load_state_dict(sd[f'block_{i}'][k])
+        self.head.load_state_dict(sd['head'])
+
+    def train(self) -> None:
+        pass
+
+    def eval(self) -> None:
+        pass
+
+
 class MLPWrapper(BaseWrapper):
-    """PyTorch MLP：Linear→LayerNorm→ReLU→Dropout + Adam + weight_decay。
+    """PyTorch ResMLP：Pre-Norm 残差块 + Adam + weight_decay + gradient clipping + noise injection。
     支持 MSE / Pearson IC 损失切换，early stopping 方向自动适配。
     """
 
@@ -283,12 +379,23 @@ class MLPWrapper(BaseWrapper):
 
     # ---- 网络构建 ----
 
-    def _build_network(self, input_dim: int) -> Any:
+    def _build_network(self, input_dim: int, use_residual: bool = True) -> Any:
         nn = self._torch.nn
+        init = self._torch.nn.init
+
+        if use_residual:
+            return _ResidualMLP(
+                nn, input_dim, self._hidden_layers, self._dropout, self._device,
+            )
+
+        # fallback：简单 MLP（无残差连接）
         layers: list[Any] = []
         prev = input_dim
         for h in self._hidden_layers:
-            layers.append(nn.Linear(prev, h))
+            linear = nn.Linear(prev, h)
+            init.kaiming_normal_(linear.weight, mode='fan_in', nonlinearity='relu')
+            init.zeros_(linear.bias)
+            layers.append(linear)
             layers.append(nn.LayerNorm(h))
             layers.append(nn.ReLU())
             layers.append(nn.Dropout(self._dropout))
@@ -330,6 +437,7 @@ class MLPWrapper(BaseWrapper):
 
         n = len(X_t)
         epoch_losses: list[dict] = []
+        noise_std: float = 0.01  # 输入噪声正则化
 
         # early stopping 方向适配（IC = higher better → 取反存储为 loss）
         best_loss = float('inf')
@@ -342,10 +450,13 @@ class MLPWrapper(BaseWrapper):
             total_loss = 0.0
             for i in range(0, n, self._batch_size):
                 idx = perm[i : i + self._batch_size]
-                pred = model(X_t[idx])
+                # 输入噪声注入：小方差高斯噪声，等价于岭正则化
+                x_batch = X_t[idx] + torch.randn_like(X_t[idx]) * noise_std
+                pred = model(x_batch)
                 loss = loss_fn(pred, y_t[idx])
                 optimizer.zero_grad()
                 loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
                 optimizer.step()
                 total_loss += loss.item() * len(idx)
 
