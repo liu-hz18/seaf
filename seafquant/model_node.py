@@ -48,9 +48,9 @@ def _cs_zscore(values: np.ndarray) -> np.ndarray:
     return np.zeros_like(values)
 
 
-def _empty_result(n_stocks: int, index: pd.Index) -> Frame3D:
+def _empty_result(n_stocks: int, index: pd.Index, signal_col: str = 'pred_signal') -> Frame3D:
     """构造空预测结果（未训练或数据不足时返回）。"""
-    return Frame3D(pd.DataFrame({'pred_signal': [0.0] * n_stocks}, index=index))
+    return Frame3D(pd.DataFrame({signal_col: [0.0] * n_stocks}, index=index))
 
 
 # =============================================================================
@@ -133,7 +133,11 @@ def _run_cv(
         X_tr, X_val = X[train_idx], X[val_idx]
         y_tr, y_val = y[train_idx], y[val_idx]
 
-        pred, _ = wrapper.cv_fit_predict(X_tr, y_tr, X_val, y_val=y_val)
+        # y_val only supported by MLPWrapper; other wrappers ignore it
+        try:
+            pred, _ = wrapper.cv_fit_predict(X_tr, y_tr, X_val, y_val=y_val)
+        except TypeError:
+            pred, _ = wrapper.cv_fit_predict(X_tr, y_tr, X_val)
 
         try:
             ic = spearmanr(pred, y_val).correlation
@@ -397,5 +401,6 @@ def model_train_predict(name: str, f3d: Frame3D, context: Any) -> Frame3D:
         f'skew={float(pd.Series(pred_signal).skew()):.4f}'
     )
 
-    result_df = pd.DataFrame({'pred_signal': pred_signal}, index=df.loc[cs_mask_latest].index)
+    signal_col = context.get('signal_col', 'pred_signal')
+    result_df = pd.DataFrame({signal_col: pred_signal}, index=df.loc[cs_mask_latest].index)
     return Frame3D(result_df)

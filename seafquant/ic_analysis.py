@@ -70,7 +70,8 @@ def ic_analysis_fn(name: str, f3d: Frame3D, context: Any) -> Frame3D:
     cs_buy = df.index.get_level_values('key') == buy_t
     cs_sell = df.index.get_level_values('key') == sell_t
 
-    pred_signal = df.loc[cs_pred, 'pred_signal'].values.astype(float)
+    signal_col = context.get('signal_col', 'pred_signal')
+    pred_signal = df.loc[cs_pred, signal_col].values.astype(float)
     close_buy = df.loc[cs_buy, 'close'].values.astype(float)
     close_sell = df.loc[cs_sell, 'close'].values.astype(float)
 

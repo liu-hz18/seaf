@@ -236,7 +236,7 @@ class TestGetCsSeries:
         s = f3d.get_cs_series('col_d', time_key=0)
         assert isinstance(s, pd.Series)
         assert len(s) == 3  # A, B, C
-        assert s.index.name == 'name'
+        assert s.index.name == 'code'
 
 
 class TestGetTsSeries:

@@ -273,7 +273,7 @@ class Frame3D:
     def get_ts_series(self, stock: str, col: str) -> pd.Series:
         """获取指定股票的时序 Series，index 为 time key。"""
         mask = self._df.index.get_level_values('code') == stock
-        return self._df.loc[mask, col].droplevel('name')
+        return self._df.loc[mask, col].droplevel('code')
 
     def add_column(self, name: str, values: pd.Series | np.ndarray, cp: bool = True) -> Frame3D:
         """安全添加列，自动对齐索引。

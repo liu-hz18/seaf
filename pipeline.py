@@ -1,7 +1,7 @@
 """
 SEAF 量化回测框架主入口 — Pipeline 组装与执行。
 
-拓扑：1 source → 10 factor nodes → model → ic_analysis
+拓扑：1 source → 11 factor nodes → model(s) → ic(s) → [bagging] → strategy
 
 运行：python pipeline.py --noise-ratio 0.3 --n-times 1000 --n-stocks 500 --start-date 2020-01-02 --fwd 20
 """
@@ -19,6 +19,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from qpipe.flow import Flow
 from seafquant.data_generator import DataSourceCallable
+from seafquant.ensemble import ensemble_epilogue, ensemble_fn
 from seafquant.factors import (
     FACTOR_INPUT_COLUMNS,
     FACTOR_REGISTRY,
@@ -67,11 +68,15 @@ def main() -> None:
         help='Model training loss function (mse/ic)',
     )
     parser.add_argument('--use-residual', action='store_true', default=False, help='MLP block use residual block architecture')
+    parser.add_argument(
+        '--ensemble', nargs='+', default=None, choices=['lgbm', 'ridge', 'mlp'],
+        help='Ensemble model types (parallel training + bagging). Overrides --model-type.',
+    )
+
 
     args = parser.parse_args()
 
     # 窗口参数
-    # Model 节点独立于 Factor 节点：它接收的是因子输出（截面），需要独立的历史窗口来训练。
     fwd = args.fwd
     MODEL_WINDOW = args.model_window + fwd + 1
     MODEL_MIN_PERIODS = MODEL_WINDOW
@@ -85,7 +90,8 @@ def main() -> None:
 
         mlflow.set_tracking_uri('sqlite:///mlruns.db')
         mlflow.set_experiment(experiment_name)
-        run_name = f'{args.model_type}-w{args.model_window}-f{args.fwd}-{args.loss}-{args.start_date}-{experiment_name}'
+        model_label = '+'.join(args.ensemble)
+        run_name = f'{model_label}-w{args.model_window}-f{args.fwd}-{args.loss}-{args.start_date}-{experiment_name}'
         mlflow_run = mlflow.start_run(run_name=run_name)
         mlflow_run_id: str = mlflow_run.info.run_id
     else:
@@ -144,14 +150,14 @@ def main() -> None:
             log_level=args.log_level,
         )
 
-    # ===== 3. 模型训练预测节点 =====
+    model_types = args.ensemble
+    is_ensemble = len(model_types) > 1
+
+    # ===== 3. 模型训练预测节点（单个或并行多个） =====
     # Label: cs_zscore(ln(close[t+fwd]) - ln(close[t+1])) — (fwd-1)日截面对数超额收益
-    # t+1买入、t+fwd卖出，对齐实盘交易执行和IC指标
-    # model_context 显式列出所有可配置参数（与 model_node.setdefault 默认值对齐）
-    model_context = {
+    model_context_base = {
         'seed': args.seed,
         'mlflow_name': experiment_name,
-        'model_type': args.model_type,
         'fwd': fwd,
         'model_window': MODEL_WINDOW,
         'mlflow_run_id': mlflow_run_id,
@@ -159,47 +165,85 @@ def main() -> None:
         'precision': args.precision,
         'mlp_use_residual': args.use_residual,
         'loss': args.loss,
-        # 以下参数使用 model_node 默认值，此处仅为文档可读性显式列出
-        # 'retrain_every': 20,
     }
-    flow.add_node(
-        name='model',
-        func=model_train_predict,
-        input_from=[*factor_output_queues, 'q_close_to_model'],
-        output_to=['q_signal', 'q_signal_to_strategy'],
-        window=MODEL_WINDOW,
-        min_periods=MODEL_MIN_PERIODS,
-        # 排除原始 OHLCV 列：基建层在入队前删除，防止泄露到特征空间。
-        # close 保留用于 label 计算，model_node 内部会排除出特征列。
-        exclude_input_columns=['open', 'high', 'low', 'close_uq',
-                               'turnover', 'volume', 'market_cap'],
-        context=model_context,
-        snapshot_interval=args.snapshot_interval,
-        log_level=args.log_level,
-    )
+    all_signal_qs = []
+    all_signal_strat_qs = []
 
-    # ===== 4. IC 分析节点 =====
-    # IC：(fwd-1)日截面对数超额收益的 Spearman rank 相关系数
-    # 与 model 节点的 label 定义对齐（ln(close[t+fwd]) - ln(close[t+1])）
-    ic_context = {
-        'mlflow_name': experiment_name,
-        'fwd': fwd, 'num_groups': 10,
-        'mlflow_run_id': mlflow_run_id, 'start_date': args.start_date,
-        'precision': args.precision,
-    }
-    flow.add_node(
-        name='ic_analysis',
-        func=ic_analysis_fn,
-        input_from=['q_signal', 'q_close_to_ic'],
-        output_to=[],
-        window=IC_WINDOW,
-        min_periods=IC_MIN_PERIODS,
-        input_columns=['pred_signal', 'close'],
-        epilogue_fn=ic_epilogue,
-        context=ic_context,
-        snapshot_interval=args.snapshot_interval,
-        log_level=args.log_level,
-    )
+    for model_type in model_types:
+        signal_col = f'pred_signal_{model_type}' if is_ensemble else 'pred_signal'
+        mctx = model_context_base | {'model_type': model_type, 'signal_col': signal_col}
+        sq = f'q_signal_{model_type}'
+        ssq = f'q_signal_{model_type}_to_strategy'
+        all_signal_qs.append(sq)
+        all_signal_strat_qs.append(ssq)
+
+        flow.add_node(
+            name=f'model_{model_type}',
+            func=model_train_predict,
+            input_from=[*factor_output_queues, 'q_close_to_model'],
+            output_to=[sq, ssq],
+            window=MODEL_WINDOW,
+            min_periods=MODEL_MIN_PERIODS,
+            exclude_input_columns=['open','high','low','close_uq','turnover','volume','market_cap'],
+            context=mctx,
+            snapshot_interval=args.snapshot_interval,
+            log_level=args.log_level,
+        )
+
+        # 每个模型独立 IC
+        flow.add_node(
+            name=f'ic_{model_type}',
+            func=ic_analysis_fn,
+            input_from=[sq, 'q_close_to_ic'],
+            output_to=[],
+            window=IC_WINDOW,
+            min_periods=IC_MIN_PERIODS,
+            input_columns=[signal_col, 'close'],
+            epilogue_fn=ic_epilogue,
+            context={'mlflow_name':experiment_name,'fwd':fwd,'num_groups':10,
+                     'mlflow_run_id':mlflow_run_id,'start_date':args.start_date,
+                     'precision':args.precision,'name':f'ic_{model_type}',
+                     'signal_col':signal_col},
+            snapshot_interval=args.snapshot_interval,
+            log_level=args.log_level,
+        )
+    # ===== 4. Bagging 集成节点（多模型时启用） =====
+    if is_ensemble:
+        flow.add_node(
+            name='bagging',
+            func=ensemble_fn,
+            input_from=all_signal_qs,
+            output_to=['q_ensemble_signal', 'q_ensemble_signal_to_strategy'],
+            window=1,
+            min_periods=1,
+            epilogue_fn=ensemble_epilogue,
+            context={'mlflow_run_id': mlflow_run_id, 'mlflow_name': experiment_name,
+                     'precision': args.precision, 'start_date': args.start_date,
+                     'fwd': fwd},
+            snapshot_interval=args.snapshot_interval,
+            log_level=args.log_level,
+        )
+
+        # Ensemble IC 分析
+        flow.add_node(
+            name='ic_bagging',
+            func=ic_analysis_fn,
+            input_from=['q_ensemble_signal', 'q_close_to_ic'],
+            output_to=[],
+            window=IC_WINDOW,
+            min_periods=IC_MIN_PERIODS,
+            input_columns=[signal_col, 'close'],
+            epilogue_fn=ic_epilogue,
+            context={'mlflow_name':experiment_name,'fwd':fwd,'num_groups':10,
+                     'mlflow_run_id':mlflow_run_id,'start_date':args.start_date,
+                     'precision':args.precision,'name':'ic_bagging'},
+            snapshot_interval=args.snapshot_interval,
+            log_level=args.log_level,
+        )
+
+        strategy_signal_queue = 'q_ensemble_signal_to_strategy'
+    else:
+        strategy_signal_queue = all_signal_strat_qs[0]
 
     # ===== 5. 策略绩效节点 =====
     strategy_context = {
@@ -214,7 +258,7 @@ def main() -> None:
     flow.add_node(
         name='strategy',
         func=strategy_fn,
-        input_from=['q_signal_to_strategy', 'q_close_to_strategy'],
+        input_from=[strategy_signal_queue, 'q_close_to_strategy'],
         output_to=[],
         window=2,
         min_periods=2,
@@ -251,7 +295,7 @@ def main() -> None:
         f'noise_ratio={args.noise_ratio}, seed={args.seed}, start_date={args.start_date}, '
         f'fwd={fwd}, model_type={args.model_type}'
     )
-    logging.info(f'Topology: 1 source -> {len(factor_nodes)} factor nodes -> model -> ic_analysis + strategy')
+    logging.info(f'Topology: 1 source -> {len(factor_nodes)} factor nodes -> {"+".join(model_types)} model(s) -> {"bagging+" if is_ensemble else ""}ic_analysis + strategy')
     logging.info(f'Model window={MODEL_WINDOW}, IC window={IC_WINDOW}')
     factor_window_summary = ', '.join(
         f'{k}={v["window"]}' for k, v in sorted(FACTOR_WINDOWS.items())

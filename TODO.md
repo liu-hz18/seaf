@@ -577,4 +577,7 @@ mlp(precision=6) > lgbm(precision=6) > mlp(precision=2) > lgbm(precision=2)
 如何解决？价格节点里增加一个 有效数字 的因子？引入 vwap 数据作为价格特征？将价格的舍入机制对齐到训练环节？
 你可以编写一个类似的脚本，通过大量模拟的数据和加入适当噪音的标签，进行 lgbm 和 mlp 的大规模训练，验证数据集数值精度对测试集效果的影响，并结合多种可能的解决方案缓解这种现象。你的研究和解决方案应该先在独立的脚本中进行充分完备的验证，验证有效后再我们的多进程流式数据框架中落实。
 
+pipeline 的数据流中增加 ensemble (bagging) 功能，由 pipeline.py 的 argparse 提供一个 list type 的参数，list 中的每个成员是 ['lgbm', 'ridge', 'mlp'] 中的一种。根据这个参数列表的设置，会有 并行的 len(list) 种model 节点，他们的输入是一致的，输出连接到每个model特定的 ic_analysis 节点，用于记录每个模型节点输出信号的IC. 多个 model 的输出还会汇集到 bagging 节点，由 bagging 对各个模型的截面信号进行等权融合后输出最终信号；bagging节点的输出接入到 strategy 节点用于选股策略，还会接入到一个 ic_analysis 节点进行融合信号的IC分析。所以，实际上你需要完成的任务主要有如下：1. 引入新的argparse参数，扩展数据流到多个并行的 model 节点，以及配置每个 model 节点下游的 ic 节点；2. 将多个 model 节点输出的信号都输出到 bagging 节点，bagging 节点内部对多源模型的信号输入进行等权融合，作为最终信号；3. bagging 节点的输出信号接入到目前的 strategy 节点，作为选股策略的驱动信号；4. 从单一模块和全流程的角度，编写完备的单元测试测试上述改动的逻辑正确性和计算正确性、功能正确性。请掌握我们多进程流式数据框架的大局，理清目前节点之间的拓扑关系和基本职责，形成迭代方案并进行迭代。要求迭代保持可扩展性、代码整洁性和低耦合度，方便团队和后续继续深入迭代。
 
+1. 当 pipeline.py 中 is_ensemble =False 的时候，strategy 节点的输入来自 第0个model，但是此时 第0个model的输出 pred_signal 是带有 model_type 后缀的，但是 strategy 节点读取的是 pred_signal 列属性。所以对于没有 ensemble 的情况，我们现在的数据流水线应该兼容这种情况。
+2. 编写完备的测试脚本，确保多个模型节点-> 多个ic节点，多个模型节点 -> ensemble 节点，ensemble 节点 -> ic 节点，ensemble 节点 -> strategy 节点的数据传递和数据接收是符合预期的，逻辑是正确的。

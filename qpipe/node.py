@@ -119,7 +119,8 @@ class MultiInputNode(mp.Process):
             if len(sig.parameters) >= 3:
                 return self.func(name, f3d, ctx)
             return self.func(name, f3d)
-        except TypeError:
+        except TypeError as e:
+            logging.warning(f"Exception: {e}")
             return self.func(name, f3d, ctx)
 
     def receive_worker(

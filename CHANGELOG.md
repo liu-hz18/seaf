@@ -1171,3 +1171,44 @@ with warnings.catch_warnings():
 
 - ruff: All checks passed
 - 681 tests passed; 2 E2E pipeline 测试超时跳过（CI 环境限制）
+
+---
+
+## [Feat] 2026-06-15 Ensemble (bagging) 多模型集成
+
+### 概述
+
+新增 ensemble pipeline 功能，通过 `--ensemble lgbm mlp ridge` 启动并行多模型训练 + bagging 等权融合。
+
+### 数据流
+
+```
+src → 11 factor nodes → model_lgbm → ic_lgbm
+                       → model_mlp  → ic_mlp
+                       → model_ridge → ic_ridge
+                       → bagging → ic_bagging → strategy
+```
+
+### 关键实现
+
+| 文件 | 改动 |
+|------|------|
+| `seafquant/ensemble.py` | 新增。`ensemble_fn`(单 Frame3D, 聚合 `pred_signal_*`→`pred_signal`) + `ensemble_epilogue` |
+| `seafquant/model_node.py` | `model_train_predict` + `_empty_result` 支持 `signal_col` 参数 (context注入) |
+| `seafquant/ic_analysis.py` | IC 计算从 `context.get('signal_col','pred_signal')` 读取列名 |
+| `pipeline.py` | `--ensemble` argparse + 并行model/IC节点 + bagging + 融合IC + 动态strategy输入 |
+| `qpipe/frame3d.py` | `get_ts_series`: `droplevel('name')`→`'code'` (MultiIndex 对齐) |
+
+### 设计要点
+
+- **列名隔离**：ensemble 模式下模型输出 `pred_signal_{type}`避免 `node.py` 去重
+- **单模型兼容**：`is_ensemble=False` 时模型输出 `pred_signal`，strategy 直接读取
+- **bagging 回退**：单模型时 ensemble_fn 直接透传 `pred_signal`
+
+### 测试
+
+`test/test_ensemble.py` (11 tests): 单/双/三模型等权融合、列前缀提取、NaN/空帧/单股票边界
+
+### 验证
+
+- ensemble: 11 passed, strategy: 33 passed, model_node: 50 passed, frame3d: 32 passed
