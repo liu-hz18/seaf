@@ -320,9 +320,10 @@ class _ResidualMLP:
             x = self.input_proj(x)
 
         for b in self.blocks:
-            residual = x
+            # 若维度变化，先投影输入对齐当前 block
             if b['proj'] is not None:
-                residual = b['proj'](residual)
+                x = b['proj'](x)
+            residual = x
 
             h = b['norm'](x)
             h = b['ffn1'](h)
