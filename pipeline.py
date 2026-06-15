@@ -38,7 +38,6 @@ def main() -> None:
     parser.add_argument('--n-stocks', type=int, default=500)
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--start-date', type=str, default='2020-01-02')
-    parser.add_argument('--model-type', type=str, default='lgbm', choices=['lgbm', 'ridge', 'mlp'])
     parser.add_argument(
         '--fwd',
         type=int,
@@ -69,8 +68,8 @@ def main() -> None:
     )
     parser.add_argument('--use-residual', action='store_true', default=False, help='MLP block use residual block architecture')
     parser.add_argument(
-        '--ensemble', nargs='+', default=None, choices=['lgbm', 'ridge', 'mlp'],
-        help='Ensemble model types (parallel training + bagging). Overrides --model-type.',
+        '--ensemble', nargs='+', default=['lgbm'], choices=['lgbm', 'ridge', 'mlp'],
+        help='Model types: single (--ensemble lgbm) or bagging (--ensemble lgbm mlp)',
     )
 
 
