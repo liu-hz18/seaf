@@ -21,9 +21,7 @@ import argparse
 import logging
 import sys
 import time
-from dataclasses import dataclass, field
-from itertools import product
-from typing import Any
+from dataclasses import dataclass
 
 import numpy as np
 from scipy.stats import pearsonr, spearmanr
@@ -147,15 +145,15 @@ def compute_factors(
       'all'           — 以上所有
     """
     price_raw = data['price']
-    o, h, l = data['open'], data['high'], data['low']
+    o, h, lo = data['open'], data['high'], data['low']
     vol, to = data['volume'], data['turnover']
     n_times_full, n_stocks = price_raw.shape
 
     # 舍入价格
     price = np.round(price_raw, precision)
-    o_r = np.round(o, precision)
+    _ = np.round(o, precision)
     h_r = np.round(h, precision)
-    l_r = np.round(l, precision)
+    l_r = np.round(lo, precision)
 
     fwd = 20
     n_times = n_times_full - fwd
@@ -239,9 +237,7 @@ def compute_factors(
     # 截面标准化
     X = _cs_zscore(X, axis=1)
     # 填充 NaN
-    X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
-
-    return X
+    return np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -250,7 +246,7 @@ def compute_factors(
 
 
 def _lgbm_fit_predict(
-    X_train: np.ndarray, y_train: np.ndarray, X_test: np.ndarray,
+    x_train: np.ndarray, y_train: np.ndarray, x_test: np.ndarray,
 ) -> np.ndarray:
     import lightgbm as lgb
     model = lgb.LGBMRegressor(
@@ -258,18 +254,18 @@ def _lgbm_fit_predict(
         learning_rate=0.05, verbose=-1, random_state=42,
         force_col_wise=True,
     )
-    model.fit(X_train, y_train)
-    return model.predict(X_test)
+    model.fit(x_train, y_train)
+    return model.predict(x_test)
 
 
 def _mlp_fit_predict(
-    X_train: np.ndarray, y_train: np.ndarray, X_test: np.ndarray,
+    x_train: np.ndarray, y_train: np.ndarray, x_test: np.ndarray,
 ) -> np.ndarray:
     import torch
     torch.manual_seed(42)
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    n_feats = X_train.shape[1]
+    n_feats = x_train.shape[1]
 
     model = torch.nn.Sequential(
         torch.nn.Linear(n_feats, 128),
@@ -286,7 +282,7 @@ def _mlp_fit_predict(
         torch.nn.Linear(32, 1),
     ).to(device)
 
-    X_train_t = torch.tensor(X_train, dtype=torch.float32, device=device)
+    X_train_t = torch.tensor(x_train, dtype=torch.float32, device=device)
     y_train_t = torch.tensor(y_train.reshape(-1, 1), dtype=torch.float32, device=device)
 
     optim = torch.optim.AdamW(model.parameters(), lr=0.005, weight_decay=1e-3)
@@ -300,10 +296,9 @@ def _mlp_fit_predict(
         optim.step()
 
     model.eval()
-    X_test_t = torch.tensor(X_test, dtype=torch.float32, device=device)
+    X_test_t = torch.tensor(x_test, dtype=torch.float32, device=device)
     with torch.no_grad():
-        pred = model(X_test_t).cpu().numpy().ravel()
-    return pred
+        return model(X_test_t).cpu().numpy().ravel()
 
 
 @dataclass
