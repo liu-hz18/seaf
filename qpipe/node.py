@@ -120,7 +120,7 @@ class MultiInputNode(mp.Process):
                 return self.func(name, f3d, ctx)
             return self.func(name, f3d)
         except TypeError:
-            return self.func(name, f3d)
+            return self.func(name, f3d, ctx)
 
     def receive_worker(
         self,

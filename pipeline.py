@@ -66,6 +66,8 @@ def main() -> None:
         '--loss', type=str, default='mse', choices=['mse', 'ic'],
         help='Model training loss function (mse/ic)',
     )
+    parser.add_argument('--use-residual', action='store_true', default=False, help='MLP block use residual block architecture')
+
     args = parser.parse_args()
 
     # 窗口参数
@@ -155,6 +157,7 @@ def main() -> None:
         'mlflow_run_id': mlflow_run_id,
         'start_date': args.start_date,
         'precision': args.precision,
+        'mlp_use_residual': args.use_residual,
         'loss': args.loss,
         # 以下参数使用 model_node 默认值，此处仅为文档可读性显式列出
         # 'retrain_every': 20,

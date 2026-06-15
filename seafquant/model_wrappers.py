@@ -254,7 +254,7 @@ class _ResidualMLP:
     - GELU：平滑激活，梯度处处非零，适合 IC 损失
     - Pre-Norm：层归一化在前，稳定深层训练
     """
-
+    import torch
     EXPANSION: int = 4  # FFN 膨胀比
 
     def __init__(
@@ -311,6 +311,9 @@ class _ResidualMLP:
         self.head = self.head.to(device)
         return self
 
+    def __call__(self, x: Any) -> Any:
+        return self.forward(x)
+
     def forward(self, x: Any) -> Any:
         F = self.nn.functional
         if self.input_proj is not None:
@@ -353,7 +356,6 @@ class _ResidualMLP:
 
     def parameters(self):
         """收集所有可训练参数，供 optimizer 使用。"""
-        import torch
         params = list(self.head.parameters())
         if self.input_proj is not None:
             params.extend(self.input_proj.parameters())
