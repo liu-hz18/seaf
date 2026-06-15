@@ -292,7 +292,7 @@ def main() -> None:
     logging.info(
         f'SEAF Pipeline: n_times={args.n_times}, n_stocks={args.n_stocks}, '
         f'noise_ratio={args.noise_ratio}, seed={args.seed}, start_date={args.start_date}, '
-        f'fwd={fwd}, model_type={args.model_type}'
+        f'fwd={fwd}, model ensemble={args.ensemble}'
     )
     logging.info(f'Topology: 1 source -> {len(factor_nodes)} factor nodes -> {"+".join(model_types)} model(s) -> {"bagging+" if is_ensemble else ""}ic_analysis + strategy')
     logging.info(f'Model window={MODEL_WINDOW}, IC window={IC_WINDOW}')
