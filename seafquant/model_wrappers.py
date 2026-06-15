@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import copy
 import logging
 import warnings
 from abc import ABC, abstractmethod
@@ -508,7 +509,7 @@ class MLPWrapper(BaseWrapper):
                 improved = val_loss < best_loss
                 if improved:
                     best_loss = val_loss
-                    best_state = {k: v.clone() for k, v in model.state_dict().items()}
+                    best_state = copy.deepcopy(model.state_dict())
                     best_epoch = ep
                     patience_counter = 0
                 else:
