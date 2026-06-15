@@ -244,52 +244,69 @@ class RidgeWrapper(_SklearnWrapper):
 
 
 class _ResidualMLP:
-    """残差 MLP：Pre-Norm Transformer 风格的残差块。
+    """残差 MLP — Transformer Feed-Forward 风格。
 
-    LayerNorm → Linear → ReLU → Dropout → +skip (若 dim 对齐)
-    残差连接允许训练更深的网络，缓解梯度消失。
+    每块结构 (Pre-Norm):
+      LayerNorm → Linear(d→4d) → GELU → Linear(4d→d) → Dropout → +skip
+
+    特点：
+    - 两线性层：先膨胀 4× 再投影回原维度，残差始终对齐
+    - GELU：平滑激活，梯度处处非零，适合 IC 损失
+    - Pre-Norm：层归一化在前，稳定深层训练
     """
 
+    EXPANSION: int = 4  # FFN 膨胀比
+
     def __init__(
-        self, nn: Any, input_dim: int, hidden: list[int],
+        self, nn: Any, input_dim: int, hidden_dims: list[int],
         dropout: float, device: Any,
     ) -> None:
         self.nn = nn
-        self.device = device
-        self.dropout_rate = dropout
 
-        self.input_proj = nn.Linear(input_dim, hidden[0]) if hidden else None
+        # 输入投影 → 首个隐藏维度
+        d_model = hidden_dims[0] if hidden_dims else input_dim
+        self.input_proj = nn.Linear(input_dim, d_model) if input_dim != d_model else None
         self.blocks: list[dict[str, Any]] = []
-        prev = hidden[0] if hidden else input_dim
 
-        for i, h in enumerate(hidden):
+        for d in hidden_dims:
+            # 若维度变化，用投影层对齐
+            proj = None
+            if d_model != d:
+                proj = nn.Linear(d_model, d)
+                nn.init.xavier_normal_(proj.weight)
+                nn.init.zeros_(proj.bias)
+
+            d_expanded = d * self.EXPANSION
             block: dict[str, Any] = {
-                'norm1': nn.LayerNorm(prev),
-                'lin1': nn.Linear(prev, h),
+                'norm': nn.LayerNorm(d),
+                'ffn1': nn.Linear(d, d_expanded),
+                'ffn2': nn.Linear(d_expanded, d),
                 'dropout': nn.Dropout(dropout),
+                'proj': proj,
             }
-            # 若维度变化，使用投影对齐残差
-            if prev != h:
-                block['proj'] = nn.Linear(prev, h)
-            # Kaiming 初始化
-            nn.init.kaiming_normal_(block['lin1'].weight, mode='fan_in', nonlinearity='relu')
-            nn.init.zeros_(block['lin1'].bias)
-            self.blocks.append(block)
-            prev = h
+            nn.init.kaiming_normal_(block['ffn1'].weight, mode='fan_in', nonlinearity='relu')
+            nn.init.zeros_(block['ffn1'].bias)
+            nn.init.kaiming_normal_(block['ffn2'].weight, mode='fan_in', nonlinearity='relu')
+            nn.init.zeros_(block['ffn2'].bias)
 
-        self.head = nn.Linear(prev, 1)
+            self.blocks.append(block)
+            d_model = d
+
+        self.head = nn.Linear(d_model, 1)
         nn.init.xavier_normal_(self.head.weight)
         nn.init.zeros_(self.head.bias)
 
+        self.to(device)
+
     def to(self, device: Any) -> '_ResidualMLP':
-        self.device = device
         if self.input_proj is not None:
             self.input_proj = self.input_proj.to(device)
         for b in self.blocks:
-            b['norm1'] = b['norm1'].to(device)
-            b['lin1'] = b['lin1'].to(device)
+            b['norm'] = b['norm'].to(device)
+            b['ffn1'] = b['ffn1'].to(device)
+            b['ffn2'] = b['ffn2'].to(device)
             b['dropout'] = b['dropout'].to(device)
-            if 'proj' in b:
+            if b['proj'] is not None:
                 b['proj'] = b['proj'].to(device)
         self.head = self.head.to(device)
         return self
@@ -297,19 +314,19 @@ class _ResidualMLP:
     def forward(self, x: Any) -> Any:
         F = self.nn.functional
         if self.input_proj is not None:
-            x = F.relu(self.input_proj(x))
+            x = F.gelu(self.input_proj(x))
 
         for b in self.blocks:
             residual = x
-            x = b['norm1'](x)
-            x = b['lin1'](x)
-            x = F.relu(x)
-            x = b['dropout'](x)
-            # 残差连接
-            if 'proj' in b:
+            if b['proj'] is not None:
                 residual = b['proj'](residual)
-            if x.shape[-1] == residual.shape[-1]:
-                x = x + residual
+
+            h = b['norm'](x)
+            h = b['ffn1'](h)
+            h = F.gelu(h)
+            h = b['ffn2'](h)
+            h = b['dropout'](h)
+            x = residual + h
 
         return self.head(x)
 
@@ -318,7 +335,8 @@ class _ResidualMLP:
         if self.input_proj is not None:
             sd['input_proj'] = self.input_proj.state_dict()
         for i, b in enumerate(self.blocks):
-            sd[f'block_{i}'] = {k: v.state_dict() for k, v in b.items() if hasattr(v, 'state_dict')}
+            sd[f'block_{i}'] = {k: v.state_dict() for k, v in b.items()
+                               if hasattr(v, 'state_dict') and v is not None}
         sd['head'] = self.head.state_dict()
         return sd
 
@@ -326,10 +344,11 @@ class _ResidualMLP:
         if self.input_proj is not None and 'input_proj' in sd:
             self.input_proj.load_state_dict(sd['input_proj'])
         for i, b in enumerate(self.blocks):
-            if f'block_{i}' in sd:
+            key = f'block_{i}'
+            if key in sd:
                 for k, v in b.items():
-                    if hasattr(v, 'state_dict') and k in sd[f'block_{i}']:
-                        v.load_state_dict(sd[f'block_{i}'][k])
+                    if hasattr(v, 'state_dict') and v is not None and k in sd[key]:
+                        v.load_state_dict(sd[key][k])
         self.head.load_state_dict(sd['head'])
 
     def train(self) -> None:
@@ -361,7 +380,7 @@ class MLPWrapper(BaseWrapper):
         loss_name = context.get('loss', 'mse')
         self._loss: LossFunction = LOSS_REGISTRY.get(loss_name, MSELossFn())
 
-        self._hidden_layers: list[int] = context.get('mlp_hidden', [256, 128, 32])
+        self._hidden_layers: list[int] = context.get('mlp_hidden', [256, 256, 256, 32])
         self._dropout: float = context.get('mlp_dropout', 0.5)
         self._lr: float = context.get('mlp_lr', 1e-3)
         self._weight_decay: float = context.get('mlp_weight_decay', 1e-2)
