@@ -11,13 +11,13 @@ from seafquant.factor.cross_section import compute_cross_section_factors
 from seafquant.factor.interaction import compute_interaction_factors
 from seafquant.factor.liquidity import compute_liquidity_factors
 from seafquant.factor.momentum import compute_momentum_factors
+from seafquant.factor.precision import compute_precision_factors
 from seafquant.factor.quality_autocorr import compute_quality_autocorr_factors
 from seafquant.factor.quality_merged import compute_quality_merged_factors
 from seafquant.factor.quality_pattern import compute_quality_pattern_factors
 from seafquant.factor.trend import compute_trend_factors
 from seafquant.factor.value import compute_value_factors
 from seafquant.factor.volatility import compute_volatility_factors
-from seafquant.factor.precision import compute_precision_factors
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -79,7 +79,7 @@ FACTOR_INPUT_COLUMNS: dict[str, list[str]] = {
     'counting':         ['close', 'turnover'],
     'interaction':      ['close', 'high', 'low', 'volume', 'turnover', 'market_cap'],
     'cross_section':    ['close', 'volume'],
-    'precision':        ['close', 'open', 'high', 'low', 'volume'],
+    'precision':        ['close', 'high', 'low'],
 }
 
 FACTOR_PREFIXES: dict[str, str] = {

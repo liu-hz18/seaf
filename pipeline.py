@@ -68,9 +68,6 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    # ===== 因子节点注册（由 FACTOR_REGISTRY 派生，10 个并行节点） =====
-    factor_nodes = [(f'factor_{name}', func) for name, func in FACTOR_REGISTRY.items()]
-
     # 窗口参数
     # Model 节点独立于 Factor 节点：它接收的是因子输出（截面），需要独立的历史窗口来训练。
     fwd = args.fwd
@@ -103,6 +100,9 @@ def main() -> None:
     logging.info(f"args: {args}")
 
     flow = Flow(queue_maxsize=GLOBAL_MAX_FACTOR_WINDOW)
+
+    # ===== 因子节点注册（由 FACTOR_REGISTRY 派生） =====
+    factor_nodes = [(f'factor_{name}', func) for name, func in FACTOR_REGISTRY.items()]
 
     # ===== 1. 数据源节点 =====
     gen_callable = DataSourceCallable(

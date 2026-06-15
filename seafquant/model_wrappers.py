@@ -358,7 +358,7 @@ class MLPWrapper(BaseWrapper):
                     val_pred = model(X_val_t)
                     val_loss = loss_fn(val_pred, y_val_t).item()
                 model.train()
-
+                # TODO: best_epoch 应该取最高的三个epoch表现的中位数？
                 improved = val_loss < best_loss
                 if improved:
                     best_loss = val_loss

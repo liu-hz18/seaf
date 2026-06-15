@@ -167,20 +167,20 @@ def compute_factors(
         features.append(ret[:n_times])
         features.append(_cs_zscore(ret[:n_times]))
 
-    # 波动率
+    # 波动率（逐日 rolling std）
     for w in [20, 60]:
         log_ret = np.log(price[1:] / (price[:-1] + EPS) + 1)
         vol_feat = np.zeros((n_times, n_stocks))
         for i in range(w, n_times + 1):
-            vol_feat[i - w:i] = np.nanstd(log_ret[i - w:i], axis=0)
-        features.append(vol_feat[:n_times])
+            vol_feat[i - 1] = np.nanstd(log_ret[i - w:i], axis=0)
+        features.append(vol_feat)
 
-    # 成交量特征
+    # 成交量特征（当日量 / w日均量）
     for w in [20, 60]:
-        vol_ma = np.zeros((n_times, n_stocks))
+        vol_chg = np.zeros((n_times, n_stocks))
         for i in range(w, n_times + 1):
-            vol_ma[i - w:i] = np.nanmean(vol[i - w:i], axis=0)
-        vol_chg = vol[w:n_times + w] / (vol_ma[:n_times] + EPS)
+            ma = np.nanmean(vol[i - w:i], axis=0)
+            vol_chg[i - 1] = vol[i - 1] / (ma + EPS)
         features.append(vol_chg)
 
     # 换手率特征
@@ -229,9 +229,10 @@ def compute_factors(
             grad_1d[i - 1] = price[i] - price[i - 1]
         features.append(grad_1d)
         # 二阶梯度（加速度）
-        for i in range(2, n_times):
-            grad_2d = price[i] - 2 * price[i - 1] + price[i - 2]
-            features.append(grad_2d[1:n_times - 1])
+        grad_2d = np.zeros((n_times, n_stocks))
+        for i in range(2, n_times + 1):
+            grad_2d[i - 1] = price[i - 1] - 2 * price[i - 2] + price[i - 3]
+        features.append(grad_2d)
 
     # === 堆叠 + 标准化 ===
     X = np.stack(features, axis=-1)  # (n_times, n_stocks, n_feats)
@@ -339,7 +340,7 @@ def run_experiment(args: argparse.Namespace) -> list[Result]:
     n_times = n_times_full - fwd
 
     # 滚动训练测试
-    test_start = model_window + retrain_every
+    test_start = model_window
     n_rolls = (n_times - test_start) // retrain_every
 
     _log.info(f'Rolling test: {n_rolls} roll(s), '
@@ -460,7 +461,7 @@ def print_report(results: list[Result]) -> None:
               f'{r.mse:>10.4f} {r.train_time_s:>7.1f}s')
 
     print('-' * 95)
-    print('\n▸ 精度效应:')
+    print('\n> 精度效应:')
     for mt in ['lgbm', 'mlp']:
         base_6 = baseline.get(f'{mt}_p6_none')
         base_2 = baseline.get(f'{mt}_p2_none')
@@ -469,7 +470,7 @@ def print_report(results: list[Result]) -> None:
             print(f'  {mt}: precision=6→2, ΔIC={delta:+.4f} '
                   f'({base_6.ic_pearson:.4f} → {base_2.ic_pearson:.4f})')
 
-    print('\n▸ 缓解方案提升 (vs precision=2 baseline):')
+    print('\n> 缓解方案提升 (vs precision=2 baseline):')
     for mt in ['lgbm', 'mlp']:
         base_2 = baseline.get(f'{mt}_p2_none')
         if base_2 is None:
@@ -477,11 +478,11 @@ def print_report(results: list[Result]) -> None:
         for r in mitigated:
             if r.model_type == mt:
                 gain = r.ic_pearson - base_2.ic_pearson
-                marker = '✓' if gain > 0 else '✗'
+                marker = '+' if gain > 0 else '-'
                 print(f'  {mt}+{r.mitigation:<12s}: ΔIC={gain:+7.4f} {marker} '
                       f'(MSE={r.mse:.4f})')
 
-    print('\n▸ 最优组合:')
+    print('\n> 最优组合:')
     best = max(results, key=lambda r: r.ic_pearson)
     print(f'  {best.model_type}(p={best.precision}, {best.mitigation}) '
           f'IC={best.ic_pearson:.4f}')

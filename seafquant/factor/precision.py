@@ -1,5 +1,5 @@
 """
-精度相关因子 — 12 个因子：VWAP 均价 / 价格梯度 / 对数精度损失。
+精度相关因子 — 16 个因子：VWAP 均价 / 一阶动量梯度 / 多步长二阶加速度。
 
 设计意图：
 - VWAP：O/H/L/C 均值天然压制单价格舍入噪声，1/√3 方差缩减
@@ -22,8 +22,6 @@ def compute_precision_factors(name: str, f3d: Frame3D, context) -> Frame3D:
     close = f3d.df['close']
     high = f3d.df['high']
     low = f3d.df['low']
-    open_p = f3d.df['open']
-    volume = f3d.df['volume']
     df = result.df
 
     def _roll(src, dst, window, agg):
@@ -63,27 +61,24 @@ def compute_precision_factors(name: str, f3d: Frame3D, context) -> Frame3D:
             grad_smooth / df[f'_close_ma{w}'].replace(0, np.nan)
         )
 
-    # 二阶梯度（加速度）Δ²p[t] = p[t] - 2p[t-1] + p[t-2]
-    df['_grad2_raw'] = df.groupby('code')['close'].diff(2) - df.groupby('code')['_grad1'].shift(1)
-
-    for w in [5, 20]:
-        _roll('_grad2_raw', f'_grad2_ma{w}', w, 'mean')
-        _roll('close', f'_price_std{w}', w, 'std')
-        df[f'factor_grad_accel_{w}d'] = (
-            df[f'_grad2_ma{w}'] / df[f'_price_std{w}'].replace(0, np.nan)
+    # 二阶梯度（多步长加速度）
+    # stride=k: Δ²p_k[t] = p[t] - 2p[t-k] + p[t-2k]
+    # 小步长捕捉短期拐点，大步长过滤日间噪音、捕获趋势加速
+    accel_strides: list[int] = [1, 2, 5]
+    for stride in accel_strides:
+        df[f'_grad2_s{stride}'] = (
+            df.groupby('code')['close'].diff(2 * stride)
+            - df.groupby('code')['close'].diff(stride).shift(stride)
         )
-
-    # ===== 11-12: 对数精度损失 =====
-    # log(p) 与 log(round(p, 2)) 的差值 ≈ 舍入误差相对量级
-    # 这等价于度量 "价格变化是否大到足以跨越舍入阈值"
-    for p in [5, 20]:
-        log_p = np.log(close.replace(0, np.nan))
-        log_p_round = np.log(np.round(close, 2))
-        df[f'_log_diff_{p}'] = np.abs(log_p - log_p_round)
-        _roll(f'_log_diff_{p}', f'factor_prec_sig_loss_{p}d', p, 'mean')
+        for w in [5, 20]:
+            _roll(f'_grad2_s{stride}', f'_grad2_s{stride}_ma{w}', w, 'mean')
+            _roll('close', f'_price_std{w}', w, 'std')
+            df[f'factor_grad_accel_{w}d_s{stride}'] = (
+                df[f'_grad2_s{stride}_ma{w}'] / df[f'_price_std{w}'].replace(0, np.nan)
+            )
 
     # ==== 联合截面标准化 ====
-    factor_cols = [c for c in df.columns if c.startswith(('factor_vwap_', 'factor_grad_', 'factor_prec_'))]
+    factor_cols = [c for c in df.columns if c.startswith(('factor_vwap_', 'factor_grad_'))]
     result = result.cs_zscore_batch(factor_cols, cp=False)
 
     return Frame3D(result.df[factor_cols].copy())

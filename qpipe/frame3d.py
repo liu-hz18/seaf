@@ -245,16 +245,16 @@ class Frame3D:
                 mask = mask & (~np.any(np.isnan(X), axis=1))
             if mask.sum() < max(3, len(by) + 2):
                 with np.errstate(all='ignore'):
-                    m = np.nanmean(y) if np.any(~np.isnan(y)) else 0.0
-                return pd.Series(y - m, index=grp.index)
+                    m = float(np.nanmean(y)) if np.any(~np.isnan(y)) else 0.0
+                return pd.Series(y - m, index=grp.index)  # type: ignore[reportOperatorIssue]
             y_clean = y[mask]
             X_clean = X[mask]
             try:
                 beta = np.linalg.lstsq(X_clean, y_clean, rcond=None)[0]
                 y_pred = X @ beta
-                residual = y - y_pred
+                residual = y - y_pred  # type: ignore[reportOperatorIssue]
             except np.linalg.LinAlgError:
-                residual = y - np.nanmean(y)
+                residual = y - np.nanmean(y)  # type: ignore[reportOperatorIssue]
             return pd.Series(residual, index=grp.index)
 
         result = df.groupby('key', group_keys=False).apply(_ols_residual)
