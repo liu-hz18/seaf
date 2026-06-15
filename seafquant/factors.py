@@ -17,6 +17,7 @@ from seafquant.factor.quality_pattern import compute_quality_pattern_factors
 from seafquant.factor.trend import compute_trend_factors
 from seafquant.factor.value import compute_value_factors
 from seafquant.factor.volatility import compute_volatility_factors
+from seafquant.factor.precision import compute_precision_factors
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -35,6 +36,7 @@ FACTOR_REGISTRY: dict[str, Callable[[str, Frame3D, Any], Frame3D]] = {
     'counting': compute_counting_factors,
     'interaction': compute_interaction_factors,
     'cross_section': compute_cross_section_factors,
+    'precision': compute_precision_factors,
 }
 
 # 各因子节点的个性化窗口配置。
@@ -55,6 +57,8 @@ FACTOR_WINDOWS: dict[str, dict[str, int]] = {
     'counting':          {'window': 70, 'min_periods': 60},
     'interaction':       {'window': 70, 'min_periods': 60},
     'cross_section':     {'window': 70, 'min_periods': 60},
+    # max=60 模块（VWAP 最大滚动窗口 = 60）
+    'precision':         {'window': 70, 'min_periods': 60},
 }
 
 # 全局最大窗口（模型/IC 节点基于此计算）
@@ -75,6 +79,7 @@ FACTOR_INPUT_COLUMNS: dict[str, list[str]] = {
     'counting':         ['close', 'turnover'],
     'interaction':      ['close', 'high', 'low', 'volume', 'turnover', 'market_cap'],
     'cross_section':    ['close', 'volume'],
+    'precision':        ['close', 'open', 'high', 'low', 'volume'],
 }
 
 FACTOR_PREFIXES: dict[str, str] = {
@@ -89,6 +94,7 @@ FACTOR_PREFIXES: dict[str, str] = {
     'counting': 'factor_cnt',
     'interaction': 'factor_inter',
     'cross_section': 'factor_cs',
+    'precision': 'factor_prec',
 }
 
 
