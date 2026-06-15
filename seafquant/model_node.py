@@ -195,7 +195,7 @@ def _log_feature_importance(
             mlflow.set_tracking_uri('sqlite:///mlruns.db')
             mlflow.log_dict(
                 fi,
-                f'model/feature_importance_{model_type}_{step}.json',
+                f'{name}/feature_importance_{model_type}_{step}.json',
                 run_id=run_id,
             )
         except Exception:

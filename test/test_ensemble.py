@@ -14,8 +14,7 @@ import pandas as pd
 import pytest
 
 from qpipe.frame3d import Frame3D
-from seafquant.ensemble import ensemble_fn, ensemble_epilogue
-
+from seafquant.ensemble import ensemble_epilogue, ensemble_fn
 
 # =============================================================================
 # 助函数
