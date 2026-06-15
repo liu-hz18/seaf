@@ -82,7 +82,5 @@ def compute_interaction_factors(name: str, f3d: Frame3D, context) -> Frame3D:
     factor_cols = [c for c in result.df.columns if c.startswith('factor_inter_')]
     result = result.cs_zscore_batch(factor_cols, cp=False)
 
-    nan_counts = {col: result.df[col].isna().sum() for col in factor_cols}
-    logging.debug(f'[{name}] Interaction NaN counts: {nan_counts}')
-
+    logging.debug(f'Factor NaN: { {c: result.df[c].isna().sum() for c in factor_cols} }')
     return Frame3D(result.df[factor_cols].copy())

@@ -9,6 +9,8 @@
 
 from __future__ import annotations
 
+import logging
+
 import numpy as np
 
 from qpipe.frame3d import Frame3D
@@ -81,4 +83,5 @@ def compute_precision_factors(name: str, f3d: Frame3D, context) -> Frame3D:
     factor_cols = [c for c in df.columns if c.startswith(('factor_vwap_', 'factor_grad_'))]
     result = result.cs_zscore_batch(factor_cols, cp=False)
 
+    logging.debug(f'Factor NaN: { {c: result.df[c].isna().sum() for c in factor_cols} }')
     return Frame3D(result.df[factor_cols].copy())

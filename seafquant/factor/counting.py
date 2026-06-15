@@ -10,6 +10,8 @@ Turnover Rank Change：rank_chg ×2 = 2
 
 from __future__ import annotations
 
+import logging
+
 import numpy as np
 from numpy.lib.stride_tricks import sliding_window_view
 
@@ -207,4 +209,6 @@ def compute_counting_factors(name: str, f3d: Frame3D, context) -> Frame3D:
     # ===== 截面标准化 =====
     factor_cols = [c for c in result.df.columns if c.startswith('factor_cnt_')]
     result = result.cs_zscore_batch(factor_cols, cp=False)
+
+    logging.debug(f'Factor NaN: { {c: result.df[c].isna().sum() for c in factor_cols} }')
     return Frame3D(result.df[factor_cols].copy())

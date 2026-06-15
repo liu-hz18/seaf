@@ -192,7 +192,7 @@ class LGBMWrapper(_SklearnWrapper):
         from lightgbm import LGBMRegressor
 
         kwargs: dict[str, Any] = {
-            'n_estimators': context.get('lgbm_n_estimators', 10),
+            'n_estimators': context.get('lgbm_n_estimators', 100),
             'max_depth': context.get('lgbm_max_depth', 6),
             'num_leaves': context.get('lgbm_num_leaves', 31),
             'reg_alpha': context.get('lgbm_reg_alpha', 0.1),
@@ -266,15 +266,20 @@ class _ResidualMLP:
 
         # 输入投影 → 首个隐藏维度
         d_model = hidden_dims[0] if hidden_dims else input_dim
-        self.input_proj = nn.Linear(input_dim, d_model) if input_dim != d_model else None
-        self.blocks: list[dict[str, Any]] = []
+        if input_dim != d_model:
+            self.input_proj = nn.Linear(input_dim, d_model)
+            nn.init.kaiming_normal_(self.input_proj.weight, mode='fan_in', nonlinearity='relu')
+            nn.init.zeros_(self.input_proj.bias)
+        else:
+            self.input_proj = None
 
+        self.blocks: list[dict[str, Any]] = []
         for d in hidden_dims:
             # 若维度变化，用投影层对齐
             proj = None
             if d_model != d:
                 proj = nn.Linear(d_model, d)
-                nn.init.xavier_normal_(proj.weight)
+                nn.init.kaiming_normal_(proj.weight, mode='fan_in', nonlinearity='relu')
                 nn.init.zeros_(proj.bias)
 
             d_expanded = d * self.EXPANSION
@@ -293,9 +298,22 @@ class _ResidualMLP:
             self.blocks.append(block)
             d_model = d
 
-        self.head = nn.Linear(d_model, 1)
-        nn.init.xavier_normal_(self.head.weight)
-        nn.init.zeros_(self.head.bias)
+        head_layers: list[Any] = [
+            nn.Linear(d_model, max(d_model // 2, 1)),
+            nn.LayerNorm(d_model // 2),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(max(d_model // 2, 1), max(d_model // 4, 1)),
+            nn.LayerNorm(d_model // 4),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(max(d_model // 4, 1), 1),
+        ]
+        for m in head_layers:
+            if isinstance(m, nn.Linear):
+                nn.init.kaiming_normal_(m.weight, mode='fan_in', nonlinearity='relu')
+                nn.init.zeros_(m.bias)
+        self.head = nn.Sequential(*head_layers)
 
         self.to(device)
 
@@ -400,7 +418,7 @@ class MLPWrapper(BaseWrapper):
         self._dropout: float = context.get('mlp_dropout', 0.5)
         self._lr: float = context.get('mlp_lr', 1e-3)
         self._weight_decay: float = context.get('mlp_weight_decay', 1e-2)
-        self._batch_size: int = context.get('mlp_batch_size', 512)
+        self._batch_size: int = context.get('mlp_batch_size', 128)
         self._use_residual: int = context.get('mlp_use_residual', False)
         self._epochs: int = 100
         self._patience: int = 10
@@ -437,6 +455,8 @@ class MLPWrapper(BaseWrapper):
             layers.append(nn.Dropout(self._dropout))
             prev = h
         layers.append(nn.Linear(prev, 1))
+        init.kaiming_normal_(layers[-1].weight, mode='fan_in', nonlinearity='relu')
+        init.zeros_(layers[-1].bias)
         return nn.Sequential(*layers).to(self._device)
 
     # ---- 训练循环 ----

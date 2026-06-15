@@ -116,3 +116,6 @@ ignore_missing_imports = true
 testpaths = ["test"]
 python_files = "test_*.py"
 timeout = 300
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+]

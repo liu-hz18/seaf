@@ -9,11 +9,13 @@ Frame3D — 三维数据容器（时间 × 股票 × 属性）。
 
 from __future__ import annotations
 
+import sys
 from typing import Any
 
 import numpy as np
 import pandas as pd
 
+sys.stdout.reconfigure(encoding='utf-8')
 pd.set_option('display.max_rows', 10)
 pd.set_option('display.max_columns', 50)
 pd.set_option('display.max_colwidth', 20)
@@ -26,7 +28,7 @@ class Frame3D:
     _df: pd.DataFrame
 
     def __init__(self, df: pd.DataFrame) -> None:
-        assert isinstance(df.index, pd.MultiIndex), 'Index must be MultiIndex (key, name)'
+        assert isinstance(df.index, pd.MultiIndex), 'Index must be MultiIndex (key, code)'
         self._df = df
 
     @property

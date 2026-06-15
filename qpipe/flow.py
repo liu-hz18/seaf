@@ -37,6 +37,73 @@ class Flow:
         self._queue_writers: dict[str, list[str]] = {}
         self._queue_readers: dict[str, list[str]] = {}
         self.queue_maxsize = queue_maxsize
+        logging.info(f"Queue stop signal: {self.stop_signal}")
+
+    def __repr__(self) -> str:
+        """拓扑可视化：节点名、上下游管道、完整 DAG。"""
+        if not self._node_specs:
+            return 'Flow(empty)'
+
+        lines: list[str] = []
+        n_nodes = len(self._node_specs)
+        n_queues = len(self.queues)
+        lines.append(f'Flow(nodes={n_nodes}, queues={n_queues})')
+        lines.append('─' * 50)
+
+        # 收集所有管道名（有 consumer 的 + dangling 的）
+        all_queues: dict[str, dict] = {}
+        for qname, writers in self._queue_writers.items():
+            readers = self._queue_readers.get(qname, [])
+            all_queues[qname] = {'writers': writers, 'readers': readers}
+        for qname in self.queues:
+            if qname not in all_queues:
+                all_queues[qname] = {'writers': [], 'readers': []}
+
+        # 节点详情
+        for spec in self._node_specs:
+            name = spec['name']
+            ntype = spec['type']
+            inputs = spec.get('inputs', [])
+            outputs = spec.get('outputs', [])
+
+            tag = '[src]' if ntype == 'source' else '[   ]'
+            lines.append(f'{tag} {name}')
+
+            if inputs:
+                in_str = ', '.join(f'"{q}"' for q in inputs)
+                lines.append(f'    ← in:  {in_str}')
+            else:
+                lines.append('    ← in:  (source)')
+
+            if outputs:
+                out_str = ', '.join(f'"{q}"' for q in outputs)
+                lines.append(f'    → out: {out_str}')
+            else:
+                lines.append('    → out: (terminal)')
+
+        # 管道统计
+        lines.append('─' * 50)
+        dangling = [q for q, info in all_queues.items() if not info['readers']]
+        if dangling:
+            lines.append(f'Dangling outputs (no consumer): {dangling}')
+
+        # —— 拓扑链路（节点级紧凑 DAG） ——
+        lines.append('─' * 50)
+        lines.append('Topology (node → downstream nodes):')
+        # 构建邻接表：node_name → set of downstream node_names
+        adj: dict[str, set[str]] = {s['name']: set() for s in self._node_specs}
+        for qname, info in all_queues.items():
+            for writer in info['writers']:
+                for reader in info['readers']:
+                    adj.setdefault(writer, set()).add(reader)
+        for spec in self._node_specs:
+            name = spec['name']
+            succ = sorted(adj.get(name, set()))
+            tag = '[src]' if spec['type'] == 'source' else '[   ]'
+            downstream = ', '.join(succ) if succ else '(terminal)'
+            lines.append(f'  {tag} {name}  →  {downstream}')
+
+        return '\n'.join(lines)
 
     def create_queue(self, name: str, maxsize: int | None = None) -> mp.Queue[Any]:
         """创建或获取命名管道。

@@ -31,25 +31,22 @@ import pandas as pd
 
 # scipy / sklearn 延迟导入到使用函数内，节省 ~1s 顶层导入时间
 from qpipe.frame3d import Frame3D
-from qpipe.utils import mlflow_log_metrics, trading_step
+from qpipe.utils import _cs_zscore, mlflow_log_metrics, trading_step
 from seafquant.model_wrappers import WRAPPER_REGISTRY
+
 
 # =============================================================================
 # 工具函数
 # =============================================================================
-
-
-def _cs_zscore(values: np.ndarray) -> np.ndarray:
-    """截面标准化：(x - mean) / std，std=0 时返回零向量。"""
-    mean = np.nanmean(values)
-    std = np.nanstd(values)
-    if std > 0:
-        return (values - mean) / std
-    return np.zeros_like(values)
-
-
-def _empty_result(n_stocks: int, index: pd.Index, signal_col: str = 'pred_signal') -> Frame3D:
+def _empty_result(n_stocks: int, index: pd.Index, key=None,
+                  signal_col: str = 'pred_signal') -> Frame3D:
     """构造空预测结果（未训练或数据不足时返回）。"""
+    if not isinstance(index, pd.MultiIndex):
+        if key is None:
+            key = pd.Timestamp('1970-01-01')
+        index = pd.MultiIndex.from_arrays(
+            [[key] * len(index), index], names=['key', 'code']
+        )
     return Frame3D(pd.DataFrame({signal_col: [0.0] * n_stocks}, index=index))
 
 
@@ -282,7 +279,7 @@ def model_train_predict(name: str, f3d: Frame3D, context: Any) -> Frame3D:
         if n_train_times < 10:
             logging.warning(f'Too few training times: {n_train_times}')
             context['days_since_train'] = 0
-            return _empty_result(n_stocks, df.loc[latest_t].index)
+            return _empty_result(n_stocks, df.loc[latest_t].index, key=latest_t)
 
         X, y, cs_stats = _prepare_training_data(name, df, feature_cols, times, fwd)
 
@@ -322,7 +319,7 @@ def model_train_predict(name: str, f3d: Frame3D, context: Any) -> Frame3D:
         if len(y) < 50:
             logging.warning(f'{len(y)}<50 samples after NaN removal')
             context['days_since_train'] = 0
-            return _empty_result(n_stocks, df.loc[latest_t].index)
+            return _empty_result(n_stocks, df.loc[latest_t].index, key=latest_t)
 
         # 4. 构建 wrapper
         wrapper_cls = WRAPPER_REGISTRY[model_type]

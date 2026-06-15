@@ -118,3 +118,12 @@ def mlflow_log_metrics(
             mlflow.log_metric(f'{prefix}.{k}', v, step=step, run_id=mlflow_run_id)
     except Exception:
         pass
+
+
+def _cs_zscore(values: np.ndarray) -> np.ndarray:
+    """截面标准化：(x - mean) / std，std=0 时返回零向量。"""
+    mean = np.nanmean(values)
+    std = np.nanstd(values)
+    if std > 0:
+        return (values - mean) / std
+    return np.zeros_like(values)

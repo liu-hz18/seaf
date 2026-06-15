@@ -34,8 +34,8 @@ from seafquant.strategy import strategy_epilogue, strategy_fn
 def main() -> None:
     parser = argparse.ArgumentParser(description='SEAF Quantitative Backtest Framework')
     parser.add_argument('--noise-ratio', type=float, default=0.3)
-    parser.add_argument('--n-times', type=int, default=1000)
-    parser.add_argument('--n-stocks', type=int, default=500)
+    parser.add_argument('--n-times', type=int, default=1024)
+    parser.add_argument('--n-stocks', type=int, default=64)
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--start-date', type=str, default='2020-01-02')
     parser.add_argument(
@@ -68,7 +68,7 @@ def main() -> None:
     )
     parser.add_argument('--use-residual', action='store_true', default=False, help='MLP block use residual block architecture')
     parser.add_argument(
-        '--ensemble', nargs='+', default=['lgbm'], choices=['lgbm', 'ridge', 'mlp'],
+        '--ensemble', nargs='+', default=['mlp'], choices=['lgbm', 'ridge', 'mlp'],
         help='Model types: single (--ensemble lgbm) or bagging (--ensemble lgbm mlp)',
     )
 
@@ -111,13 +111,21 @@ def main() -> None:
     # ===== 因子节点注册（由 FACTOR_REGISTRY 派生） =====
     factor_nodes = [(f'factor_{name}', func) for name, func in FACTOR_REGISTRY.items()]
 
+    # 模型数量
+    model_types = args.ensemble
+    is_ensemble = len(model_types) > 1
+
     # ===== 1. 数据源节点 =====
     gen_callable = DataSourceCallable(
         args.n_times, args.n_stocks, args.noise_ratio, args.seed, args.start_date,
         precision=args.precision,
     )
     src_output_queues = [f'q_ohlc_to_{name}' for name, _ in factor_nodes]
-    src_output_queues.extend(['q_close_to_model', 'q_close_to_ic', 'q_close_to_strategy'])
+    if is_ensemble:
+        src_output_queues.extend(['q_close_to_ic'])
+    src_output_queues.extend(['q_close_to_strategy'])
+    for model_type in model_types:
+        src_output_queues.extend([f'q_close_to_{model_type}', f'q_close_to_{model_type}_ic'])
     flow.add_source(
         'src_data',
         gen_callable,
@@ -128,20 +136,21 @@ def main() -> None:
     )
 
     # ===== 2. 因子计算节点 =====
-    factor_output_queues = []
     for fname, ffunc in factor_nodes:
         # 提取模块短名（"factor_counting" → "counting"）
         module_key = fname.removeprefix('factor_')
         fw = FACTOR_WINDOWS.get(module_key, {'window': 130, 'min_periods': 60})
         input_cols = FACTOR_INPUT_COLUMNS.get(module_key)
-        q_out = f'q_{fname}_out'
-        factor_output_queues.append(q_out)
+        q_outs = []
+        for model_type in model_types:
+            q_out = f'q_{fname}_to_{model_type}'
+            q_outs.append(q_out)
         flow.add_node(
             name=fname,
             func=ffunc,
             input_from=f'q_ohlc_to_{fname}',
             input_columns=input_cols,
-            output_to=[q_out],
+            output_to=q_outs,
             window=fw['window'],
             min_periods=fw['min_periods'],
             context={'mlflow_name': experiment_name, 'mlflow_run_id': mlflow_run_id, 'start_date': args.start_date, 'precision': args.precision},
@@ -149,13 +158,9 @@ def main() -> None:
             log_level=args.log_level,
         )
 
-    model_types = args.ensemble
-    is_ensemble = len(model_types) > 1
-
     # ===== 3. 模型训练预测节点（单个或并行多个） =====
     # Label: cs_zscore(ln(close[t+fwd]) - ln(close[t+1])) — (fwd-1)日截面对数超额收益
     model_context_base = {
-        'seed': args.seed,
         'mlflow_name': experiment_name,
         'fwd': fwd,
         'model_window': MODEL_WINDOW,
@@ -163,23 +168,28 @@ def main() -> None:
         'start_date': args.start_date,
         'precision': args.precision,
         'mlp_use_residual': args.use_residual,
+        'mlp_batch_size': args.n_stocks,
         'loss': args.loss,
     }
     all_signal_qs = []
     all_signal_strat_qs = []
 
-    for model_type in model_types:
+    for mid, model_type in enumerate(model_types):
         signal_col = f'pred_signal_{model_type}' if is_ensemble else 'pred_signal'
-        mctx = model_context_base | {'model_type': model_type, 'signal_col': signal_col}
+        mctx = model_context_base | {'model_type': model_type, 'signal_col': signal_col, 'seed': args.seed + mid}
         sq = f'q_signal_{model_type}'
-        ssq = f'q_signal_{model_type}_to_strategy'
+        ssq = f'q_signal_{model_type}_to_ensemble'
         all_signal_qs.append(sq)
         all_signal_strat_qs.append(ssq)
+
+        factor_output_queues = []
+        for fname, _ in factor_nodes:
+            factor_output_queues.append(f'q_{fname}_to_{model_type}')
 
         flow.add_node(
             name=f'model_{model_type}',
             func=model_train_predict,
-            input_from=[*factor_output_queues, 'q_close_to_model'],
+            input_from=[*factor_output_queues, f'q_close_to_{model_type}'],
             output_to=[sq, ssq],
             window=MODEL_WINDOW,
             min_periods=MODEL_MIN_PERIODS,
@@ -193,7 +203,7 @@ def main() -> None:
         flow.add_node(
             name=f'ic_{model_type}',
             func=ic_analysis_fn,
-            input_from=[sq, 'q_close_to_ic'],
+            input_from=[sq, f'q_close_to_{model_type}_ic'],
             output_to=[],
             window=IC_WINDOW,
             min_periods=IC_MIN_PERIODS,
@@ -211,7 +221,7 @@ def main() -> None:
         flow.add_node(
             name='bagging',
             func=ensemble_fn,
-            input_from=all_signal_qs,
+            input_from=all_signal_strat_qs,
             output_to=['q_ensemble_signal', 'q_ensemble_signal_to_strategy'],
             window=1,
             min_periods=1,
@@ -225,13 +235,13 @@ def main() -> None:
 
         # Ensemble IC 分析
         flow.add_node(
-            name='ic_bagging',
+            name='ic_bagging_analysis',
             func=ic_analysis_fn,
             input_from=['q_ensemble_signal', 'q_close_to_ic'],
             output_to=[],
             window=IC_WINDOW,
             min_periods=IC_MIN_PERIODS,
-            input_columns=[signal_col, 'close'],
+            input_columns=['pred_signal', 'close'],
             epilogue_fn=ic_epilogue,
             context={'mlflow_name':experiment_name,'fwd':fwd,'num_groups':10,
                      'mlflow_run_id':mlflow_run_id,'start_date':args.start_date,
@@ -300,6 +310,9 @@ def main() -> None:
         f'{k}={v["window"]}' for k, v in sorted(FACTOR_WINDOWS.items())
     )
     logging.info(f'Factor windows: {factor_window_summary}')
+    logging.info('=' * 50)
+
+    logging.info(f"Flow Arch: {flow}")
     logging.info('=' * 50)
 
     flow.start()

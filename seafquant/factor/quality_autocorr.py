@@ -34,7 +34,5 @@ def compute_quality_autocorr_factors(name: str, f3d: Frame3D, context) -> Frame3
     factor_cols = [c for c in result.df.columns if c.startswith('factor_qa_')]
     result = result.cs_zscore_batch(factor_cols, cp=False)
 
-    logging.debug(
-        f'QA-Autocorr NaN: { {c: result.df[c].isna().sum() for c in factor_cols} }'
-    )
+    logging.debug(f'Factor NaN: { {c: result.df[c].isna().sum() for c in factor_cols} }')
     return Frame3D(result.df[factor_cols].copy())

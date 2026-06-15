@@ -33,3 +33,5 @@ mlflow ui --backend-store-uri sqlite:///mlruns.db
 python .\pipeline.py --n-times 1000 --n-stocks 50 --model-type lgbm --fwd 20 --model-window 250 --noise-ratio 0.5 > output.txt 2> error.txt
 
 python pipeline.py --noise-ratio 0.3 --n-times 500 --n-stocks 40 --model-window 100 --fwd 20 --model-type mlp --precision 2 > output.txt 2> error.txt
+
+python pipeline.py --noise-ratio 0.3 --n-times 500 --n-stocks 40 --model-window 100 --fwd 20 --ensemble mlp lgbm --precision 2 --log-level DEBUG > output.txt 2> error.txt

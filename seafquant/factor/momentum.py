@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from qpipe.frame3d import Frame3D
 
 EPS = 1e-8
@@ -75,4 +77,5 @@ def compute_momentum_factors(name: str, f3d: Frame3D, context) -> Frame3D:
     # 联合截面标准化
     factor_cols = [c for c in df.columns if c.startswith(('factor_mom_', 'factor_rev_'))]
     result = result.cs_zscore_batch(factor_cols, cp=False)
+    logging.debug(f'Factor NaN: { {c: result.df[c].isna().sum() for c in factor_cols} }')
     return Frame3D(result.df[factor_cols].copy())

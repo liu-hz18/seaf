@@ -9,6 +9,7 @@ import gc
 import inspect
 import logging
 import multiprocessing as mp
+import queue
 import sys
 import threading
 import time
@@ -139,16 +140,33 @@ class MultiInputNode(mp.Process):
                 heartbeat_timestamp[queue_idx] = time.time()
             try:
                 obj = input_queue.get(timeout=0.5)
-            except Exception:
+            except queue.Empty:
                 continue
-            if obj == self.stop_signal:
-                logging.debug(f'[thread-{queue_idx}] stop signal.')
+            except Exception as e:
+                import traceback
+                logging.error(f"[thread-{queue_idx}] meet exception: {e}\n{traceback.format_exc()}")
                 ready_event.set()
                 break
-            time_value = obj.df.index.get_level_values(0)[0]
-            with data_lock:
-                self.buffers[queue_idx][time_value] = obj
+            if obj == self.stop_signal:
+                logging.info(f'[thread-{queue_idx}] receive stop signal.')
                 ready_event.set()
+                break
+            try:
+                time_value = obj.df.index.get_level_values(0)[0]
+            except Exception as e:
+                import traceback
+                logging.error(f"[thread-{queue_idx}] meet exception: {e}\n{traceback.format_exc()}")
+                ready_event.set()
+                break
+            with data_lock:
+                try:
+                    self.buffers[queue_idx][time_value] = obj
+                except Exception as e:
+                    import traceback
+                    logging.error(f"[thread-{queue_idx}] meet exception: {e}\n{traceback.format_exc()}")
+                finally:
+                    ready_event.set()
+        logging.info(f'[thread-{queue_idx}] stop.')
 
     def run(self) -> None:
         """子进程主入口：协调接收线程和窗口计算循环。"""
@@ -203,7 +221,8 @@ class MultiInputNode(mp.Process):
                     newly_dead: list[int] = []
                     for i in still_waiting:
                         with heartbeat_lock:
-                            if time.time() - heartbeat_timestamp[i] > self.HEARTBEAT_TIMEOUT:
+                            diff = time.time() - heartbeat_timestamp[i]
+                            if diff > self.HEARTBEAT_TIMEOUT:
                                 newly_dead.append(i)
                     if newly_dead:
                         for i in newly_dead:
@@ -212,7 +231,7 @@ class MultiInputNode(mp.Process):
                             still_waiting.remove(i)
                     if len(ready_workers) == len(alive_workers_to_wait):
                         break
-                    time.sleep(0.2)
+                    time.sleep(0.05)
                     thread_round_time += 1
 
                 submitted_workers: list[int] = []
@@ -395,6 +414,8 @@ class MultiInputNode(mp.Process):
                     window_tail_index += 1
                     for outq in self.output_queues:
                         outq.put(latest_f3d)
+                    queue_sizes = {f'outq_{qi}': outq.qsize() for qi in range(len(self.output_queues))}
+                    logging.debug(f"Output queue: {queue_sizes}")
 
                     # ---- 内存回收与监控 ----
                     # 每次计算后强制 GC，回收因子函数产生的临时 DataFrame。
@@ -434,6 +455,14 @@ class MultiInputNode(mp.Process):
                             step=step,
                         )
 
+                # === 快速退出检测：所有接收线程已退出且缓冲已空 ===
+                if all(not t.is_alive() for t in threads):
+                    with data_lock:
+                        all_buffers_empty = all(len(b) == 0 for b in self.buffers)
+                    if all_buffers_empty:
+                        logging.info('All workers exited and buffers empty. Node process exiting.')
+                        break
+
                 if len(dead_workers) == num_workers:
                     logging.info('All workers dead. Node process exited.')
                     break
@@ -447,11 +476,24 @@ class MultiInputNode(mp.Process):
                     self.epilogue_fn(self.name, current_context)
                 except Exception as e:
                     logging.error(f'Epilogue error in {self.name}: {e}', exc_info=True)
+            # 先设置 global_exit 让可能存活的接收线程退出
             global_exit.set()
             for t in threads:
-                t.join(timeout=1)
+                t.join(timeout=2)
+            # 向输出队列放入 stop_signal（非阻塞）。
+            # 先 cancel_join_thread 防止进程退出时 queue finalizer 因 feeder 线程
+            # 阻塞在管道 I/O 上而 hang（Windows spawn 模式下常见）。
             for outq in self.output_queues:
-                outq.put(self.stop_signal)
+                with suppress(Exception):
+                    outq.put(self.stop_signal, timeout=1.0)
+                # with suppress(Exception):
+                #     outq.cancel_join_thread()
+            # 显式刷新日志和 stdout，防止 Windows 管道未关闭导致 WaitForSingleObject 不返回
+            for handler in logging.getLogger().handlers:
+                with suppress(Exception):
+                    handler.flush()
+            sys.stdout.flush()
+            sys.stderr.flush()
             logging.info(f'Node {self.name} stopped.')
 
 
@@ -538,7 +580,10 @@ class SourceNode(mp.Process):
                 # 但生成器自身不累积逐日数据。此处 gc 为防御性措施。
                 gc.collect()
             for outq in self.output_queues:
-                outq.put(self.stop_signal)
+                with suppress(Exception):
+                    outq.put(self.stop_signal, timeout=1.0)
+                # with suppress(Exception):
+                #     outq.cancel_join_thread()
         except Exception as e:
             logging.error(f'Exception in SourceNode: {e}', exc_info=True)
         finally:
@@ -547,4 +592,9 @@ class SourceNode(mp.Process):
                     self.epilogue_fn(self.name, current_context)
                 except Exception as e:
                     logging.error(f'Epilogue error in {self.name}: {e}', exc_info=True)
+            for handler in logging.getLogger().handlers:
+                with suppress(Exception):
+                    handler.flush()
+            sys.stdout.flush()
+            sys.stderr.flush()
             logging.info('SourceNode stopped.')

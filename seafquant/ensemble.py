@@ -14,6 +14,7 @@ import numpy as np
 import pandas as pd
 
 from qpipe.frame3d import Frame3D
+from qpipe.utils import _cs_zscore
 
 
 def ensemble_fn(name: str, f3d: Frame3D, context: dict[str, Any] | None = None) -> Frame3D:
@@ -41,6 +42,8 @@ def ensemble_fn(name: str, f3d: Frame3D, context: dict[str, Any] | None = None) 
     # 等权平均所有信号列
     signals = df[signal_cols].values.astype(float)
     ensemble_signal = np.nanmean(signals, axis=1)
+    # zscore
+    ensemble_signal = _cs_zscore(ensemble_signal)
 
     result_df = pd.DataFrame({'pred_signal': ensemble_signal}, index=df.index)
     result = Frame3D(result_df)

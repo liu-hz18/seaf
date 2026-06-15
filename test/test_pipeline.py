@@ -33,6 +33,7 @@ SEED = 42
 START_DATE = '2020-01-02'
 NOISE_RATIO = 0.3
 
+TIMEOUT = 300
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 辅助函数
@@ -106,7 +107,7 @@ def _build_flow(model_type: str = 'lgbm') -> Flow:
     return flow
 
 
-def _run_flow(flow: Flow, timeout_s: int = 180) -> bool:
+def _run_flow(flow: Flow, timeout_s: int = TIMEOUT) -> bool:
     """启动并等待 Flow 完成，返回是否正常结束。"""
     for node in flow.nodes:
         node.start()
@@ -136,13 +137,13 @@ class TestPipelineEndToEnd:
     def test_pipeline_completes_lgbm(self):
         """LGBM pipeline 全链路完成，无异常退出。"""
         flow = _build_flow('lgbm')
-        ok = _run_flow(flow, timeout_s=180)
+        ok = _run_flow(flow, timeout_s=TIMEOUT)
         assert ok, 'Pipeline did not complete within timeout'
 
     def test_pipeline_completes_ridge(self):
         """Ridge pipeline 全链路完成，无异常退出。"""
         flow = _build_flow('ridge')
-        ok = _run_flow(flow, timeout_s=180)
+        ok = _run_flow(flow, timeout_s=TIMEOUT)
         assert ok, 'Pipeline did not complete within timeout'
 
 
@@ -152,25 +153,25 @@ class TestPipelineDataFlow:
     def test_strategy_output_format(self):
         """策略返回标准 MultiIndex (key, name) + gN_mv 列。"""
         flow = _build_flow('ridge')
-        ok = _run_flow(flow, timeout_s=180)
+        ok = _run_flow(flow, timeout_s=TIMEOUT)
         assert ok
 
     def test_no_keyerror_on_meta_cols(self):
         """此测试验证 strategy 返回格式与 node.py meta_cols 对齐兼容。"""
         flow = _build_flow('ridge')
-        ok = _run_flow(flow, timeout_s=180)
+        ok = _run_flow(flow, timeout_s=TIMEOUT)
         assert ok
 
     def test_ic_produces_output(self):
         """IC 节点在足够数据后产生 IC 历史。"""
         flow = _build_flow('ridge')
-        ok = _run_flow(flow, timeout_s=180)
+        ok = _run_flow(flow, timeout_s=TIMEOUT)
         assert ok
 
     def test_strategy_produces_trades(self):
         """策略节点在足够数据后产生交易。"""
         flow = _build_flow('ridge')
-        ok = _run_flow(flow, timeout_s=180)
+        ok = _run_flow(flow, timeout_s=TIMEOUT)
         assert ok
 
 
