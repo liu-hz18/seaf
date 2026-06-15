@@ -298,7 +298,7 @@ class _ResidualMLP:
 
         self.to(device)
 
-    def to(self, device: Any) -> '_ResidualMLP':
+    def to(self, device: Any) -> _ResidualMLP:
         if self.input_proj is not None:
             self.input_proj = self.input_proj.to(device)
         for b in self.blocks:
@@ -314,7 +314,7 @@ class _ResidualMLP:
     def forward(self, x: Any) -> Any:
         F = self.nn.functional
         if self.input_proj is not None:
-            x = F.gelu(self.input_proj(x))
+            x = self.input_proj(x)
 
         for b in self.blocks:
             residual = x
@@ -351,6 +351,18 @@ class _ResidualMLP:
                         v.load_state_dict(sd[key][k])
         self.head.load_state_dict(sd['head'])
 
+    def parameters(self):
+        """收集所有可训练参数，供 optimizer 使用。"""
+        import torch
+        params = list(self.head.parameters())
+        if self.input_proj is not None:
+            params.extend(self.input_proj.parameters())
+        for b in self.blocks:
+            for v in b.values():
+                if hasattr(v, 'parameters'):
+                    params.extend(v.parameters())
+        return params
+
     def train(self) -> None:
         pass
 
@@ -385,6 +397,7 @@ class MLPWrapper(BaseWrapper):
         self._lr: float = context.get('mlp_lr', 1e-3)
         self._weight_decay: float = context.get('mlp_weight_decay', 1e-2)
         self._batch_size: int = context.get('mlp_batch_size', 512)
+        self._use_residual: int = context.get('mlp_use_residual', False)
         self._epochs: int = 100
         self._patience: int = 10
 
@@ -398,11 +411,11 @@ class MLPWrapper(BaseWrapper):
 
     # ---- 网络构建 ----
 
-    def _build_network(self, input_dim: int, use_residual: bool = True) -> Any:
+    def _build_network(self, input_dim: int) -> Any:
         nn = self._torch.nn
         init = self._torch.nn.init
 
-        if use_residual:
+        if self._use_residual:
             return _ResidualMLP(
                 nn, input_dim, self._hidden_layers, self._dropout, self._device,
             )
