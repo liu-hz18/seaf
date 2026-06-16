@@ -477,8 +477,8 @@ class MLPWrapper(BaseWrapper):
 
         model = self._model
         model.train()
-        optimizer = torch.optim.Adam(
-            model.parameters(), lr=self._lr, weight_decay=self._weight_decay
+        optimizer = torch.optim.AdamW(
+            model.parameters(), lr=self._lr, betas=(0.9, 0.98), weight_decay=self._weight_decay
         )
         loss_fn = self._loss.torch_fn()
 
