@@ -290,7 +290,7 @@ class TestBackwardCompatibility:
         in_q.put(node.stop_signal)
         node.start()
         node.join(timeout=15)
-        result = out_q.get(timeout=2)
+        _idx, result = out_q.get(timeout=2)
         df = result.df
         assert np.isclose(df.loc[(0, 'A'), 'val'], 10.0)
         assert np.isclose(df.loc[(0, 'B'), 'val'], 11.0)

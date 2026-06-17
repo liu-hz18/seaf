@@ -14,10 +14,10 @@ import numpy as np
 import pandas as pd
 
 from qpipe.frame3d import Frame3D
-from qpipe.utils import _cs_zscore
+from qpipe.utils import _cs_zscore, mlflow_log_metrics
 
 
-def ensemble_fn(name: str, f3d: Frame3D, context: dict[str, Any] | None = None) -> Frame3D:
+def ensemble_fn(name: str, idx: int, f3d: Frame3D, context: dict[str, Any] | None = None) -> Frame3D:
     """多模型信号等权融合。
 
     接收单个已合并的 Frame3D，查找所有 pred_signal_ 开头的列，
@@ -49,9 +49,23 @@ def ensemble_fn(name: str, f3d: Frame3D, context: dict[str, Any] | None = None) 
     result = Frame3D(result_df)
 
     n_models = len(signal_cols)
+    mlflow_run_id: str = context.get('mlflow_run_id', '')
+    times = sorted(df.index.get_level_values('key').unique())
+    latest_t = times[-1]
+    mlflow_log_metrics(mlflow_run_id, name, {
+        'pred_signal_min': float(np.min(ensemble_signal)),
+        'pred_signal_max': float(np.max(ensemble_signal)),
+        'pred_signal_skew': float(pd.Series(ensemble_signal).skew()),
+    }, step=idx)
+
     logging.info(
-        f'[{name}] Ensemble: {n_models} model(s) → '
-        f'pred_signal mean={ensemble_signal.mean():.4f}, std={ensemble_signal.std():.4f}'
+        f'[{idx}] Ensemble {n_models} model, day={latest_t}: '
+        f'n={len(ensemble_signal)}, '
+        f'mean={float(np.mean(ensemble_signal)):.4f}, '
+        f'std={float(np.std(ensemble_signal)):.4f}, '
+        f'min={float(np.min(ensemble_signal)):.4f}, '
+        f'max={float(np.max(ensemble_signal)):.4f}, '
+        f'skew={float(pd.Series(ensemble_signal).skew()):.4f}'
     )
 
     return result
@@ -64,4 +78,4 @@ def ensemble_epilogue(name: str, context: dict[str, Any]) -> None:
     context.pop('start_date', None)
     context.pop('fwd', None)
     if context:
-        logging.info(f'[{name}] ensemble context: {context}')
+        logging.info(f'ensemble context: {context}')

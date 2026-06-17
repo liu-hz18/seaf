@@ -21,13 +21,13 @@ import numpy as np
 import pandas as pd
 
 # scipy 延迟导入到 ic_analysis_fn 内，节省顶层导入时间
-from qpipe.utils import mlflow_log_metrics, trading_step
+from qpipe.utils import mlflow_log_metrics
 
 if TYPE_CHECKING:
     from qpipe.frame3d import Frame3D
 
 
-def ic_analysis_fn(name: str, f3d: Frame3D, context: Any) -> Frame3D:
+def ic_analysis_fn(name: str, idx: int, f3d: Frame3D, context: Any) -> Frame3D:
     """每日 IC 计算函数。
 
     f3d 包含 window 天的数据（pred_signal 列 + close 列）。
@@ -142,13 +142,13 @@ def ic_analysis_fn(name: str, f3d: Frame3D, context: Any) -> Frame3D:
             'cumsum_pearson_ic': context['cumsum_pearson_ic'],
             'cumsum_vol_pearson_ic': context['cumsum_vol_pearson_ic'],
             'cumsum_rank_ic': context['cumsum_rank_ic'],
-        }, step=trading_step(context.get('start_date', ''), pred_t))
+        }, step=idx)
 
         if context['day_count'] % 10 == 0 or context['day_count'] == 1:
             recent_p = context['pearson_ic_history'][-10:]
             recent_r = context['rank_ic_history'][-10:]
             logging.info(
-                f'IC#{context["day_count"]} '
+                f'[{idx}] IC#{context["day_count"]} '
                 f'signal_day={pred_t} buy={buy_t} sell={sell_t} '
                 f'pearson_ic={pearson_ic:.4f} rank_ic={rank_ic:.4f} '
                 f'raw_ret_std={raw_ret_std:.6f} '
@@ -172,13 +172,13 @@ def ic_analysis_fn(name: str, f3d: Frame3D, context: Any) -> Frame3D:
 def ic_epilogue(name: str, context: dict[str, Any] | None) -> None:
     """退出前汇总：计算 mean IC, ICIR, winrate, max drawdown（基于 rank IC）。"""
     if context is None or not context.get('rank_ic_history'):
-        logging.warning(f'[{name}] Epilogue: No IC data to summarize.')
+        logging.warning('Epilogue: No IC data to summarize.')
         return
 
     ics = [x for x in context['rank_ic_history'] if not np.isnan(x)]
 
     if len(ics) < 10:
-        logging.warning(f'[{name}] Epilogue: Insufficient IC data ({len(ics)} points).')
+        logging.warning(f'Epilogue: Insufficient IC data ({len(ics)} points).')
         return
 
     mean_ic = np.mean(ics)

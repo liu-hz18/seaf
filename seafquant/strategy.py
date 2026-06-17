@@ -28,7 +28,7 @@ import numpy as np
 import pandas as pd
 
 from qpipe.frame3d import Frame3D
-from qpipe.utils import mlflow_log_metrics, trading_step
+from qpipe.utils import mlflow_log_metrics
 from seafquant.strategy_core import _init_group_context
 from seafquant.strategy_daily import _generate_daily_plan, _on_bar
 
@@ -68,7 +68,7 @@ def _rank_into_groups(
 # =============================================================================
 
 
-def strategy_fn(name: str, f3d: Frame3D, context: Any) -> Frame3D:
+def strategy_fn(name: str, idx: int, f3d: Frame3D, context: Any) -> Frame3D:
     """策略节点主函数 — 每个 frame 包含 window=2 天的数据。
 
     f3d 包含：
@@ -107,6 +107,13 @@ def strategy_fn(name: str, f3d: Frame3D, context: Any) -> Frame3D:
         ]
 
     df = f3d.df.copy()
+
+    # 过滤 ST 和停牌股票（仅策略节点排除，模型训练/推理保留这些样本）
+    if 'tradestatus' in df.columns:
+        df = df[df['tradestatus'] == 1]
+    if 'isST' in df.columns:
+        df = df[df['isST'] == 0]
+
     times = sorted(df.index.get_level_values('key').unique())
 
     if len(times) < 2:
@@ -162,7 +169,6 @@ def strategy_fn(name: str, f3d: Frame3D, context: Any) -> Frame3D:
     # ---- MLflow 逐日指标 ----
     run_id = context.get('mlflow_run_id', '')
     if run_id:
-        step = trading_step(context.get('start_date', ''), t_curr)
         for gctx in context['groups']:
             if gctx['nav_log']:
                 last_nav = gctx['nav_log'][-1]
@@ -176,7 +182,7 @@ def strategy_fn(name: str, f3d: Frame3D, context: Any) -> Frame3D:
                     'position_value': last_nav['position_value'],
                     'n_positions': float(last_nav['n_positions']),
                     'turnover': last_nav.get('turnover', 0.0),
-                }, step=step)
+                }, step=idx)
         # top-bottom NAV spread
         ng = context['num_groups']
         if ng >= 2:
@@ -194,14 +200,14 @@ def strategy_fn(name: str, f3d: Frame3D, context: Any) -> Frame3D:
                     'top_value': top_val,
                     'bottom_value': bot_val,
                     'top_bottom_value_gap': top_val - bot_val,
-                }, step=step)
+                }, step=idx)
 
     dc_global = context['groups'][0]['day_counter'] if context['groups'] else 0
     if dc_global % 50 == 0:
         navs = [g['nav_log'][-1]['total_equity'] if g['nav_log'] else 0
                 for g in context['groups']]
         logging.info(
-            f'day#{dc_global} date={t_curr}: '
+            f'[{idx}] day#{dc_global} date={t_curr}: '
             f'navs=[{min(navs):.2f}..{max(navs):.2f}] '
             f'mean_nav={np.mean(navs):.2f}'
         )

@@ -92,7 +92,7 @@ class Flow:
         lines.append('Topology (node → downstream nodes):')
         # 构建邻接表：node_name → set of downstream node_names
         adj: dict[str, set[str]] = {s['name']: set() for s in self._node_specs}
-        for qname, info in all_queues.items():
+        for info in all_queues.values():
             for writer in info['writers']:
                 for reader in info['readers']:
                     adj.setdefault(writer, set()).add(reader)
@@ -165,8 +165,9 @@ class Flow:
         input_columns: list[str] | None = None,
         output_columns: list[str] | None = None,
         exclude_input_columns: list[str] | None = None,
-        context: Any = None,
+        context: dict | None = None,
         epilogue_fn: EpilogueFunc | None = None,
+        time_alignment: str = 'right',
         snapshot_interval: int = 0,
         log_level: str = 'INFO',
     ) -> MultiInputNode:
@@ -189,6 +190,7 @@ class Flow:
             context=context,
             epilogue_fn=epilogue_fn,
             output_queue_names=list(output_to),
+            time_alignment=time_alignment,
             snapshot_interval=snapshot_interval,
             log_level=log_level,
         )
@@ -293,10 +295,26 @@ class Flow:
             queue.cancel_join_thread()
 
     def join(self) -> None:
-        """等待所有子进程结束。"""
-        for node in self.nodes:
-            node.join(timeout=None)
-            if node.is_alive():
-                logging.warning(f'Node {node.name} did not exit, terminating.')
-                node.terminate()
-                node.join(timeout=5)
+        """等待所有子进程结束（Ctrl+C 时 terminate 全部节点）。"""
+        import signal as _signal
+
+        def _on_interrupt(signum, frame):
+            logging.warning('[Flow] SIGINT received, terminating all nodes...')
+            for n in self.nodes:
+                if n.is_alive():
+                    n.terminate()
+
+        _signal.signal(_signal.SIGINT, _on_interrupt)
+        try:
+            for node in self.nodes:
+                node.join(timeout=None)
+                if node.is_alive():
+                    logging.warning(f'Node {node.name} did not exit, terminating.')
+                    node.terminate()
+                    node.join(timeout=5)
+        except KeyboardInterrupt:
+            logging.warning('[Flow] KeyboardInterrupt, terminating all nodes...')
+            for n in self.nodes:
+                if n.is_alive():
+                    n.terminate()
+                    n.join(timeout=5)

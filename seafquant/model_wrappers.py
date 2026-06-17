@@ -255,7 +255,6 @@ class _ResidualMLP:
     - GELU：平滑激活，梯度处处非零，适合 IC 损失
     - Pre-Norm：层归一化在前，稳定深层训练
     """
-    import torch
     EXPANSION: int = 4  # FFN 膨胀比
 
     def __init__(
@@ -405,6 +404,7 @@ class MLPWrapper(BaseWrapper):
         self._torch = torch
         self._device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
+        logging.info(f"device: {self._device}")
         # 可重入性：设置 torch 随机种子
         torch_seed: int = context.get('seed', 42)
         torch.manual_seed(torch_seed)

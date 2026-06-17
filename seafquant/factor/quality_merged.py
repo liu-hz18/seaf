@@ -18,7 +18,7 @@ from numpy.lib.stride_tricks import sliding_window_view
 from qpipe.frame3d import Frame3D
 
 
-def compute_quality_merged_factors(name: str, f3d: Frame3D, context) -> Frame3D:
+def compute_quality_merged_factors(name: str, idx: int, f3d: Frame3D, context) -> Frame3D:
     """计算 25 个质量合并因子 (19 质量基础/符号 + 6 截面中性化)。"""
     # 注意：本函数直接修改传入的 f3d.df（添加 _ 中间列），
     # 调用方（node.py）保证每次调用传入的是临时 concat DataFrame，无需拷贝。
@@ -156,5 +156,5 @@ def compute_quality_merged_factors(name: str, f3d: Frame3D, context) -> Frame3D:
     factor_cols = [c for c in df.columns if c.startswith('factor_')]
     result = result.cs_zscore_batch(factor_cols, cp=False)
 
-    logging.debug(f'Factor NaN: { {c: result.df[c].isna().sum() for c in factor_cols} }')
+    logging.debug(f'[{idx}] Factor NaN: { {c: result.df[c].isna().sum() for c in factor_cols} }')
     return Frame3D(result.df[factor_cols].copy())

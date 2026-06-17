@@ -14,7 +14,7 @@ from qpipe.frame3d import Frame3D
 EPS = 1e-8
 
 
-def compute_momentum_factors(name: str, f3d: Frame3D, context) -> Frame3D:
+def compute_momentum_factors(name: str, idx: int, f3d: Frame3D, context) -> Frame3D:
     """计算 32 个动量+反转因子。"""
     result = f3d.copy()
     close, open_p, high, low = (f3d.df['close'], f3d.df['open'], f3d.df['high'], f3d.df['low'])
@@ -77,5 +77,5 @@ def compute_momentum_factors(name: str, f3d: Frame3D, context) -> Frame3D:
     # 联合截面标准化
     factor_cols = [c for c in df.columns if c.startswith(('factor_mom_', 'factor_rev_'))]
     result = result.cs_zscore_batch(factor_cols, cp=False)
-    logging.debug(f'Factor NaN: { {c: result.df[c].isna().sum() for c in factor_cols} }')
+    logging.debug(f'[{idx}] Factor NaN: { {c: result.df[c].isna().sum() for c in factor_cols} }')
     return Frame3D(result.df[factor_cols].copy())

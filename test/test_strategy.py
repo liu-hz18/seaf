@@ -431,30 +431,6 @@ class TestStrategyFn:
                 assert 'p_hfq' in plog
 
 
-# =============================================================================
-# trading_step 边界测试 (NaN 等非法输入安全返回 0)
-# =============================================================================
-
-
-class TestTradingStep:
-    """trading_step 应安全处理 NaN/None/NaT 等从空 Frame3D.max() 来的非法输入。"""
-
-    def test_nan_returns_zero(self):
-        from qpipe.utils import trading_step
-        assert trading_step('2020-01-02', float('nan')) == 0
-
-    def test_none_returns_zero(self):
-        from qpipe.utils import trading_step
-        assert trading_step('2020-01-02', None) == 0
-
-    def test_nat_returns_zero(self):
-        from qpipe.utils import trading_step
-        assert trading_step('2020-01-02', pd.NaT) == 0
-
-    def test_valid_timestamp(self):
-        from qpipe.utils import trading_step
-        assert trading_step('2020-01-02', pd.Timestamp('2020-01-03')) == 1
-
 
 # =============================================================================
 # strategy_fn 空输出 — 确保框架可安全消费
@@ -477,13 +453,3 @@ class TestStrategyFnOutput:
         assert '_strategy_' not in result.df.index.get_level_values('code')
         max_key = result.df.index.get_level_values(0).max()
         assert not pd.isna(max_key)  # pyright: ignore[reportGeneralTypeIssues]
-
-    def test_trading_step_on_valid_result(self):
-        """strategy_fn 返回有效 t_curr → max_key 有效 → trading_step 正确计算。"""
-        from qpipe.utils import trading_step
-        ctx = {}
-        f3d = TestStrategyFn._make_f3d(0.0, 100.0, 98.0)
-        result = strategy_fn('test', f3d, ctx)
-        max_key = result.df.index.get_level_values(0).max()
-        step = trading_step('2020-01-02', max_key)
-        assert step >= 0

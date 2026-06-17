@@ -8,6 +8,9 @@ mlruns/
 backup**
 .deepseek
 *.db
+*.duckdb
+*.duckdb.wal
 logs/**
+data/**
 
 !requirements.txt

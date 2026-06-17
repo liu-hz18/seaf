@@ -31,7 +31,7 @@ import pandas as pd
 
 # scipy / sklearn 延迟导入到使用函数内，节省 ~1s 顶层导入时间
 from qpipe.frame3d import Frame3D
-from qpipe.utils import _cs_zscore, mlflow_log_metrics, trading_step
+from qpipe.utils import _cs_zscore, mlflow_log_metrics
 from seafquant.model_wrappers import WRAPPER_REGISTRY
 
 
@@ -107,6 +107,7 @@ def _prepare_training_data(
 
 def _run_cv(
     name: str,
+    idx: int,
     wrapper: Any,
     X: np.ndarray,
     y: np.ndarray,
@@ -123,7 +124,7 @@ def _run_cv(
     tscv = TimeSeriesSplit(n_splits=n_splits)
     cv_scores: list[float] = []
 
-    logging.info(f'CV (TimeSeriesSplit, {n_splits} folds, IC metric):')
+    logging.info(f'[{idx}] CV (TimeSeriesSplit, {n_splits} folds, IC metric):')
     for fold, (train_idx, val_idx) in enumerate(tscv.split(X)):
         if len(val_idx) < 10:
             continue
@@ -141,7 +142,7 @@ def _run_cv(
             if not np.isnan(ic):
                 cv_scores.append(ic)
                 logging.info(
-                    f'  Fold {fold + 1}: IC={ic:.4f}, '
+                    f'[{idx}] Fold {fold + 1}: IC={ic:.4f}, '
                     f'n_train={len(y_tr):,}, n_val={len(y_val):,}'
                 )
         except Exception:
@@ -204,7 +205,7 @@ def _log_feature_importance(
 # =============================================================================
 
 
-def model_train_predict(name: str, f3d: Frame3D, context: Any) -> Frame3D:
+def model_train_predict(name: str, idx: int, f3d: Frame3D, context: Any) -> Frame3D:
     """模型训练与预测主函数 — 编排层。
 
     f3d 包含 window 天的数据（因子列 + close 列）。
@@ -242,7 +243,6 @@ def model_train_predict(name: str, f3d: Frame3D, context: Any) -> Frame3D:
         raise ValueError(f'Model node requires "close" column: {df.columns}')
 
     mlflow_run_id: str = context.get('mlflow_run_id', '')
-    start_date: str = context.get('start_date', '')
 
     # —— 时间维度 ——
     times = sorted(df.index.get_level_values('key').unique())
@@ -251,7 +251,7 @@ def model_train_predict(name: str, f3d: Frame3D, context: Any) -> Frame3D:
     latest_t = times[-1]
 
     if n_times < fwd + 2:
-        logging.warning(f'Insufficient data: {n_times} < {fwd + 2}')
+        logging.warning(f'[{idx}] Insufficient data: {n_times} < {fwd + 2}')
         cs_mask = df.index.get_level_values('key') == latest_t
         return _empty_result(n_stocks, df.loc[cs_mask].index)
 
@@ -268,7 +268,7 @@ def model_train_predict(name: str, f3d: Frame3D, context: Any) -> Frame3D:
         from scipy.stats import pearsonr
 
         logging.info(
-            f'===== RETRAIN START ===== '
+            f'[{idx}] ===== RETRAIN START ===== '
             f'model={model_type}, fwd={fwd}, '
             f'retrain_every={context["retrain_every"]}, '
             f'days_since_train={context["days_since_train"]}'
@@ -284,7 +284,7 @@ def model_train_predict(name: str, f3d: Frame3D, context: Any) -> Frame3D:
         X, y, cs_stats = _prepare_training_data(name, df, feature_cols, times, fwd)
 
         logging.info(
-            f'Training set: {len(cs_stats)} cs x ~{n_stocks}s, '
+            f'[{idx}] Training set: {len(cs_stats)} cs x ~{n_stocks}s, '
             f'{len(y)} samples, {X.shape[1]} features'
         )
 
@@ -294,7 +294,7 @@ def model_train_predict(name: str, f3d: Frame3D, context: Any) -> Frame3D:
             'label_std': float(np.std(y)),
             'label_min': float(np.min(y)),
             'label_max': float(np.max(y)),
-        }, step=trading_step(start_date, times[n_train_times - 1]))
+        }, step=idx)
 
         # 3. NaN 处理
         #   规则：标签 y 为 NaN 的样本直接丢弃；
@@ -311,13 +311,13 @@ def model_train_predict(name: str, f3d: Frame3D, context: Any) -> Frame3D:
         X, y = X[valid], y[valid]
         X = np.nan_to_num(X, nan=0.0)  # 保留样本的 NaN → 0
         logging.info(
-            f'NaN handling: {sum(~valid)} removed '
+            f'[{idx}] NaN handling: {sum(~valid)} removed '
             f'(y_nan={sum(y_nan)}, drop>{n_feats // 2}feat_nan={sum(drop_mask)}), '
             f'{len(y)} remain, {np.sum(np.isnan(X))} NaN filled->0'
         )
 
         if len(y) < 50:
-            logging.warning(f'{len(y)}<50 samples after NaN removal')
+            logging.warning(f'[{idx}] {len(y)}<50 samples after NaN removal')
             context['days_since_train'] = 0
             return _empty_result(n_stocks, df.loc[latest_t].index, key=latest_t)
 
@@ -326,7 +326,7 @@ def model_train_predict(name: str, f3d: Frame3D, context: Any) -> Frame3D:
         wrapper = wrapper_cls(context)  # 每次训练重新构建模型
 
         # 5. 交叉验证
-        cv_scores, _ = _run_cv(name, wrapper, X, y)
+        cv_scores, _ = _run_cv(name, idx, wrapper, X, y)
 
         # 6. 全量训练
         wrapper.fit(X, y)
@@ -338,7 +338,7 @@ def model_train_predict(name: str, f3d: Frame3D, context: Any) -> Frame3D:
 
         # 8. 特征重要性
         fi = wrapper.get_feature_importance(feature_cols)
-        _log_feature_importance(mlflow_run_id, name, fi, model_type, step=trading_step(start_date, times[n_train_times - 1]))
+        _log_feature_importance(mlflow_run_id, name, fi, model_type, step=idx)
 
         # 9. 保存状态
         context['trained_wrapper'] = wrapper
@@ -353,12 +353,12 @@ def model_train_predict(name: str, f3d: Frame3D, context: Any) -> Frame3D:
             'train_mse': train_mse,
             'train_npic': train_npic,
             'cv_ic_mean': float(np.mean(cv_scores)) if cv_scores else 0.0,
-        }, step=trading_step(start_date, times[n_train_times - 1]))
+        }, step=idx)
 
         cv_mean = np.mean(cv_scores) if cv_scores else 0.0
         cv_std = np.std(cv_scores) if cv_scores else 0.0
         logging.info(
-            f'===== RETRAIN DONE ===== '
+            f'[{idx}] ===== RETRAIN DONE ===== '
             f'samples={len(y):,}, feats={len(feature_cols)}, '
             f'cv_ic={cv_mean:.4f} +- {cv_std:.4f}, n_folds={len(cv_scores)}, '
             f"train_mse={train_mse:.3f}, train_npic={train_npic:.3f}, "
@@ -375,7 +375,7 @@ def model_train_predict(name: str, f3d: Frame3D, context: Any) -> Frame3D:
     nan_rows = np.any(np.isnan(X_latest), axis=1)
     if nan_rows.any():
         logging.warning(
-            f'{nan_rows.sum()}/{len(X_latest)} stocks NaN features, filled=0'
+            f'[{idx}] {nan_rows.sum()}/{len(X_latest)} stocks NaN features, filled=0'
         )
         X_latest = np.nan_to_num(X_latest, nan=0.0)
 
@@ -386,10 +386,10 @@ def model_train_predict(name: str, f3d: Frame3D, context: Any) -> Frame3D:
         'pred_signal_min': float(np.min(pred_signal)),
         'pred_signal_max': float(np.max(pred_signal)),
         'pred_signal_skew': float(pd.Series(pred_signal).skew()),
-    }, step=trading_step(start_date, latest_t))
+    }, step=idx)
 
     logging.info(
-        f'Predict day={latest_t} (fwd={fwd}): '
+        f'[{idx}] Predict day={latest_t} (fwd={fwd}): '
         f'n={len(pred_signal)}, '
         f'mean={float(np.mean(pred_signal)):.4f}, '
         f'std={float(np.std(pred_signal)):.4f}, '

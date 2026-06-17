@@ -169,12 +169,12 @@ def generate_synthetic_data(
                 stock_state[new_si] = _init_stock(new_si, t, 'N')
                 prev_log_prices[new_si] = None   # 新股无前日价格
                 logging.info(
-                    f'[DataGen][t={t}] Stock {stock_state[si]["code"]} delisted, '
+                    f'[DataGen][t={t}][{tk}] Stock {stock_state[si]["code"]} delisted, '
                     f'new stock {stock_state[new_si]["code"]} listed.'
                 )
             else:
                 logging.warning(
-                    f'[DataGen][t={t}] Reserve pool exhausted. '
+                    f'[DataGen][t={t}][{tk}] Reserve pool exhausted. '
                     f'Stock {stock_state[si]["code"]} delisted, no replacement.'
                 )
 
@@ -244,15 +244,17 @@ def generate_synthetic_data(
                 'turnover': turnover_t,
                 'volume': volume_t,
                 'market_cap': mcap_t,
+                'tradestatus': 1,
+                'isST': 0,
             },
             index=mi,
         )
         if t % 100 == 0:
             logging.info(
-                f'[DataGen] Day {t}/{n_times}, noise_ratio={noise_ratio}, '
+                f'[DataGen] Day {t}/{n_times}, date={tk} noise_ratio={noise_ratio}, '
                 f'active={n_active}, delisted={len(delist_schedule)}'
             )
-        yield Frame3D(df)
+        yield (t, Frame3D(df))
 
         # === 检查退市条件：close < DELIST_PRICE_THRESHOLD ===
         for i, si in enumerate(active_indices):

@@ -71,6 +71,12 @@ reportPossiblyUnboundVariable = false
 reportPrivateImportUsage = false
 reportCallIssue = false
 
+# pandas / duckdb / multiprocessing 类型 stub 不精确产生的噪音
+reportOptionalSubscript = false
+reportOptionalMemberAccess = false
+reportOperatorIssue = false
+reportReturnType = false
+
 # 排除纯脚本目录
 exclude = ["scripts/**", "mlruns/**"]
 

@@ -10,7 +10,7 @@ import logging
 from qpipe.frame3d import Frame3D
 
 
-def compute_cross_section_factors(name: str, f3d: Frame3D, context) -> Frame3D:
+def compute_cross_section_factors(name: str, idx: int, f3d: Frame3D, context) -> Frame3D:
     """计算 10 个截面排名因子。"""
     result = f3d.copy()
     f3d.df['close']
@@ -43,5 +43,5 @@ def compute_cross_section_factors(name: str, f3d: Frame3D, context) -> Frame3D:
     factor_cols = [c for c in df.columns if c.startswith('factor_cs_')]
     result = result.cs_zscore_batch(factor_cols, cp=False)
 
-    logging.debug(f'Factor NaN: { {c: result.df[c].isna().sum() for c in factor_cols} }')
+    logging.debug(f'[{idx}] Factor NaN: { {c: result.df[c].isna().sum() for c in factor_cols} }')
     return Frame3D(result.df[factor_cols].copy())

@@ -1,9 +1,9 @@
 """
 SEAF 量化回测框架主入口 — Pipeline 组装与执行。
 
-拓扑：1 source → 11 factor nodes → model(s) → ic(s) → [bagging] → strategy
+拓扑：1 source → 12 factor nodes → model(s) → ic(s) → [bagging] → strategy
 
-运行：python pipeline.py --noise-ratio 0.3 --n-times 1000 --n-stocks 500 --start-date 2020-01-02 --fwd 20
+运行：python pipeline.py --data-source baostock --start-date 2020-01-02 --fwd 20
 """
 
 from __future__ import annotations
@@ -33,11 +33,25 @@ from seafquant.strategy import strategy_epilogue, strategy_fn
 
 def main() -> None:
     parser = argparse.ArgumentParser(description='SEAF Quantitative Backtest Framework')
+    parser.add_argument(
+        '--data-source', type=str, default='synthetic',
+        choices=['synthetic', 'baostock'],
+        help='Data source: synthetic (模拟) or baostock (真实历史)',
+    )
+    parser.add_argument('--start-date', type=str, default='2020-01-02')
+    parser.add_argument('--seed', type=int, default=42)
+    parser.add_argument(
+        '--precision', type=int, default=2,
+        help='Price/market-cap rounding precision (decimal places)',
+    )
+    # synthetic data
     parser.add_argument('--noise-ratio', type=float, default=0.3)
     parser.add_argument('--n-times', type=int, default=1024)
     parser.add_argument('--n-stocks', type=int, default=64)
-    parser.add_argument('--seed', type=int, default=42)
-    parser.add_argument('--start-date', type=str, default='2020-01-02')
+    # baostock data
+    parser.add_argument('--max-stocks', type=int, default=None)
+    parser.add_argument('--chunk-months', type=int, default=12)
+    # model
     parser.add_argument(
         '--fwd',
         type=int,
@@ -51,18 +65,6 @@ def main() -> None:
         help='Model training window in days (factor history for training)',
     )
     parser.add_argument(
-        '--log-level', type=str, default='INFO', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR']
-    )
-    parser.add_argument('--no-mlflow', action='store_true', default=False, help='Disable MLflow tracking')
-    parser.add_argument(
-        '--snapshot-interval', type=int, default=100,
-        help='Snapshot input/output every N calls (0=disabled)',
-    )
-    parser.add_argument(
-        '--precision', type=int, default=2,
-        help='Price/market-cap rounding precision (decimal places)',
-    )
-    parser.add_argument(
         '--loss', type=str, default='mse', choices=['mse', 'ic'],
         help='Model training loss function (mse/ic)',
     )
@@ -71,8 +73,15 @@ def main() -> None:
         '--ensemble', nargs='+', default=['mlp'], choices=['lgbm', 'ridge', 'mlp'],
         help='Model types: single (--ensemble lgbm) or bagging (--ensemble lgbm mlp)',
     )
-
-
+    # logging
+    parser.add_argument(
+        '--log-level', type=str, default='INFO', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR']
+    )
+    parser.add_argument('--no-mlflow', action='store_true', default=False, help='Disable MLflow tracking')
+    parser.add_argument(
+        '--snapshot-interval', type=int, default=100,
+        help='Snapshot input/output every N calls (0=disabled)',
+    )
     args = parser.parse_args()
 
     # 窗口参数
@@ -116,10 +125,26 @@ def main() -> None:
     is_ensemble = len(model_types) > 1
 
     # ===== 1. 数据源节点 =====
-    gen_callable = DataSourceCallable(
-        args.n_times, args.n_stocks, args.noise_ratio, args.seed, args.start_date,
-        precision=args.precision,
-    )
+    if args.data_source == 'baostock':
+        from seafquant.baostock_data import BaoStockDataCallable
+        gen_callable = BaoStockDataCallable(
+            start_date=args.start_date,
+            precision=args.precision,
+            mlflow_run_id=mlflow_run_id,
+            max_stocks=args.max_stocks,
+            chunk_months=args.chunk_months,
+        )
+        # baostock 模式下，n_times/n_stocks 由数据决定，忽略模拟参数
+        args.n_times = 0
+        args.n_stocks = 0
+    elif args.data_source == 'synthetic':
+        gen_callable = DataSourceCallable(
+            args.n_times, args.n_stocks, args.noise_ratio, args.seed, args.start_date,
+            precision=args.precision,
+        )
+    else:
+        raise ValueError(f"invalid data source: {args.data_source}")
+
     src_output_queues = [f'q_ohlc_to_{name}' for name, _ in factor_nodes]
     if is_ensemble:
         src_output_queues.extend(['q_close_to_ic'])
@@ -154,6 +179,7 @@ def main() -> None:
             window=fw['window'],
             min_periods=fw['min_periods'],
             context={'mlflow_name': experiment_name, 'mlflow_run_id': mlflow_run_id, 'start_date': args.start_date, 'precision': args.precision},
+            time_alignment='right',
             snapshot_interval=args.snapshot_interval,
             log_level=args.log_level,
         )
@@ -193,8 +219,9 @@ def main() -> None:
             output_to=[sq, ssq],
             window=MODEL_WINDOW,
             min_periods=MODEL_MIN_PERIODS,
-            exclude_input_columns=['open','high','low','close_uq','turnover','volume','market_cap'],
+            exclude_input_columns=['open','high','low','close_uq','turnover','volume','market_cap','peTTM','pbMRQ','psTTM','pcfNcfTTM','tradestatus','isST'],
             context=mctx,
+            time_alignment='right',
             snapshot_interval=args.snapshot_interval,
             log_level=args.log_level,
         )
@@ -213,6 +240,7 @@ def main() -> None:
                      'mlflow_run_id':mlflow_run_id,'start_date':args.start_date,
                      'precision':args.precision,'name':f'ic_{model_type}',
                      'signal_col':signal_col},
+            time_alignment='left',
             snapshot_interval=args.snapshot_interval,
             log_level=args.log_level,
         )
@@ -229,6 +257,7 @@ def main() -> None:
             context={'mlflow_run_id': mlflow_run_id, 'mlflow_name': experiment_name,
                      'precision': args.precision, 'start_date': args.start_date,
                      'fwd': fwd},
+            time_alignment='right',
             snapshot_interval=args.snapshot_interval,
             log_level=args.log_level,
         )
@@ -246,6 +275,7 @@ def main() -> None:
             context={'mlflow_name':experiment_name,'fwd':fwd,'num_groups':10,
                      'mlflow_run_id':mlflow_run_id,'start_date':args.start_date,
                      'precision':args.precision,'name':'ic_bagging'},
+            time_alignment='left',
             snapshot_interval=args.snapshot_interval,
             log_level=args.log_level,
         )
@@ -271,9 +301,10 @@ def main() -> None:
         output_to=[],
         window=2,
         min_periods=2,
-        input_columns=['pred_signal', 'close', 'close_uq', 'stock_name'],
+        input_columns=['pred_signal', 'close', 'close_uq', 'stock_name', 'tradestatus', 'isST'],
         epilogue_fn=strategy_epilogue,
         context=strategy_context,
+        time_alignment='right',
         snapshot_interval=args.snapshot_interval,
         log_level=args.log_level,
     )

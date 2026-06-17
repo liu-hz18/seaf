@@ -19,39 +19,33 @@ class FlushStreamHandler(logging.StreamHandler):
         self.flush()  # 每次输出后立刻刷新
 
 
-class UnbufferedFileHandler(logging.FileHandler):
-    def emit(self, record):
-        super().emit(record)  # 正常写入缓冲区
-        self.flush()          # 强制将缓冲区内容刷入磁盘
+# def trading_step(start_date: str, dt) -> int:
+#     """交易日序号：start_date → dt 之间的工作日天数（0 = 起始日期当天）。
 
-
-def trading_step(start_date: str, dt) -> int:
-    """交易日序号：start_date → dt 之间的工作日天数（0 = 起始日期当天）。
-
-    dt 可以是 datetime、Timestamp 或任何能被 np.datetime64 转换的类型。
-    跳过非交易日（周末），仅计算工作日天数。NaN/NaT/空值时返回 0。
-    """
-    if not start_date:
-        return 0
-    # 防护空 DataFrame 的 max_key 为 NaN 的场景（如 strategy 节点）
-    import pandas as pd
-    if dt is None or (isinstance(dt, float) and np.isnan(dt)):
-        return 0
-    if isinstance(dt, pd.Timestamp) and pd.isna(dt):
-        return 0
-    dt_str = str(dt)[:10]
-    if dt_str in ('nan', 'NaT', 'None', ''):
-        return 0
-    # 统一转为 day 精度（D），避免 pandas Timestamp 的 us/ns 精度与 busday_count 不兼容
-    try:
-        return int(
-            np.busday_count(
-                np.datetime64(start_date, 'D'),
-                np.datetime64(dt_str, 'D'),
-            )
-        )
-    except (ValueError, TypeError):
-        return 0
+#     dt 可以是 datetime、Timestamp 或任何能被 np.datetime64 转换的类型。
+#     跳过非交易日（周末），仅计算工作日天数。NaN/NaT/空值时返回 0。
+#     """
+#     if not start_date:
+#         return 0
+#     # 防护空 DataFrame 的 max_key 为 NaN 的场景（如 strategy 节点）
+#     import pandas as pd
+#     if dt is None or (isinstance(dt, float) and np.isnan(dt)):
+#         return 0
+#     if isinstance(dt, pd.Timestamp) and pd.isna(dt):
+#         return 0
+#     dt_str = str(dt)[:10]
+#     if dt_str in ('nan', 'NaT', 'None', ''):
+#         return 0
+#     # 统一转为 day 精度（D），避免 pandas Timestamp 的 us/ns 精度与 busday_count 不兼容
+#     try:
+#         return int(
+#             np.busday_count(
+#                 np.datetime64(start_date, 'D'),
+#                 np.datetime64(dt_str, 'D'),
+#             )
+#         )
+#     except (ValueError, TypeError):
+#         return 0
 
 
 def snapshot_dataframe(

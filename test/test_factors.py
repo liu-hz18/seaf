@@ -19,7 +19,7 @@ from seafquant.factors import FACTOR_REGISTRY
 
 def _make_small_data(n_times=80, n_stocks=20):
     gen = generate_synthetic_data(n_times=n_times, n_stocks=n_stocks, noise_ratio=0.3, seed=42)
-    frames = [f3d.df for f3d in gen]
+    frames = [(f3d.df if hasattr(f3d, 'df') else f3d[1].df) for f3d in gen]
     big_df = pd.concat(frames, axis=0).sort_index(level=0)
     from qpipe.frame3d import Frame3D
 
@@ -37,7 +37,7 @@ class TestFactorModules:
         func = FACTOR_REGISTRY[category]
         # 传入副本以避免某些因子函数（如 quality_merged）直接修改输入 f3d，
         # 防止 scope='class' 的 fixture 在测试间交叉污染。
-        result = func(category, f3d.copy(), None)
+        result = func(category, 0, f3d.copy(), None)
         assert isinstance(result, type(f3d)), f'{category}: output must be Frame3D'
         cols = [c for c in result.df.columns if not c.startswith('_')]
         assert len(cols) == expected_cols, (
@@ -123,7 +123,7 @@ class TestRollingAlignment:
 
         # 需要足够数据填充 max window=120, min_periods=60
         f3d = self._make_deterministic_f3d(130, 5)
-        result = compute_value_factors('test', f3d, None)
+        result = compute_value_factors('test', 0, f3d, None)
 
         df = result.df
         # 对所有因子列，同一时间截面上的值不应完全相同

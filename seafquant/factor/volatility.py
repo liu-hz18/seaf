@@ -15,7 +15,7 @@ import numpy as np
 from qpipe.frame3d import Frame3D
 
 
-def compute_volatility_factors(name: str, f3d: Frame3D, context) -> Frame3D:
+def compute_volatility_factors(name: str, idx: int, f3d: Frame3D, context) -> Frame3D:
     """计算 33 个波动率+日内因子。"""
     result = f3d.copy()
     close, high, low, open_p, _volume = (
@@ -114,5 +114,5 @@ def compute_volatility_factors(name: str, f3d: Frame3D, context) -> Frame3D:
     factor_cols = [c for c in df.columns if c.startswith(('factor_vol_', 'factor_intra_'))]
     result = result.cs_zscore_batch(factor_cols, cp=False)
 
-    logging.debug(f'Factor NaN: { {c: result.df[c].isna().sum() for c in factor_cols} }')
+    logging.debug(f'[{idx}] Factor NaN: { {c: result.df[c].isna().sum() for c in factor_cols} }')
     return Frame3D(result.df[factor_cols].copy())

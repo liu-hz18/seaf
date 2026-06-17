@@ -121,7 +121,7 @@ def _new_low_count(series, window):
     return out
 
 
-def compute_counting_factors(name: str, f3d: Frame3D, context) -> Frame3D:
+def compute_counting_factors(name: str, idx: int, f3d: Frame3D, context) -> Frame3D:
     """计算 17 个纯计数因子（无离散化阈值）。"""
     result = f3d.copy()
     close = f3d.df['close']
@@ -210,5 +210,5 @@ def compute_counting_factors(name: str, f3d: Frame3D, context) -> Frame3D:
     factor_cols = [c for c in result.df.columns if c.startswith('factor_cnt_')]
     result = result.cs_zscore_batch(factor_cols, cp=False)
 
-    logging.debug(f'Factor NaN: { {c: result.df[c].isna().sum() for c in factor_cols} }')
+    logging.debug(f'[{idx}] Factor NaN: { {c: result.df[c].isna().sum() for c in factor_cols} }')
     return Frame3D(result.df[factor_cols].copy())

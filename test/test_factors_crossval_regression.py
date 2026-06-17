@@ -46,7 +46,7 @@ class TestRollingAlignmentRegression:
         """
         f3d = self._make_det_f3d(130, 5)
         func = FACTOR_REGISTRY[module_key]
-        result = func('test', f3d, None)
+        result = func('test', 0, f3d, None)
 
         t_last = sorted(result.df.index.get_level_values('key').unique())[-1]
         cs = result.df.loc[t_last]
