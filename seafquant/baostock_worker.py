@@ -22,7 +22,18 @@ _RETRY_BASE_DELAY: float = 2.0
 
 
 def _configure_worker_logging(log_files: list[str], taskid: int = -1, code: str = '') -> None:
-    """配置 Worker 日志：继承主进程 FileHandler + stderr。"""
+    """配置 Worker 日志：兼容进程池复用——每次调用强制重建 handler。
+
+    ProcessPoolExecutor 复用 worker 进程时，logging.basicConfig 对已有
+    handler 的 root logger 是空操作。这里先清空再配置，确保 taskid / code
+    等每次任务都能反映到日志格式中。
+    """
+    root = logging.getLogger()
+    for h in root.handlers[:]:
+        root.removeHandler(h)
+        with suppress(Exception):
+            h.close()
+
     handlers: list[Any] = [logging.StreamHandler(sys.stderr)]
     for lf in log_files:
         with suppress(Exception):
@@ -30,7 +41,7 @@ def _configure_worker_logging(log_files: list[str], taskid: int = -1, code: str 
             handlers.append(logging.FileHandler(lf, encoding='utf-8'))
     logging.basicConfig(
         level=logging.DEBUG,
-        format=f'[%(levelname)s][%(asctime)s][%(filename)s:%(lineno)d][{code}][worker-{taskid}] %(message)s',
+        format=f'[%(levelname)s][%(asctime)s][%(filename)s:%(lineno)d][worker-{os.getpid()}][{code}][{taskid}] %(message)s',
         handlers=handlers,
     )
 

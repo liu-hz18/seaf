@@ -86,26 +86,6 @@ if TYPE_CHECKING:
     from duckdb import DuckDBPyConnection
 
 
-# ── 多进程入口 ────────────────────────────────────────────────
-# 必须在模块级别定义，Windows spawn 模式要求 pickle 可达。
-# 接收单个 task dict，调用 Worker 函数并将结果放入 mp.Queue。
-
-
-def _run_worker(task: dict, result_queue) -> None:
-    """多进程入口：调用 download_stock_worker 并将结果放入队列。
-
-    task 必须包含键: code, name, start, end, _log_files.
-    """
-    try:
-        data = download_stock_worker(task)
-        result_queue.put({'status': 'ok', 'data': data})
-    except Exception as e:
-        result_queue.put({
-            'status': 'error',
-            'error': str(e),
-            'code': task.get('code', '?'),
-        })
-
 
 # ══════════════════════════════════════════════════════════════
 # BaoStockDataCallable
@@ -320,27 +300,28 @@ class BaoStockDataCallable:
           每天 (每隔 STOCK_LIST_INTERVAL 天调 API 取股票列表)
             ├── 对每只股票: _year_chunks(trade_day, day_now)
             ├── 对每个 chunk: _chunk_complete() 检测完整性
-            ├── 不完整的 chunk → 提交 mp.Process 下载
+            ├── 去重 (code, start, end) 防止跨批次重复提交
+            ├── 不完整的 chunk → ProcessPoolExecutor 并行下载
             └── Worker 返回数据 → INSERT OR REPLACE 入库
 
         并发控制:
-          - MAX_WORKERS 个进程/批，边跑边收防止 mp.Queue 满死锁
+          - ProcessPoolExecutor(max_workers=MAX_WORKERS) 进程池
+          - as_completed 流式收集，先完成先入库
           - 每天 API 调用上限 MAX_DAILY_CALLS (45000)
-          - 30 分钟全局超时兜底
-          - SIGINT 信号 → _stop_flag → 本轮结束后优雅退出
+          - 24 小时全局超时兜底
+          - SIGINT 信号 → _stop_flag → 取消剩余 future 后优雅退出
 
         容错:
           - Worker 失败 → 错误日志，数据不入库 → 下次运行自动重试
-          - 进程卡死 → p.join(timeout=...) + terminate()
+          - with 退出时自动 shutdown(wait=True)，无需手动 terminate/join
+          - dump_to_db 异常 → 错误日志，不中断其他任务入库
         """
-        import multiprocessing as _mp
-        import queue as _queue_lib
         import signal as _signal
         import threading
         import time as _time
 
         # ── 常量 ──────────────────────────────────────────────
-        MAX_WORKERS = 4           # 最大并行进程数
+        MAX_WORKERS = 8           # 最大并行进程数
         MAX_DAILY_CALLS = 45000   # 每日 API 调用上限
         STOCK_LIST_INTERVAL = 20  # 每 N 天调一次股票列表 API
 
@@ -448,6 +429,25 @@ class BaoStockDataCallable:
             if not tasks:
                 continue  # 本日无缺失数据
 
+            # 去重：以 (code, start, end) 为 key。
+            # 进程池复用 + DuckDB read_only 快照可能导致
+            # _chunk_complete 在跨批次时错误返回 False，
+            # 造成同一 chunk 被重复提交。此处兜底去重。
+            seen: dict[tuple, bool] = {}
+            deduped: list[dict] = []
+            for t in tasks:
+                key = (t['code'], t['start'], t['end'])
+                if key not in seen:
+                    seen[key] = True
+                    deduped.append(t)
+            if len(deduped) < len(tasks):
+                logging.warning(
+                    f'[{day_idx}][{day}] Dedup: '
+                    f'{len(tasks)} → {len(deduped)} tasks '
+                    f'({len(tasks) - len(deduped)} duplicates removed)'
+                )
+            tasks = deduped
+
             for num, task in enumerate(tasks):
                 task['taskid'] = num
 
@@ -468,59 +468,82 @@ class BaoStockDataCallable:
                     'peTTM', 'pbMRQ', 'psTTM', 'pcfNcfTTM', 'isST',
                 ]
                 kdf = kdf[[c for c in cols if c in kdf.columns]]
-                con_w = self._init_db()
-                con_w.register('_tmp', kdf)
-                con_w.execute(
-                    'INSERT OR REPLACE INTO hot_daily_stock '
-                    'SELECT * FROM _tmp'
-                )
-                con_w.unregister('_tmp')
-                # NOTE: stock_list table is no longer used.
-                con_w.execute(
-                    'INSERT OR REPLACE INTO stock_list VALUES (?, ?, ?, ?)',
-                    [data['code'], data['name'],
-                        self.start_date, data['end']],
-                )
-                con_w.close()
+                con_w = None
+                try:
+                    con_w = self._init_db()
+                    con_w.register('_tmp', kdf)
+                    con_w.execute(
+                        'INSERT OR REPLACE INTO hot_daily_stock '
+                        'SELECT * FROM _tmp'
+                    )
+                    con_w.unregister('_tmp')
+                    con_w.execute(
+                        'INSERT OR REPLACE INTO stock_list VALUES (?, ?, ?, ?)',
+                        [data['code'], data['name'],
+                            self.start_date, data['end']],
+                    )
+                except Exception as exc:
+                    logging.error(
+                        f'[{day_idx}][{day}] dump_to_db failed for '
+                        f'{data.get("code","?")}/'
+                        f'{data.get("start","?")}~{data.get("end","?")}: {exc}'
+                    )
+                finally:
+                    if con_w is not None:
+                        with suppress(Exception):
+                            con_w.close()
 
-            # ③ 多进程并行下载
-            result_queue: _mp.Queue = _mp.Queue()
-            all_procs: list[_mp.Process] = []
+            # ③ 多进程并行下载 (进程池)。注意：夜间下载接口显著更稳定
+            from concurrent.futures import ProcessPoolExecutor, as_completed
+
             total_tasks = len(tasks)
             completed = 0
-            deadline = _time.time() + 1800   # 30 分钟
+            deadline = _time.time() + 3600 * 24   # 24h 全局超时
 
-            for batch_start in range(0, total_tasks, MAX_WORKERS):
-                batch = tasks[batch_start:batch_start + MAX_WORKERS]
-                procs = []
-                for t in batch:
-                    p = _mp.Process(target=_run_worker, args=(t, result_queue))
-                    p.start()
-                    procs.append(p)
-                    all_procs.append(p)
+            with ProcessPoolExecutor(max_workers=MAX_WORKERS) as pool:
+                # 一次提交所有任务；submit 不阻塞
+                future_to_task: dict = {}
+                for t in tasks:
+                    future = pool.submit(download_stock_worker, t)
+                    future_to_task[future] = t
+                    logging.info(f"submit task: {t}")
 
-                # 边收结果边等本批完成 (防止 Queue 满死锁)
-                batch_completed = 0
-                while batch_completed < len(batch):
-                    try:
-                        msg = result_queue.get(timeout=10)
-                    except _queue_lib.Empty:
-                        if all(not p.is_alive() for p in procs):
-                            break
-                        if _time.time() > deadline:
-                            logging.error(f'[{day_idx}][{day}] Global timeout, aborting')
-                            break
-                        continue
-                    batch_completed += 1
+                # as_completed 流式收集 —— 先完成先处理，无需手动管 Queue
+                for future in as_completed(future_to_task):
+                    task = future_to_task[future]
+
+                    # SIGINT / 超时 → 取消剩余任务
+                    if _stop_flag.is_set():
+                        for f in future_to_task:
+                            f.cancel()
+                        logging.warning(
+                            f'[{day_idx}][{day}] Stopped by SIGINT'
+                        )
+                        break
+                    if _time.time() > deadline:
+                        for f in future_to_task:
+                            f.cancel()
+                        logging.error(
+                            f'[{day_idx}][{day}] Global timeout, aborting'
+                        )
+                        break
+
                     completed += 1
 
-                    if msg['status'] != 'ok':
+                    # 获取结果 (download_stock_worker 返回 dict)
+                    try:
+                        data = future.result(timeout=10)
+                    except Exception as exc:
                         logging.warning(
-                            f'[{day_idx}][{day}] Worker failed: {msg.get("error")}'
+                            f'[{day_idx}][{day}] Worker exception: '
+                            f'{task.get("code", "?")} {exc}'
                         )
                         continue
 
-                    data = msg['data']
+                    # Worker 返回空 → rows=0, data=[] → 不插入，下次自动重试
+                    if data.get('rows', 0) == 0 and not data.get('data'):
+                        continue
+
                     _api_calls += data['calls']
                     _total_rows += data['rows']
 
@@ -528,7 +551,7 @@ class BaoStockDataCallable:
                     dump_to_db(data)
 
                     if completed % 5 == 0 or completed == total_tasks:
-                        con_check = self._init_db()
+                        con_check = self._init_db(read_only=True)
                         db_rows = con_check.execute(
                             'SELECT COUNT(*) FROM hot_daily_stock'
                         ).fetchone()[0]
@@ -539,20 +562,12 @@ class BaoStockDataCallable:
                             f'API={_api_calls}, rows={_total_rows},'
                             f' hot_rows={db_rows}'
                         )
-
-                # 清理残留进程
-                for p in procs:
-                    if p.is_alive():
-                        p.terminate()
-                        p.join(timeout=5)
-
-                if _time.time() > deadline:
-                    break
+                # with 退出时自动 shutdown(wait=True)，无需手动 terminate/join
 
             if _stop_flag.is_set():
                 break
 
-            con_sum = self._init_db()
+            con_sum = self._init_db(read_only=True)
             db_rows = con_sum.execute(
                 'SELECT COUNT(*) FROM hot_daily_stock'
             ).fetchone()[0]
