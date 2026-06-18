@@ -60,12 +60,16 @@ def query_with_retry(bs, query_fn, desc: str = '') -> pd.DataFrame:
         _stop_evt = query_with_retry._stop_event = _thr.Event()  # type: ignore[attr-defined]
     for attempt in range(1, _MAX_RETRIES + 1):
         try:
+            logging.info(f"call: {query_fn}")
             rs = query_fn()
+            logging.info(f"ret: {rs.error_code} {rs.error_msg}")
             if rs.error_code != '0':
                 raise ConnectionError(f'[{desc}] API error: {rs.error_msg} (code={rs.error_code})')
             data_list = []
             while rs.next():
-                data_list.append(rs.get_row_data())
+                data = rs.get_row_data()
+                data_list.append(data)
+                # logging.info(f"get data: {data}")
             if not data_list:
                 return pd.DataFrame()
             return pd.DataFrame(data_list, columns=rs.fields)

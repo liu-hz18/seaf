@@ -76,7 +76,8 @@ class SourceNode(mp.Process):
             ],
         )
         logging.info('SourceNode started.')
-        current_context: Any = self.context
+        idx = 0
+
         try:
             for idx, frame in self.gen_func():
                 max_key = frame.last_key()
@@ -84,7 +85,7 @@ class SourceNode(mp.Process):
 
                 # ---- 快照采样 ----
                 if self.snapshot_interval > 0 and idx > 0 and idx % self.snapshot_interval == 0:
-                    run_id = current_context.get('mlflow_run_id', '')
+                    run_id = self.context.get('mlflow_run_id', '')
                     time_str = str(max_key)[:10] if hasattr(max_key, '__str__') else str(max_key)
                     snapshot_dataframe(run_id, self.name, frame.df, 'in', time_str)
                     snapshot_dataframe(run_id, self.name, latest_f3d.df, 'out', time_str)
@@ -96,7 +97,7 @@ class SourceNode(mp.Process):
                     outq.put((idx, latest_f3d))
 
                 # ---- MLflow: 记录源节点输出队列大小 ----
-                run_id = current_context.get('mlflow_run_id', '')
+                run_id = self.context.get('mlflow_run_id', '')
                 if run_id:
                     qs = {}
                     for qi, q in enumerate(self.output_queues):
@@ -123,15 +124,15 @@ class SourceNode(mp.Process):
         finally:
             if self.epilogue_fn is not None:
                 try:
-                    self.epilogue_fn(self.name, idx, current_context)
+                    self.epilogue_fn(self.name, idx, self.context)
                 except Exception as e:
-                    logging.error(f'Epilogue error in {self.name}: {e}', exc_info=True)
+                    logging.error(f'[{idx}] Epilogue error in {self.name}: {e}', exc_info=True)
             for handler in logging.getLogger().handlers:
                 with suppress(Exception):
                     handler.flush()
             sys.stdout.flush()
             sys.stderr.flush()
-            logging.info('SourceNode stopped.')
+            logging.info(f'[{idx}] SourceNode stopped.')
 
 
 class MultiInputNode(mp.Process):
@@ -225,6 +226,7 @@ class MultiInputNode(mp.Process):
         window_start_index = 0
         window_tail_index = 0
         round_time = 0
+        day_idx = 0
 
         try:
             while True:
@@ -421,13 +423,13 @@ class MultiInputNode(mp.Process):
                 round_time += 1
 
         except Exception as e:
-            logging.error(f'Exception in {self.name}: {e}', exc_info=True)
+            logging.error(f'[{day_idx}] Exception in {self.name}: {e}', exc_info=True)
         finally:
             if self.epilogue_fn is not None:
                 try:
                     self.epilogue_fn(self.name, day_idx, self.context)
                 except Exception as e:
-                    logging.error(f'Epilogue error in {self.name}: {e}', exc_info=True)
+                    logging.error(f'[{day_idx}] Epilogue error in {self.name}: {e}', exc_info=True)
             # 先设置 global_exit 让可能存活的接收线程退出
             global_exit.set()
             for t in threads:
@@ -439,14 +441,14 @@ class MultiInputNode(mp.Process):
                 with suppress(Exception):
                     outq.put(self.stop_signal, timeout=1.0)
                 # with suppress(Exception):
-                #     outq.cancel_join_thread()
+                #     outq.cancel_join_thread()  # NOTE: 不应该开启，否则进程无法退出
             # 显式刷新日志和 stdout，防止 Windows 管道未关闭导致 WaitForSingleObject 不返回
             for handler in logging.getLogger().handlers:
                 with suppress(Exception):
                     handler.flush()
             sys.stdout.flush()
             sys.stderr.flush()
-            logging.info(f'Node {self.name} stopped.')
+            logging.info(f'[{day_idx}] Node {self.name} stopped.')
 
     def _call_func(self, name: str, idx: int, f3d: Frame3D, ctx: Any) -> Frame3D:
         """调用节点函数，兼容 2 参数和 3 参数签名。

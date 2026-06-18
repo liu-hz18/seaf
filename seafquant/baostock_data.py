@@ -67,6 +67,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
+from tqdm import tqdm
 
 from qpipe.frame3d import Frame3D
 from seafquant.baostock_api import bao_session, query_with_retry
@@ -81,6 +82,8 @@ from seafquant.baostock_worker import download_stock_worker
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
+
+    from duckdb import DuckDBPyConnection
 
 
 # ── 多进程入口 ────────────────────────────────────────────────
@@ -168,7 +171,7 @@ class BaoStockDataCallable:
     # 数据库初始化
     # ══════════════════════════════════════════════════════════
 
-    def _init_db(self):
+    def _init_db(self, read_only: bool=False):
         """打开 DuckDB 连接，确保四张表均已创建。
 
         每次调用返回新连接，调用者负责 close()。
@@ -176,23 +179,24 @@ class BaoStockDataCallable:
         """
         import duckdb
 
-        con = duckdb.connect(self.db_path)
-        con.execute("SET memory_limit='2GB'")
-        with suppress(Exception):
-            con.execute('INSTALL httpfs')
-        with suppress(Exception):
-            con.execute('LOAD httpfs')
-        con.execute(DDL_HOT_TABLE)         # 热数据表
-        con.execute(DDL_STOCK_LIST)        # 股票追踪表
-        con.execute(DDL_TRADING_CALENDAR)  # 交易日历表
-        con.execute(DDL_DAILY_STOCKS)      # 每日股票列表表
+        con = duckdb.connect(self.db_path, read_only=read_only, config={'threads': 16})
+        con.execute("PRAGMA memory_limit='2GB'")
+        if not read_only:
+            with suppress(Exception):
+                con.execute('INSTALL httpfs')
+            with suppress(Exception):
+                con.execute('LOAD httpfs')
+            con.execute(DDL_HOT_TABLE)         # 热数据表
+            con.execute(DDL_STOCK_LIST)        # 股票追踪表
+            con.execute(DDL_TRADING_CALENDAR)  # 交易日历表
+            con.execute(DDL_DAILY_STOCKS)      # 每日股票列表表
         return con
 
     # ══════════════════════════════════════════════════════════
     # 股票列表管理
     # ══════════════════════════════════════════════════════════
 
-    def _fetch_stock_list(self, bs, day_str: str) -> pd.DataFrame:
+    def _fetch_stock_list(self, day_str: str) -> pd.DataFrame:
         """获取指定交易日全部 A 股列表。
 
         优先从 daily_stocks 表读取缓存；若缓存缺失或 max_stocks 变大，
@@ -205,6 +209,7 @@ class BaoStockDataCallable:
         cached_count = con.execute(
             'SELECT COUNT(*) FROM daily_stocks WHERE date = ?', [day_str]
         ).fetchone()[0]
+        logging.info(f"[{day_str}] db cached stock list num: {cached_count}")
         if cached_count > 0:
             if self.max_stocks and cached_count < self.max_stocks:
                 # max_stocks 变大 → 缓存不全，重新拉取
@@ -224,11 +229,12 @@ class BaoStockDataCallable:
                 return df
 
         # API 获取 → 过滤沪深 A 股 → 入库
-        df = query_with_retry(
-            bs,
-            lambda: bs.query_all_stock(day=day_str),
-            f'query_all_stock({day_str})',
-        )
+        with bao_session() as bs:
+            df = query_with_retry(
+                bs,
+                lambda: bs.query_all_stock(day=day_str),
+                f'query_all_stock({day_str})',
+            )
         if df.empty:
             logging.warning(f'[baostock] No stocks returned for {day_str}')
             con.close()
@@ -273,16 +279,16 @@ class BaoStockDataCallable:
         chunks: list[tuple[str, str]] = []
         year_start = s
         while year_start <= e:
-            year_end = min(pd.Timestamp(year=str(year_start.year) + '-12-31'), e)
+            year_end = min(pd.Timestamp(f'{year_start.year}-12-31'), e)
             chunks.append((
                 year_start.strftime('%Y-%m-%d'),
                 year_end.strftime('%Y-%m-%d'),
             ))
-            year_start = pd.Timestamp(year=str(year_start.year + 1) + '-01-01')
+            year_start = pd.Timestamp(f'{year_start.year + 1}-01-01')
         return chunks
 
     def _chunk_complete(
-        self, code: str, chunk_start: str, chunk_end: str, trading_days: list[str],
+        self, task_con: DuckDBPyConnection, code: str, chunk_start: str, chunk_end: str, trading_days: list[str],
     ) -> bool:
         """检查 chunk 内所有交易日是否已完整入库。
 
@@ -290,20 +296,18 @@ class BaoStockDataCallable:
         任意缺失 → 返回 False → chunk 加入下载队列。
         网络失败导致无数据 → 下次运行自动检测到缺失并重试。
         """
-        con = self._init_db()
-        try:
-            existing = con.execute(
-                "SELECT COUNT(*) FROM hot_daily_stock "
-                "WHERE code = ? AND \"date\" >= ? AND \"date\" <= ?",
-                [code, chunk_start, chunk_end],
-            ).fetchone()[0]
-            td_in_chunk = sum(
-                1 for d in trading_days
-                if chunk_start <= str(d)[:10] <= chunk_end
-            )
-            return existing >= td_in_chunk
-        finally:
-            con.close()
+        td_in_chunk = sum(
+            1 for d in trading_days
+            if chunk_start <= str(d)[:10] <= chunk_end
+        )
+        existing = task_con.execute(
+            "SELECT COUNT(*) FROM hot_daily_stock "
+            "WHERE code = ? AND \"date\" >= ? AND \"date\" <= ?",
+            [code, chunk_start, chunk_end],
+        ).fetchone()
+        if not existing:
+            return False
+        return existing[0] >= td_in_chunk
 
     # ══════════════════════════════════════════════════════════
     # 数据下载编排 (多进程)
@@ -336,7 +340,7 @@ class BaoStockDataCallable:
         import time as _time
 
         # ── 常量 ──────────────────────────────────────────────
-        MAX_WORKERS = 8           # 最大并行进程数
+        MAX_WORKERS = 4           # 最大并行进程数
         MAX_DAILY_CALLS = 45000   # 每日 API 调用上限
         STOCK_LIST_INTERVAL = 20  # 每 N 天调一次股票列表 API
 
@@ -367,10 +371,10 @@ class BaoStockDataCallable:
             # ① 股票列表 (每隔 STOCK_LIST_INTERVAL 天 API 获取，其余复用缓存)
             if day_idx % STOCK_LIST_INTERVAL == 0 or day_idx == len(trading_days) - 1:
                 logging.info(
-                    f'[baostock] Stock list day {day_idx}/{len(trading_days)}: {day}'
+                    f'[baostock] Fetching Stock list day {day_idx}/{len(trading_days)}: {day}...'
                 )
-                with bao_session() as bs:
-                    stocks_df = self._fetch_stock_list(bs, day)
+                stocks_df = self._fetch_stock_list(day)
+                logging.info(f"[{day_idx}] {stocks_df=}")
                 if not stocks_df.empty:
                     _last_fetched_df = stocks_df
             else:
@@ -378,7 +382,7 @@ class BaoStockDataCallable:
                     _last_fetched_df if _last_fetched_df is not None
                     else pd.DataFrame()
                 )
-                # 回填 daily_stocks 表，避免跳过的日期缓存不全
+                # 用最近的 stocks_df 内容回填 daily_stocks 表，避免跳过的日期缓存不全
                 if not stocks_df.empty:
                     con_bf = self._init_db()
                     for _, row in stocks_df.iterrows():
@@ -392,6 +396,10 @@ class BaoStockDataCallable:
             if stocks_df is None or stocks_df.empty:
                 continue
 
+            # 每隔 STOCK_LIST_INTERVAL 更新股票日频数据
+            if day_idx % STOCK_LIST_INTERVAL != 0 and day_idx != len(trading_days) - 1:
+                continue
+
             # ② 年边界切分 + 完整性预检 → 生成下载任务
             #    day_now = 最新有数据可用的交易日 (18:00 前用 T-1)
             trade_day_str = str(day)[:10]
@@ -401,27 +409,79 @@ class BaoStockDataCallable:
                 if _now.hour >= 18
                 else str(trading_days[-2])[:10]
             )
+            logging.info(f"[{day_idx}][{day}] fetch stocks day range: [{trade_day_str}, {_day_now}]")
 
-            tasks: list[dict] = []
-            for _, row in stocks_df.iterrows():
+            # 多线程并发检查 chunk 完整性（DuckDB 支持并发读）
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+
+            task_con = self._init_db(read_only=True)
+
+            def _check_stock(row) -> list[dict]:
                 code = row['code']
                 name = row.get('name', row.get('code_name', ''))
-                chunks = self._year_chunks(trade_day_str, _day_now)
+                chunks = self._year_chunks(trade_day_str, _day_now)  # noqa: B023
+                stock_tasks = []
                 for cs, ce in chunks:
-                    if not self._chunk_complete(code, cs, ce, trading_days):
-                        tasks.append({
+                    if not self._chunk_complete(task_con, code, cs, ce, trading_days):  # noqa: B023
+                        task = {
                             'code': code, 'name': name,
                             'start': cs, 'end': ce,
                             '_log_files': _log_files,
-                        })
+                        }
+                        stock_tasks.append(task)
+                return stock_tasks
+
+            tasks: list[dict] = []
+            # NOTE: 这里多线程几乎没有提升
+            try:
+                with ThreadPoolExecutor(max_workers=2) as check_executor:
+                    futures = {check_executor.submit(_check_stock, row): row['code']
+                            for _, row in stocks_df.iterrows()}
+                    for future in tqdm(as_completed(futures), total=len(stocks_df)):  # this will waiting for as soon as each task compelete
+                        task = future.result()
+                        if len(task) > 0:
+                            logging.debug(f"[{day_idx}][{day}][{task[0]['code']}][{task[0]['name']}] {len(task)} chunks")
+                            tasks.extend(task)
+            finally:
+                task_con.close()
 
             if not tasks:
                 continue  # 本日无缺失数据
 
+            for num, task in enumerate(tasks):
+                task['taskid'] = num
+
             logging.info(
-                f'[baostock] Day {trade_day_str}: '
+                f'[{day_idx}][{day}] '
                 f'{len(tasks)} chunks / {len(stocks_df)} stocks need download'
             )
+
+            def dump_to_db(data: dict) -> None:
+                records = data.get('data', [])
+                if not records:
+                    return  # 空结果 → 不插入，下次运行自动重试
+                kdf = pd.DataFrame(records)
+                cols = [
+                    'date', 'code', 'name', 'open', 'high', 'low',
+                    'close', 'close_uq', 'preclose', 'volume', 'amount',
+                    'adjustflag', 'turn', 'tradestatus', 'pctChg',
+                    'peTTM', 'pbMRQ', 'psTTM', 'pcfNcfTTM', 'isST',
+                ]
+                kdf = kdf[[c for c in cols if c in kdf.columns]]
+                con_w = self._init_db()
+                con_w.register('_tmp', kdf)
+                con_w.execute(
+                    'INSERT OR REPLACE INTO hot_daily_stock '
+                    'SELECT * FROM _tmp'
+                )
+                con_w.unregister('_tmp')
+                # NOTE: stock_list table is no longer used.
+                con_w.execute(
+                    'INSERT OR REPLACE INTO stock_list VALUES (?, ?, ?, ?)',
+                    [data['code'], data['name'],
+                        self.start_date, data['end']],
+                )
+                con_w.close()
 
             # ③ 多进程并行下载
             result_queue: _mp.Queue = _mp.Queue()
@@ -448,7 +508,7 @@ class BaoStockDataCallable:
                         if all(not p.is_alive() for p in procs):
                             break
                         if _time.time() > deadline:
-                            logging.error('[baostock] Global timeout, aborting')
+                            logging.error(f'[{day_idx}][{day}] Global timeout, aborting')
                             break
                         continue
                     batch_completed += 1
@@ -456,39 +516,16 @@ class BaoStockDataCallable:
 
                     if msg['status'] != 'ok':
                         logging.warning(
-                            f'[baostock] Worker failed: {msg.get("error")}'
+                            f'[{day_idx}][{day}] Worker failed: {msg.get("error")}'
                         )
                         continue
 
-                    result = msg['data']
-                    _api_calls += result['calls']
-                    _total_rows += result['rows']
-                    records = result.get('data', [])
-                    if not records:
-                        continue  # 空结果 → 不插入，下次运行自动重试
+                    data = msg['data']
+                    _api_calls += data['calls']
+                    _total_rows += data['rows']
 
                     # INSERT OR REPLACE 入库
-                    kdf = pd.DataFrame(records)
-                    cols = [
-                        'date', 'code', 'name', 'open', 'high', 'low',
-                        'close', 'close_uq', 'preclose', 'volume', 'amount',
-                        'adjustflag', 'turn', 'tradestatus', 'pctChg',
-                        'peTTM', 'pbMRQ', 'psTTM', 'pcfNcfTTM', 'isST',
-                    ]
-                    kdf = kdf[[c for c in cols if c in kdf.columns]]
-                    con_w = self._init_db()
-                    con_w.register('_tmp', kdf)
-                    con_w.execute(
-                        'INSERT OR REPLACE INTO hot_daily_stock '
-                        'SELECT * FROM _tmp'
-                    )
-                    con_w.unregister('_tmp')
-                    con_w.execute(
-                        'INSERT OR REPLACE INTO stock_list VALUES (?, ?, ?, ?)',
-                        [result['code'], result['name'],
-                         self.start_date, result['end']],
-                    )
-                    con_w.close()
+                    dump_to_db(data)
 
                     if completed % 5 == 0 or completed == total_tasks:
                         con_check = self._init_db()
@@ -497,7 +534,7 @@ class BaoStockDataCallable:
                         ).fetchone()[0]
                         con_check.close()
                         logging.info(
-                            f'[baostock] Day {str(day)[:10]}: '
+                            f'[{day_idx}][{day}] '
                             f'{completed}/{total_tasks} chunks, '
                             f'API={_api_calls}, rows={_total_rows},'
                             f' hot_rows={db_rows}'
@@ -515,27 +552,21 @@ class BaoStockDataCallable:
             if _stop_flag.is_set():
                 break
 
-            # ④ 定期汇总日志 + MLflow
-            if day_idx % 10 == 0:
-                con_sum = self._init_db()
-                db_rows = con_sum.execute(
-                    'SELECT COUNT(*) FROM hot_daily_stock'
-                ).fetchone()[0]
-                con_sum.close()
-                self._mlflow_log({
-                    'download_day': float(day_idx),
-                    'api_calls': float(_api_calls),
-                    'cum_upserted': float(_total_rows),
-                    'hot_rows': float(db_rows),
-                }, step=day_idx)
+            con_sum = self._init_db()
+            db_rows = con_sum.execute(
+                'SELECT COUNT(*) FROM hot_daily_stock'
+            ).fetchone()[0]
+            con_sum.close()
+            self._mlflow_log({
+                'download_day': float(day_idx),
+                'api_calls': float(_api_calls),
+                'cum_upserted': float(_total_rows),
+                'hot_rows': float(db_rows),
+            }, step=day_idx)
 
         logging.info(
-            f'[baostock] Download complete. API={_api_calls}, rows={_total_rows}'
+            f'[{day_idx}][{day}] Download complete. API={_api_calls}, rows={_total_rows}'
         )
-
-    # ══════════════════════════════════════════════════════════
-    # 数据归档 (DuckDB → Parquet)
-    # ══════════════════════════════════════════════════════════
 
     # ══════════════════════════════════════════════════════════
     # 日截面数据读取
@@ -648,11 +679,11 @@ class BaoStockDataCallable:
         if cached_td > 0:
             con_td2 = self._init_db()
             db_range = con_td2.execute(
-                'SELECT MIN(date), MAX(date) '
-                'FROM trading_calendar WHERE is_trading = 1'
+                'SELECT MIN(date), MAX(date) FROM trading_calendar'
             ).fetchone()
             db_start, db_end = db_range[0], db_range[1]
             # 若缓存不完整 → API 补全
+            logging.info(f"db_days=[{db_start}, {db_end}], request_days=[{self.start_date}, {self.end_date}]")
             if (db_start is None or str(db_start) > self.start_date
                     or str(db_end) < self.end_date):
                 logging.info(
@@ -725,10 +756,8 @@ class BaoStockDataCallable:
         con1.close()
 
         # ── 逐日迭代 ───────────────────────────────────────────
-        day_count = 0
         prev_f3d: Frame3D | None = None
-        for day in trading_days:
-            day_count += 1
+        for day_count, day in enumerate(trading_days):
             df = self._read_day(day)
             if df is None or df.empty:
                 logging.debug(f'[baostock] No data for {day}')
@@ -756,9 +785,9 @@ class BaoStockDataCallable:
 
             n_stocks = f3d.df.index.get_level_values('code').nunique()
             n_cols = len(f3d.df.columns)
-            if day_count % 100 == 0 or day_count == 1:
+            if day_count % 100 == 0:
                 logging.info(
-                    f'[baostock] Yielding day={day} '
+                    f'[baostock][{day_count}] Yielding day={day} '
                     f'({day_count}/{len(trading_days)}): '
                     f'stocks={n_stocks}, cols={n_cols}'
                 )
@@ -771,5 +800,5 @@ class BaoStockDataCallable:
             prev_f3d = f3d
 
         logging.info(
-            f'[baostock] Generator exhausted. Total days yielded: {day_count}'
+            f'[baostock] Generator exhausted. Total days yielded: {len(trading_days)}'
         )

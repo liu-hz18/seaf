@@ -132,7 +132,6 @@ def main() -> None:
             precision=args.precision,
             mlflow_run_id=mlflow_run_id,
             max_stocks=args.max_stocks,
-            chunk_months=args.chunk_months,
         )
         # baostock 模式下，n_times/n_stocks 由数据决定，忽略模拟参数
         args.n_times = 0
