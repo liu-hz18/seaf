@@ -51,6 +51,26 @@ class Frame3D:
             f'valid_data={valid_pct:.1f}%](\n{self._df!r}\n)'
         )
 
+    def last_key(self) -> int:
+        return self._df.index.get_level_values(0).max()
+
+    def first_key(self) -> int:
+        return self._df.index.get_level_values(0).min()
+
+    def last_frame(self) -> Frame3D:
+        return Frame3D(self._df[self._df.index.get_level_values(0) == self.last_key()])
+
+    def first_frame(self) -> Frame3D:
+        return Frame3D(self._df[self._df.index.get_level_values(0) == self.first_key()])
+
+    def to(self, dtype: type = np.float32) -> Frame3D:
+        # 筛选出所有浮点数列
+        float_cols = self._df.select_dtypes(include=['floating']).columns
+        # 批量转换
+        if len(float_cols) > 0:
+            self._df[float_cols] = self._df[float_cols].astype(dtype, copy=False)
+        return self
+
     # ========================================================================
     # 时序 API — 沿 key（时间）层计算，每个 stock 独立
     # ========================================================================

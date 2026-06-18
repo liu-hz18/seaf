@@ -451,5 +451,5 @@ class TestStrategyFnOutput:
         # index 应为标准 (key, name) MultiIndex，name 为真实股票代码
         assert result.df.index.names == ['key', 'code']
         assert '_strategy_' not in result.df.index.get_level_values('code')
-        max_key = result.df.index.get_level_values(0).max()
+        max_key = result.last_key()
         assert not pd.isna(max_key)  # pyright: ignore[reportGeneralTypeIssues]

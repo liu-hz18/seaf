@@ -412,7 +412,7 @@ context = {
 
 退出汇总（epilogue_fn）：
 
-def ic_epilogue(name: str, context: dict) -> None:
+def ic_epilogue(name: str, idx: int, context: dict) -> None:
     ics = [x for x in context['ic_history'] if not np.isnan(x)]
     if len(ics) < 10:
         logging.warning("[IC Epilogue] Insufficient IC data for summary.")

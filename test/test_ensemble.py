@@ -189,6 +189,6 @@ class TestEnsembleEpilogue:
             'mlflow_name': 'test', 'precision': 2,
             'start_date': '2020-01-01', 'fwd': 20, 'key': 'value',
         }
-        ensemble_epilogue('test', ctx)
+        ensemble_epilogue('test', 0, ctx)
         assert 'key' in ctx  # 未被 pop
         assert 'mlflow_name' not in ctx

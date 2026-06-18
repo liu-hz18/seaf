@@ -12,6 +12,17 @@ if TYPE_CHECKING:
 
 import numpy as np
 
+try:
+    import psutil
+
+    def _rss_mb() -> float:
+        return psutil.Process().memory_info().rss / 1024 / 1024
+except ImportError as e:
+    print(e)
+
+    def _rss_mb() -> float:
+        return -1.0
+
 
 class FlushStreamHandler(logging.StreamHandler):
     def emit(self, record):

@@ -169,16 +169,16 @@ def ic_analysis_fn(name: str, idx: int, f3d: Frame3D, context: Any) -> Frame3D:
     return f3d
 
 
-def ic_epilogue(name: str, context: dict[str, Any] | None) -> None:
+def ic_epilogue(name: str, idx: int, context: dict[str, Any] | None) -> None:
     """退出前汇总：计算 mean IC, ICIR, winrate, max drawdown（基于 rank IC）。"""
     if context is None or not context.get('rank_ic_history'):
-        logging.warning('Epilogue: No IC data to summarize.')
+        logging.warning(f'[{idx}] Epilogue: No IC data to summarize.')
         return
 
     ics = [x for x in context['rank_ic_history'] if not np.isnan(x)]
 
     if len(ics) < 10:
-        logging.warning(f'Epilogue: Insufficient IC data ({len(ics)} points).')
+        logging.warning(f'[{idx}] Epilogue: Insufficient IC data ({len(ics)} points).')
         return
 
     mean_ic = np.mean(ics)
@@ -199,13 +199,13 @@ def ic_epilogue(name: str, context: dict[str, Any] | None) -> None:
     first_day = context.get('first_signal_day', 'N/A')
     last_day = context.get('last_signal_day', 'N/A')
     fwd = context.get('fwd', 20)
-    logging.info('========== IC Summary ==========')
-    logging.info(f' Signal range: [{first_day} .. {last_day}]')
-    logging.info(f' N={len(ics)}, Rank IC: mean={mean_ic:.4f}, ICIR={icir:.4f}')
-    logging.info(f' Pearson IC: mean={p_mean:.4f}, ICIR={p_icir:.4f}')
-    logging.info(f' WinRate={winrate:.2%}, CumSum Rank IC={cumsum[-1]:.4f}')
-    logging.info(f' IC Std={std_ic:.4f}, IC Skew={pd.Series(ics).skew():.4f}')
-    logging.info(f' Max CumSum DD={max_dd:.4f}')
+    logging.info(f'[{idx}] ========== IC Summary ==========')
+    logging.info(f'[{idx}]  Signal range: [{first_day} .. {last_day}]')
+    logging.info(f'[{idx}]  N={len(ics)}, Rank IC: mean={mean_ic:.4f}, ICIR={icir:.4f}')
+    logging.info(f'[{idx}]  Pearson IC: mean={p_mean:.4f}, ICIR={p_icir:.4f}')
+    logging.info(f'[{idx}]  WinRate={winrate:.2%}, CumSum Rank IC={cumsum[-1]:.4f}')
+    logging.info(f'[{idx}]  IC Std={std_ic:.4f}, IC Skew={pd.Series(ics).skew():.4f}')
+    logging.info(f'[{idx}]  Max CumSum DD={max_dd:.4f}')
 
     # ---- 理论 top-bottom 对数净值差（逐日已记录，此处仅汇总日志） ----
     cc = context.get('day_count', 0)
@@ -218,9 +218,9 @@ def ic_epilogue(name: str, context: dict[str, Any] | None) -> None:
         phi_val = float(norm.pdf(norm.ppf(1.0 / num_groups)))
         final_theo = 2.0 * num_groups * phi_val * mean_ret_std * cumsum_p / (fwd-1)  # NOTE: we actually hold fwd-1 days
         logging.info(
-            f' Final theoretical log NAV spread: {final_theo:.6f} '
+            f'[{idx}]  Final theoretical log NAV spread: {final_theo:.6f} '
             f'(N={num_groups}, mean_ret_std={mean_ret_std:.6f}, '
             f'cumsum_pearson_ic={cumsum_p:.4f})'
         )
 
-    logging.info('======================================')
+    logging.info(f'[{idx}] ======================================')

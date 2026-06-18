@@ -71,11 +71,11 @@ def ensemble_fn(name: str, idx: int, f3d: Frame3D, context: dict[str, Any] | Non
     return result
 
 
-def ensemble_epilogue(name: str, context: dict[str, Any]) -> None:
+def ensemble_epilogue(name: str, idx: int, context: dict[str, Any]) -> None:
     """集成 epilogue — 记录融合模型的元信息。"""
     context.pop('mlflow_name', None)
     context.pop('precision', None)
     context.pop('start_date', None)
     context.pop('fwd', None)
     if context:
-        logging.info(f'ensemble context: {context}')
+        logging.info(f'[{idx}] ensemble context: {context}')

@@ -69,14 +69,13 @@ def _rank_into_groups(
 
 
 def strategy_fn(name: str, idx: int, f3d: Frame3D, context: Any) -> Frame3D:
-    """策略节点主函数 — 每个 frame 包含 window=2 天的数据。
+    """策略节点主函数 — 每个 frame 包含 window=1 天的数据。
 
     f3d 包含：
-      - T-1 日：pred_signal（来自 model）+ close / close_uq（来自 source）
-      - T 日：  close / close_uq（来自 source）
+      - T 日：  pred_signal（来自 model）+ close / close_uq（来自 source）
 
     工作流程：
-      1. 提取 T-1 的信号 + T 的价格
+      1. 缓存 T 的信号，按T日价格计算净值，在T+1调用时，按T+1 的价格进行交易
       2. 按信号排名分 num_groups 组
       3. 每组独立 on_bar
 
@@ -116,11 +115,12 @@ def strategy_fn(name: str, idx: int, f3d: Frame3D, context: Any) -> Frame3D:
 
     times = sorted(df.index.get_level_values('key').unique())
 
-    if len(times) < 2:
-        return Frame3D(pd.DataFrame(index=df.index[:0]))
+    assert len(times) == 1
+    # if len(times) < 2:
+    #     return Frame3D(pd.DataFrame(index=df.index[:0]))
 
     # T-1 和 T
-    t_prev, t_curr = times[-2], times[-1]
+    t_curr = times[-1]
     if context['first_date'] is None:
         context['first_date'] = t_curr
     context['last_date'] = t_curr
@@ -135,15 +135,15 @@ def strategy_fn(name: str, idx: int, f3d: Frame3D, context: Any) -> Frame3D:
         stock_name_map = df.xs(t_curr, level='key')['stock_name'].to_dict()
 
     # ---- 首次调用：用 T-1 信号为每个 group 初始化 pending_signal ----
-    if context.get('_primed') is None:
-        signal_first = df.xs(t_prev, level='key')['pred_signal']
-        first_groups = _rank_into_groups(signal_first, context['num_groups'])
-        for gctx in context['groups']:
-            gid = gctx['group_id']
-            sig = first_groups.get(gid, {})
-            if sig:
-                gctx['pending_signal'] = sig
-        context['_primed'] = True
+    # if context.get('_primed') is None:
+    #     signal_first = df.xs(t_prev, level='key')['pred_signal']
+    #     first_groups = _rank_into_groups(signal_first, context['num_groups'])
+    #     for gctx in context['groups']:
+    #         gid = gctx['group_id']
+    #         sig = first_groups.get(gid, {})
+    #         if sig:
+    #             gctx['pending_signal'] = sig
+    #     context['_primed'] = True
 
     # ---- T 日信号分组 + 每组独立 on_bar ----
     signal_curr = df.xs(t_curr, level='key')['pred_signal']
@@ -234,16 +234,16 @@ def strategy_fn(name: str, idx: int, f3d: Frame3D, context: Any) -> Frame3D:
 # =============================================================================
 
 
-def strategy_epilogue(name: str, context: dict[str, Any] | None) -> None:
+def strategy_epilogue(name: str, idx: int, context: dict[str, Any] | None) -> None:
     """退出前汇总：每个 group 的绩效指标 + 数据导出到 MLflow artifact。"""
     if context is None or not context.get('groups'):
-        logging.warning('Epilogue: No group data.')
+        logging.warning(f'[{idx}] Epilogue: No group data.')
         return
 
     run_id = context.get('mlflow_run_id', '')
     first_date = context.get('first_date', 'N/A')
     last_date = context.get('last_date', 'N/A')
-    logging.info(f'===== Strategy Summary [{first_date}..{last_date}] =====')
+    logging.info(f'[{idx}] ===== Strategy Summary [{first_date}..{last_date}] =====')
 
     for gctx in context['groups']:
         gid = gctx['group_id']
@@ -280,7 +280,7 @@ def strategy_epilogue(name: str, context: dict[str, Any] | None) -> None:
         avg_turnover = float(np.mean(turnovers)) if turnovers else 0.0
 
         logging.info(
-            f'Group {gid}: N={len(values)}d, '
+            f'[{idx}] Group {gid}: N={len(values)}d, '
             f'final_value={final_value:,.0f}, final_nav={final_nav:.4f}, '
             f'return={total_return:.2%}, ann_ret={ann_ret:.2%}, '
             f'ann_vol={ann_vol:.2%}, nav_ann_vol={nav_ann_vol:.2%}, '
@@ -314,6 +314,9 @@ def strategy_epilogue(name: str, context: dict[str, Any] | None) -> None:
                 _export_artifact(run_id, f'{name}_g{gid}', 'positions',
                                  pd.DataFrame(gctx['position_log']))
 
+    logging.info(f'[{idx}] ==========================================')
+
+    for gctx in context['groups']:
         # ---- MLflow artifact: 每日交易计划 CSV ----
         if run_id and gctx['daily_plans']:
             all_plans = pd.concat(gctx['daily_plans'], ignore_index=True)
@@ -325,11 +328,11 @@ def strategy_epilogue(name: str, context: dict[str, Any] | None) -> None:
                         day_df, artifact_subdir=f'strategy/{name}_g{gid}/daily_plans',
                     )
                 logging.info(
-                    f'Group {gid}: {len(all_plans)} plan rows '
+                    f'[{idx}] Group {gid}: {len(all_plans)} plan rows '
                     f'({all_plans["date"].nunique()} days) exported'
                 )
 
-    logging.info('==========================================')
+    logging.info(f'[{idx}] ==========================================')
 
 
 def _export_artifact(

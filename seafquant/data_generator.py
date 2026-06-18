@@ -91,7 +91,7 @@ def generate_synthetic_data(
     seed: int = 42,
     start_date: str | None = None,
     precision: int = 2,
-) -> Iterator[Frame3D]:
+) -> Iterator[tuple[int, Frame3D]]:
     """主生成器：逐日 yield 包含 OHLC + turnover + volume + market_cap 的 Frame3D。
 
     noise_ratio=0 时完全可预测，noise_ratio=1 时信号淹没在噪声中。

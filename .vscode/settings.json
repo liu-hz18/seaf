@@ -1,4 +1,15 @@
 {
-    "python-envs.defaultEnvManager": "ms-python.python:conda",
-    "python-envs.defaultPackageManager": "ms-python.python:conda"
+    "python.terminal.activateEnvironment": true,
+    "python.defaultInterpreterPath": "D:\\Programs\\anaconda3\\envs\\torchenv\\python.exe",
+    "terminal.integrated.profiles.windows": {
+        "PowerShell": {
+            "source": "PowerShell",
+            "args": [
+                "-NoExit",
+                "-Command",
+                "conda deactivate; conda activate torchenv"
+            ]
+        }
+    },
+    "terminal.integrated.defaultProfile.windows": "PowerShell"
 }

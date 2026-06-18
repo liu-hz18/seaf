@@ -149,15 +149,15 @@ class TestIcEpilogue:
 
     def test_no_data_warns(self, caplog):
         """无 IC 数据时 epilogue 不崩溃。"""
-        ic_epilogue('test', None)
-        ic_epilogue('test', {'rank_ic_history': []})
+        ic_epilogue('test', 0, None)
+        ic_epilogue('test', 0, {'rank_ic_history': []})
 
     def test_insufficient_data_warns(self, caplog):
         """不足 10 个数据点时给出警告。"""
         ctx = {'rank_ic_history': [0.1] * 5,
                'pearson_ic_history': [0.1] * 5,
                'day_count': 5}
-        ic_epilogue('test', ctx)
+        ic_epilogue('test', 0, ctx)
 
     def test_normal_summary(self):
         """正常数据点计算 ICIR, winrate, max_dd，不抛异常。"""
@@ -170,7 +170,7 @@ class TestIcEpilogue:
             'first_signal_day': pd.Timestamp('2020-01-02'),
             'last_signal_day': pd.Timestamp('2020-03-15'),
         }
-        ic_epilogue('test', ctx)
+        ic_epilogue('test', 0, ctx)
 
     def test_icir_winrate_plausible(self):
         """ICIR 和 winrate 正常，epilogue 不崩溃。"""
@@ -186,4 +186,4 @@ class TestIcEpilogue:
             'cumsum_pearson_ic': 5.0,
             'num_groups': 10,
         }
-        ic_epilogue('test', ctx)
+        ic_epilogue('test', 0, ctx)
