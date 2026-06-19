@@ -54,13 +54,19 @@ def _login_with_retry(bs, code: str) -> bool:
             return True
         if attempt < 2:
             time.sleep(1.0 * (attempt + 1))
-    logging.warning('login failed after 3 retries')
+    logging.warning(f'login failed after 3 retries for {code}')
     return False
 
 
-def _should_relogin(err_msg: str) -> bool:
+def _should_relogin(exc_err_msg: str) -> bool:
     """判断是否应重新登录（session 过期 / Socket 故障）。"""
-    return '未登录' in err_msg or '10001001' in err_msg or '10002007' in err_msg
+    return ('10001001' in exc_err_msg or '10002007' in exc_err_msg) and ('黑名单' not in exc_err_msg)
+
+
+def _relogin(code: str) -> bool:
+    import baostock as bs
+    bs.logout()
+    return _login_with_retry(bs, code)
 
 
 def _convert_kdf_types(kdf: pd.DataFrame) -> pd.DataFrame:
@@ -80,7 +86,6 @@ def _fetch_main_data(
     code: str,
     s: str,
     e: str,
-    relogin_fn=None,
 ) -> pd.DataFrame:
     """API：后复权 OHLCV（adjustflag='1'）。"""
     for attempt in range(1, _MAX_RETRIES + 1):
@@ -94,29 +99,30 @@ def _fetch_main_data(
                 adjustflag='1',
             )
             if rs.error_code != '0':
-                raise ConnectionError(f'API error during connection: {rs.error_msg} (code={rs.error_code})')
+                raise ConnectionError(f'[{attempt}/{_MAX_RETRIES}] API error during connection: {rs.error_msg} (code={rs.error_code})')
             data_list = []
             while rs.next():
                 data_list.append(rs.get_row_data())
             if rs.error_code != '0':
-                raise ConnectionError(f'API error during iteration: {rs.error_msg} (code={rs.error_code})')
+                raise ConnectionError(f'[{attempt}/{_MAX_RETRIES}] API error during iteration: {rs.error_msg} (code={rs.error_code})')
             if data_list:
                 return pd.DataFrame(data_list, columns=rs.fields)
             return pd.DataFrame()
         except Exception as exc:
             delay = _RETRY_BASE_DELAY * (2 ** (attempt - 1))
             logging.warning(
-                f'attempt {attempt}/{_MAX_RETRIES} '
+                f'[{attempt}/{_MAX_RETRIES}] attempt '
                 f'failed for {s}~{e}: {exc}. Retrying in {delay:.1f}s...'
             )
             time.sleep(delay)
 
             _err_msg = str(exc)
-            if _should_relogin(_err_msg) and relogin_fn and attempt == 1:
-                logging.warning('socket error, re-login')
-                succ = relogin_fn()
+            succ = False
+            if _should_relogin(_err_msg) and attempt < _MAX_RETRIES:
+                logging.warning(f'[{attempt}/{_MAX_RETRIES}] socket error, re-login')
+                succ = _relogin(code)
             if attempt == _MAX_RETRIES or not succ:
-                raise ConnectionError('relogin failed') from exc
+                raise ConnectionError(f'[{attempt}/{_MAX_RETRIES}] relogin failed') from exc
 
     return pd.DataFrame()
 
@@ -126,7 +132,6 @@ def _fetch_close_uq(
     code: str,
     s: str,
     e: str,
-    relogin_fn=None,
 ) -> pd.DataFrame:
     """API：不复权收盘价（adjustflag='3'），仅 close 字段。"""
     for attempt in range(1, _MAX_RETRIES + 1):
@@ -140,12 +145,12 @@ def _fetch_close_uq(
                 adjustflag='3',
             )
             if rs.error_code != '0':
-                raise ConnectionError(f'close_uq API error: {rs.error_msg} (code={rs.error_code})')
+                raise ConnectionError(f'[{attempt}/{_MAX_RETRIES}] close_uq API error: {rs.error_msg} (code={rs.error_code})')
             uq_list = []
             while rs.next():
                 uq_list.append(rs.get_row_data())
             if rs.error_code != '0':
-                raise ConnectionError(f'API error during iteration: {rs.error_msg} (code={rs.error_code})')
+                raise ConnectionError(f'[{attempt}/{_MAX_RETRIES}] API error during iteration: {rs.error_msg} (code={rs.error_code})')
             if uq_list:
                 uq_df = pd.DataFrame(uq_list, columns=['date', 'code', 'close_uq'])
                 uq_df['close_uq'] = pd.to_numeric(uq_df['close_uq'], errors='coerce')
@@ -154,16 +159,17 @@ def _fetch_close_uq(
         except Exception as exc:
             delay = _RETRY_BASE_DELAY * (2 ** (attempt - 1))
             logging.warning(
-                f'attempt {attempt}/{_MAX_RETRIES} '
+                f'[{attempt}/{_MAX_RETRIES}] attempt '
                 f'failed for {s}~{e}: {exc}. Retrying in {delay:.1f}s...'
             )
             time.sleep(delay)
             _err_msg = str(exc)
-            if _should_relogin(_err_msg) and relogin_fn and attempt == 1:
-                logging.warning('socket error, re-login')
-                succ = relogin_fn()
+            succ = False
+            if _should_relogin(_err_msg) and attempt < _MAX_RETRIES:
+                logging.warning(f'[{attempt}/{_MAX_RETRIES}] socket error, re-login')
+                succ = _relogin(code)
             if attempt == _MAX_RETRIES or not succ:
-                raise ConnectionError('relogin failed') from exc
+                raise ConnectionError(f'[{attempt}/{_MAX_RETRIES}] relogin failed') from exc
 
     return pd.DataFrame()
 
@@ -198,19 +204,15 @@ def download_stock_worker(args: dict) -> dict:
             'data': [],
         }
 
-    def _relogin() -> bool:
-        bs.logout()
-        return _login_with_retry(bs, code)
-
     try:
         logging.debug(f'[baostock-worker]: downloading {s}~{e}')
         t0 = time.time()
 
         # 主数据（后复权）+ 不复权 close
         try:
-            kdf = _fetch_main_data(bs, code, s, e, _relogin)
+            kdf = _fetch_main_data(bs, code, s, e)
             if not kdf.empty:
-                uq_df = _fetch_close_uq(bs, code, s, e, _relogin)
+                uq_df = _fetch_close_uq(bs, code, s, e)
                 if not uq_df.empty:
                     kdf = kdf.merge(uq_df, on=['date', 'code'], how='left')
                 else:

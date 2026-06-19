@@ -385,12 +385,20 @@ class BaoStockDataCallable:
             #    day_now = 最新有数据可用的交易日 (18:00 前用 T-1)
             trade_day_str = str(day)[:10]
             _now = pd.Timestamp.now()
+            # NOTE: 这个 day_now 设置为当年年底就可以，
+            # 因为我们的 stock_df 是按照 STOCK_LIST_INTERVAL 更新的，
+            # 只要保证 数据获取长度 > STOCK_LIST_INTERVAL 即可，不然也是浪费 api 调用次数
+            # 如果是最后一年，再利用 trading_days 列表进行计算
             _day_now = (
                 str(trading_days[-1])[:10]
                 if _now.hour >= 18
                 else str(trading_days[-2])[:10]
             )
-            logging.info(f"[{day_idx}][{day}] fetch stocks day range: [{trade_day_str}, {_day_now}]")
+            year_end_str = trade_day_str[:4] + "-12-31"
+            # 2. 取 year_end_str 和 _day_now 中的较小值，确保不超过 _day_now
+            fetch_start_day = trade_day_str
+            fetch_end_day = min(year_end_str, _day_now)
+            logging.info(f"[{day_idx}][{day}] fetch stocks day range: [{fetch_start_day}, {fetch_end_day}]")
 
             # 多线程并发检查 chunk 完整性（DuckDB 支持并发读）
             from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -400,7 +408,7 @@ class BaoStockDataCallable:
             def _check_stock(row) -> list[dict]:
                 code = row['code']
                 name = row.get('name', row.get('code_name', ''))
-                chunks = self._year_chunks(trade_day_str, _day_now)  # noqa: B023
+                chunks = self._year_chunks(fetch_start_day, fetch_end_day)  # noqa: B023
                 stock_tasks = []
                 for cs, ce in chunks:
                     if not self._chunk_complete(task_con, code, cs, ce, trading_days):  # noqa: B023
@@ -482,9 +490,14 @@ class BaoStockDataCallable:
                         [data['code'], data['name'],
                             self.start_date, data['end']],
                     )
+                    logging.info(
+                        f'[{day_idx}][{day}] dump_to_db success for '  # noqa: B023
+                        f'{data.get("code","?")}/'
+                        f'{data.get("start","?")}~{data.get("end","?")}'
+                    )
                 except Exception as exc:
                     logging.error(
-                        f'[{day_idx}][{day}] dump_to_db failed for '
+                        f'[{day_idx}][{day}] dump_to_db failed for '  # noqa: B023
                         f'{data.get("code","?")}/'
                         f'{data.get("start","?")}~{data.get("end","?")}: {exc}'
                     )
