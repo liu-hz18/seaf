@@ -35,3 +35,5 @@ python .\pipeline.py --n-times 1000 --n-stocks 50 --model-type lgbm --fwd 20 --m
 python pipeline.py --data-source synthetic --noise-ratio 0.3 --n-times 500 --n-stocks 40 --model-window 100 --fwd 20 --ensemble mlp --precision 2 --loss ic > output.txt 2> error.txt
 
 python pipeline.py --data-source baostock --start-date 2007-01-01 --fwd 20 --model-window 200 --ensemble mlp > output.txt 2> error.txt
+
+python -X utf8 test/test_factor_perf.py

@@ -50,7 +50,7 @@ def main() -> None:
     parser.add_argument('--n-stocks', type=int, default=64)
     # baostock data
     parser.add_argument('--max-stocks', type=int, default=None)
-    parser.add_argument('--chunk-months', type=int, default=12)
+    parser.add_argument('--update-db', action='store_true', default=False, help='Update baostock data db')
     # model
     parser.add_argument(
         '--fwd',
@@ -63,6 +63,12 @@ def main() -> None:
         type=int,
         default=200,
         help='Model training window in days (factor history for training)',
+    )
+    parser.add_argument(
+        '--batch-size',
+        type=int,
+        default=128,
+        help='Model training batch size',
     )
     parser.add_argument(
         '--loss', type=str, default='mse', choices=['mse', 'ic'],
@@ -132,6 +138,7 @@ def main() -> None:
             precision=args.precision,
             mlflow_run_id=mlflow_run_id,
             max_stocks=args.max_stocks,
+            update_db=args.update_db,
         )
         # baostock 模式下，n_times/n_stocks 由数据决定，忽略模拟参数
         args.n_times = 0
@@ -193,7 +200,7 @@ def main() -> None:
         'start_date': args.start_date,
         'precision': args.precision,
         'mlp_use_residual': args.use_residual,
-        'mlp_batch_size': args.n_stocks,
+        'mlp_batch_size': 128,
         'loss': args.loss,
     }
     all_signal_qs = []
@@ -201,7 +208,7 @@ def main() -> None:
 
     for mid, model_type in enumerate(model_types):
         signal_col = f'pred_signal_{model_type}' if is_ensemble else 'pred_signal'
-        mctx = model_context_base | {'model_type': model_type, 'signal_col': signal_col, 'seed': args.seed + mid}
+        mctx = model_context_base | {'model_type': model_type, 'signal_col': signal_col, 'seed': args.seed + mid, 'batch_size': args.batch_size}
         sq = f'q_signal_{model_type}'
         ssq = f'q_signal_{model_type}_to_ensemble'
         all_signal_qs.append(sq)

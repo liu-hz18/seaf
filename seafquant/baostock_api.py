@@ -12,6 +12,8 @@ from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     import pandas as pd
 
 # API 重试配置
@@ -45,7 +47,7 @@ def bao_session():
         bs.logout()
 
 
-def query_with_retry(bs, query_fn, desc: str = '') -> pd.DataFrame:
+def query_with_retry(query_fn: Callable, desc: str = '') -> pd.DataFrame:
     """带重试的 API 查询，返回 DataFrame。
 
     支持外部中断：设置 query_with_retry._stop_event 可提前终止重试。
@@ -60,9 +62,9 @@ def query_with_retry(bs, query_fn, desc: str = '') -> pd.DataFrame:
         _stop_evt = query_with_retry._stop_event = _thr.Event()  # type: ignore[attr-defined]
     for attempt in range(1, _MAX_RETRIES + 1):
         try:
-            logging.info(f"call: {query_fn}")
+            logging.debug(f"[{desc}] call: {query_fn}")
             rs = query_fn()
-            logging.info(f"ret: {rs.error_code} {rs.error_msg}")
+            logging.info(f"[{desc}] ret: {rs.error_code} {rs.error_msg}")
             if rs.error_code != '0':
                 raise ConnectionError(f'[{desc}] API error: {rs.error_msg} (code={rs.error_code})')
             data_list = []

@@ -113,15 +113,14 @@ class SourceNode(mp.Process):
                 # 但生成器自身不累积逐日数据。此处 gc 为防御性措施。
                 if idx % MEM_CLEARING_INTEVAL == 0:
                     gc.collect()
-
+        except Exception as e:
+            logging.error(f'Exception in SourceNode: {e}', exc_info=True)
+        finally:
             for outq in self.output_queues:
                 with suppress(Exception):
                     outq.put(self.stop_signal, timeout=1.0)
                 # with suppress(Exception):
                 #     outq.cancel_join_thread()
-        except Exception as e:
-            logging.error(f'Exception in SourceNode: {e}', exc_info=True)
-        finally:
             if self.epilogue_fn is not None:
                 try:
                     self.epilogue_fn(self.name, idx, self.context)
@@ -323,10 +322,19 @@ class MultiInputNode(mp.Process):
                     output_frame = self._call_func(
                         self.name, day_idx, concated_window_frame, self.context
                     )
-                    output_frame = self.clean_output_frame(output_frame, concated_window_frame)
-
                     # 只传输最后一个 frame, 并转换为 fp32
                     latest_frame = output_frame.last_frame().to(np.float32)
+                    # cs_zscore
+                    numeric_cols = latest_frame.df.select_dtypes(include=['float', 'int']).columns.tolist()
+                    latest_frame = latest_frame.cs_zscore_batch(numeric_cols, cp=False)
+                    # 检查 nan
+                    logging.debug(
+                        f'[{day_idx}][{ts}] NaN factors (length={latest_frame.df.shape}): '
+                        f'{ {c: latest_frame.df[c].isna().sum() for c in numeric_cols} }'
+                    )
+                    latest_frame = self.clean_output_frame(latest_frame, concated_window_frame)
+                    # fillna
+                    latest_frame.df.fillna(0.0, inplace=True)
                     logging.debug(
                         f'[{day_idx}][{ts}] window_start_index:{window_start_index}, '
                         f'window_tail_index={window_tail_index}\n'
@@ -425,11 +433,6 @@ class MultiInputNode(mp.Process):
         except Exception as e:
             logging.error(f'[{day_idx}] Exception in {self.name}: {e}', exc_info=True)
         finally:
-            if self.epilogue_fn is not None:
-                try:
-                    self.epilogue_fn(self.name, day_idx, self.context)
-                except Exception as e:
-                    logging.error(f'[{day_idx}] Epilogue error in {self.name}: {e}', exc_info=True)
             # 先设置 global_exit 让可能存活的接收线程退出
             global_exit.set()
             for t in threads:
@@ -442,6 +445,11 @@ class MultiInputNode(mp.Process):
                     outq.put(self.stop_signal, timeout=1.0)
                 # with suppress(Exception):
                 #     outq.cancel_join_thread()  # NOTE: 不应该开启，否则进程无法退出
+            if self.epilogue_fn is not None:
+                try:
+                    self.epilogue_fn(self.name, day_idx, self.context)
+                except Exception as e:
+                    logging.error(f'[{day_idx}] Epilogue error in {self.name}: {e}', exc_info=True)
             # 显式刷新日志和 stdout，防止 Windows 管道未关闭导致 WaitForSingleObject 不返回
             for handler in logging.getLogger().handlers:
                 with suppress(Exception):
@@ -612,47 +620,40 @@ class MultiInputNode(mp.Process):
         temp = [frame.df for _, frame in window_frames]
         concated_window_frame = pd.concat(temp, axis=0)
         concated_window_frame.sort_index(level=0, inplace=True)
-        logging.debug(f'[{day_idx}] concated_window_frame: \n{concated_window_frame}')
-        logging.debug(f'columns: {concated_window_frame.columns} [{day_idx}]')
+
         # === IPO/退市对齐：以最新时间片的股票集合为准 ===
-        # 最新时间片的股票集合是"当前市场"的权威集合。
-        # - 退市股票：最新片中不存在，前序时间片中应删除。
-        # - 新上市股票：最新片中存在但前序片中不存在，前序片补 NaN。
-        #   用 NaN 而非 0.0，避免 np.log(0)/0/0 等下游运算产生
-        #   "divide by zero in log" / "All-NaN slice" 警告。
-        #
-        #   优化：使用 MultiIndex.from_product 一次性 reindex，
-        #   避免逐时间片循环产生 O(T) 个中间 DataFrame
         if self.time_alignment == 'right':
             alignment_key = concated_window_frame.index.get_level_values(0).max()
         else:
             alignment_key = concated_window_frame.index.get_level_values(0).min()
-        # latest_stocks = window_df.loc[latest_t].index.unique().tolist()
-        alignment_stocks = concated_window_frame.loc[alignment_key].index.tolist()
+
+        # 建议：使用 unique() 防止索引中存在重复值导致 from_product 爆炸
+        alignment_stocks = concated_window_frame.loc[alignment_key].index.unique().tolist()
         all_times = sorted(concated_window_frame.index.get_level_values(0).unique())
+
         full_mi = pd.MultiIndex.from_product(
             [all_times, alignment_stocks], names=concated_window_frame.index.names
         )
-        # 诊断日志：window_df 索引与期望索引的差异
+
+        # 诊断日志：观察被丢弃和被补齐的数据规模
         _actual = concated_window_frame.index
         _extra = _actual.difference(full_mi)
         _missing = full_mi.difference(_actual)
-        error_msg = (
-            f'[{day_idx}] index diagnostics: '
-            f'\nexpected={len(full_mi)}, actual={len(_actual)}, '
-            f'\nextra(actual-expected)={len(_extra)}, '
-            f'\nmissing(expected-actual)={len(_missing)}'
+
+        logging.debug(
+            f'[{day_idx}] index alignment diagnostics: '
+            f'expected={len(full_mi)}, actual={len(_actual)}, '
+            f'dropped(退市/多余)={len(_extra)}, '
+            f'filled_nan(IPO/缺失)={len(_missing)}'
         )
-        logging.debug(error_msg)
-        if len(_extra) > 0:
-            _extra_sample = list(_extra)[:10]
-            logging.error(f'[{day_idx}] extra index sample: {_extra_sample}')
-            raise ValueError(error_msg)
-        if len(_missing) > 0:
-            _miss_sample = list(_missing)[:10]
-            logging.error(f'[{day_idx}] missing index sample: {_miss_sample}')
-            raise ValueError(error_msg)
-        return Frame3D(concated_window_frame.reindex(full_mi).sort_index(level=0))
+
+        # 因为 _extra 是退市股票(理应被丢弃)，_missing 是新上市股票(理应补NaN)。
+        # reindex(full_mi) 会自动完成这两个动作，这正是我们期望的行为。
+
+        # 执行对齐：丢弃多余索引，为缺失索引填充 np.nan
+        aligned_frame = concated_window_frame.reindex(full_mi).sort_index(level=0)
+
+        return Frame3D(aligned_frame)
 
     def clean_output_frame(self, output_frame: Frame3D, concated_window_frame: Frame3D) -> Frame3D:
         # 保留输入中的元数据列（name/stock_id 等字符串列），确保下游 CSV 可读

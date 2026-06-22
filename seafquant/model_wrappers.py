@@ -192,8 +192,10 @@ class LGBMWrapper(_SklearnWrapper):
         from lightgbm import LGBMRegressor
 
         kwargs: dict[str, Any] = {
+            'learning_rate': context.get('lgbm_learning_rate', 0.01),
             'n_estimators': context.get('lgbm_n_estimators', 100),
             'max_depth': context.get('lgbm_max_depth', 6),
+            'subsample': context.get('lgbm_subsample', 0.8),
             'num_leaves': context.get('lgbm_num_leaves', 31),
             'reg_alpha': context.get('lgbm_reg_alpha', 0.1),
             'reg_lambda': context.get('lgbm_reg_lambda', 0.1),
@@ -418,7 +420,7 @@ class MLPWrapper(BaseWrapper):
         self._dropout: float = context.get('mlp_dropout', 0.5)
         self._lr: float = context.get('mlp_lr', 1e-3)
         self._weight_decay: float = context.get('mlp_weight_decay', 1e-2)
-        self._batch_size: int = context.get('mlp_batch_size', 128)
+        self._batch_size: int = context.get('batch_size', 128)
         self._use_residual: int = context.get('mlp_use_residual', False)
         self._epochs: int = 100
         self._patience: int = 10
@@ -491,6 +493,7 @@ class MLPWrapper(BaseWrapper):
         else:
             X_val_t = y_val_t = None
 
+        logging.info(f"{X_t=} {y_t=}\n{X_val_t=} {y_val_t=}")
         n = len(X_t)
         epoch_losses: list[dict] = []
         noise_std: float = 0.01  # 输入噪声正则化
@@ -501,11 +504,12 @@ class MLPWrapper(BaseWrapper):
         patience_counter = 0
         best_epoch = 0
 
+        batch_size = min(n, self._batch_size)
         for ep in range(epochs):
             perm = torch.randperm(n, device=self._device)
             total_loss = 0.0
-            for i in range(0, n, self._batch_size):
-                idx = perm[i : i + self._batch_size]
+            for i in range(0, n, batch_size):
+                idx = perm[i : i + batch_size]
                 # 输入噪声注入：小方差高斯噪声，等价于岭正则化
                 x_batch = X_t[idx] + torch.randn_like(X_t[idx]) * noise_std
                 pred = model(x_batch)
@@ -568,8 +572,9 @@ class MLPWrapper(BaseWrapper):
         X_t = torch.tensor(X, dtype=torch.float32, device=self._device)
         preds: list[np.ndarray] = []
         with torch.no_grad():
-            for i in range(0, len(X_t), self._batch_size * 4):
-                batch = X_t[i : i + self._batch_size * 4]
+            eval_batch_size = min(len(X_t), self._batch_size * 4)
+            for i in range(0, len(X_t), eval_batch_size):
+                batch = X_t[i : i + eval_batch_size]
                 preds.append(self._model(batch).cpu().numpy().ravel())
         return np.concatenate(preds)
 
