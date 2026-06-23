@@ -97,7 +97,7 @@ def strategy_fn(name: str, idx: int, f3d: Frame3D, context: Any) -> Frame3D:
     if context['groups'] is None:
         num_groups = context['num_groups']
         fwd = context['fwd']
-        ic = context['initial_cash'] / num_groups
+        ic = context['initial_cash']
         cr = context['commission_rate']
         mc = context['min_commission']
         context['groups'] = [

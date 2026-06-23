@@ -100,8 +100,9 @@ class BaoStockDataCallable:
 
     def __init__(
         self,
-        start_date: str = '2010-01-01',
+        start_date: str = '2007-01-01',
         end_date: str | None = None,
+        update_start_date: str = '2007-01-01',
         db_path: str = 'quant_stock.duckdb',
         precision: int = 2,
         max_stocks: int | None = None,
@@ -118,6 +119,7 @@ class BaoStockDataCallable:
         """
         self.start_date = start_date
         self.end_date = end_date or pd.Timestamp.now().strftime('%Y-%m-%d')
+        self.update_start_date = update_start_date
         self.db_path = db_path
         self.mlflow_run_id = mlflow_run_id
         self.precision = precision
@@ -510,7 +512,7 @@ class BaoStockDataCallable:
                     con_w.unregister('_tmp')
                     con_w.execute(
                         'INSERT OR REPLACE INTO stock_list VALUES (?, ?, ?, ?)',
-                        [data['code'], data['name'], self.start_date, data['end']],
+                        [data['code'], data['name'], self.update_start_date, data['end']],
                     )
                     logging.info(
                         f'[{day_idx}][{day}] dump SUCCESS for '  # noqa: B023
@@ -711,24 +713,23 @@ class BaoStockDataCallable:
           [5] 迭代: 逐日 _read_day() + 停牌前向填充 + _frame_to_f3d() → yield
           [6] 归档: 每 30 天将热表数据导出 Parquet
         """
-        logging.info(f'Start date={self.start_date}, end_date={self.end_date}, db={self.db_path}')
+        logging.info(f'backtest dates=[{self.start_date}, {self.end_date}], db={self.db_path}, update-dates=[{self.update_start_date}, {self.end_date}]')
 
         # ── 预检 ───────────────────────────────────────────────
         con0 = self._init_db(read_only=True)
         pre_rows = con0.execute('SELECT COUNT(*) FROM hot_daily_stock').fetchone()[0]
         logging.info(f'Pre-download: db_rows={pre_rows}')
-        con0.close()
 
         # ── 交易日历 ───────────────────────────────────────────
-        con = self._init_db()
-        db_range = con.execute('SELECT MIN(date), MAX(date) FROM trading_calendar').fetchone()
+        db_range = con0.execute('SELECT MIN(date), MAX(date) FROM trading_calendar').fetchone()
         db_start, db_end = db_range[0], db_range[1]
+        con0.close()
 
         need_fetch = (
-            db_start is None or str(db_start) > self.start_date or str(db_end) < self.end_date
+            db_start is None or str(db_start) > min(self.update_start_date, self.start_date) or str(db_end) < self.end_date
         )
         logging.info(
-            f'db_range=[{db_start}, {db_end}], request=[{self.start_date}, {self.end_date}], '
+            f'db_range=[{db_start}, {db_end}], request=[{min(self.update_start_date, self.start_date)}, {self.end_date}], '
             f'need_fetch={need_fetch}'
         )
 
@@ -737,16 +738,56 @@ class BaoStockDataCallable:
             with bao_session() as bs:
                 td_df = query_with_retry(
                     lambda: bs.query_trade_dates(
-                        start_date=self.start_date, end_date=self.end_date
+                        start_date=min(self.update_start_date, self.start_date), end_date=self.end_date
                     ),
                     'trade_dates',
                 )
+            con = self._init_db()
             con.executemany(
                 'INSERT OR REPLACE INTO trading_calendar VALUES (?, ?)',
                 [(r['calendar_date'], int(r['is_trading_day'])) for _, r in td_df.iterrows()],
             )
             con.commit()
+            con.close()
 
+        # ── 下载 ───────────────────────────────────────────────
+        if self.update_db:
+            con = self._init_db(read_only=True)
+            # DB trading days
+            td_df = con.execute(
+                'SELECT date FROM trading_calendar '
+                'WHERE is_trading = 1 AND date >= ? AND date <= ? '
+                'ORDER BY date',
+                [self.update_start_date, self.end_date],
+            ).df()
+            con.close()
+
+            db_trading_days = td_df['date'].tolist()
+            logging.info(f'Update DB Trading days length: {len(db_trading_days)}')
+            if len(db_trading_days) > 0:
+                logging.info(f'Update DB Trading days: [{db_trading_days[0]}-{db_trading_days[-1]}]')
+            self._mlflow_log(
+                {
+                    'db_trading_days': float(len(db_trading_days)),
+                },
+                step=0,
+            )
+            self._download_all(db_trading_days)
+
+            # ── 后检 ───────────────────────────────────────────────
+            con = self._init_db(read_only=True)
+            post_rows = con.execute('SELECT COUNT(*) FROM hot_daily_stock').fetchone()[0]
+            logging.info(f'Post-download db_rows={post_rows}')
+            self._mlflow_log(
+                {
+                    'post_download_db_rows': float(post_rows),
+                },
+                step=len(db_trading_days),
+            )
+            con.close()
+
+        # 获得回测期间交易日历
+        con = self._init_db(read_only=True)
         td_df = con.execute(
             'SELECT date FROM trading_calendar '
             'WHERE is_trading = 1 AND date >= ? AND date <= ? '
@@ -756,32 +797,15 @@ class BaoStockDataCallable:
         con.close()
 
         trading_days = td_df['date'].tolist()
-        logging.info(f'Trading days: {len(trading_days)}')
-
+        logging.info(f'Update DB Trading days length: {len(trading_days)}')
+        if len(trading_days) > 0:
+            logging.info(f'Update DB Trading days: [{trading_days[0]}-{trading_days[-1]}]')
         self._mlflow_log(
             {
-                'total_trading_days': float(len(trading_days)),
+                'backtest_trading_days': float(len(trading_days)),
             },
             step=0,
         )
-        if len(trading_days) > 0:
-            logging.info(f'Final Trading days: [{trading_days[0]}-{trading_days[-1]}]')
-
-        # ── 下载 ───────────────────────────────────────────────
-        if self.update_db:
-            self._download_all(trading_days)
-
-        # ── 后检 ───────────────────────────────────────────────
-        con1 = self._init_db(read_only=True)
-        post_rows = con1.execute('SELECT COUNT(*) FROM hot_daily_stock').fetchone()[0]
-        logging.info(f'Post-download db_rows={post_rows}')
-        self._mlflow_log(
-            {
-                'post_download_db_rows': float(post_rows),
-            },
-            step=len(trading_days),
-        )
-        con1.close()
 
         # ── 逐日迭代 ───────────────────────────────────────────
         con_db = self._init_db(read_only=True)

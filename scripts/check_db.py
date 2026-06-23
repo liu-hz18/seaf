@@ -32,7 +32,7 @@ con.execute("PRAGMA memory_limit='2GB'")
 # print(columns)
 
 
-day_str = '2007-03-08'
+day_str = '2010-11-16'
 df = con.execute(
     'SELECT code, name FROM daily_stocks WHERE date = ? ORDER BY code', [day_str]
 ).df()

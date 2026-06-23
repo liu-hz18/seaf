@@ -189,7 +189,7 @@ def _generate_daily_plan(
 
     plans: list[dict] = []
 
-    sn_map = stock_name_map if stock_name_map else {}
+    sn_map = stock_name_map or {}
 
     # ---- 1. 纯卖：到期且不在新信号中 → 全部平仓 (order=0) ----
     for sid in mat_sids - sig_sids:

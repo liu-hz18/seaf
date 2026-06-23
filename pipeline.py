@@ -34,14 +34,18 @@ from seafquant.strategy import strategy_epilogue, strategy_fn
 def main() -> None:
     parser = argparse.ArgumentParser(description='SEAF Quantitative Backtest Framework')
     parser.add_argument(
-        '--data-source', type=str, default='synthetic',
+        '--data-source',
+        type=str,
+        default='synthetic',
         choices=['synthetic', 'baostock'],
         help='Data source: synthetic (模拟) or baostock (真实历史)',
     )
-    parser.add_argument('--start-date', type=str, default='2020-01-02')
+    parser.add_argument('--start-date', type=str, default='2015-01-01')
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument(
-        '--precision', type=int, default=2,
+        '--precision',
+        type=int,
+        default=2,
         help='Price/market-cap rounding precision (decimal places)',
     )
     # synthetic data
@@ -50,7 +54,10 @@ def main() -> None:
     parser.add_argument('--n-stocks', type=int, default=64)
     # baostock data
     parser.add_argument('--max-stocks', type=int, default=None)
-    parser.add_argument('--update-db', action='store_true', default=False, help='Update baostock data db')
+    parser.add_argument(
+        '--update-db', action='store_true', default=False, help='Update baostock data db'
+    )
+    parser.add_argument('--update-start-date', type=str, default='2007-01-01')
     # model
     parser.add_argument(
         '--fwd',
@@ -71,21 +78,49 @@ def main() -> None:
         help='Model training batch size',
     )
     parser.add_argument(
-        '--loss', type=str, default='mse', choices=['mse', 'ic'],
+        '--loss',
+        type=str,
+        default='mse',
+        choices=['mse', 'ic'],
         help='Model training loss function (mse/ic)',
     )
-    parser.add_argument('--use-residual', action='store_true', default=False, help='MLP block use residual block architecture')
     parser.add_argument(
-        '--ensemble', nargs='+', default=['mlp'], choices=['lgbm', 'ridge', 'mlp'],
+        '--use-residual',
+        action='store_true',
+        default=False,
+        help='MLP block use residual block architecture',
+    )
+    parser.add_argument(
+        '--ensemble',
+        nargs='+',
+        default=['mlp'],
+        choices=['lgbm', 'ridge', 'mlp'],
         help='Model types: single (--ensemble lgbm) or bagging (--ensemble lgbm mlp)',
+    )
+    # strategy
+    parser.add_argument(
+        '--initial-cash',
+        type=float,
+        default=1_000_000.0,
+        help='Initial cash for strategy',
+    )
+    parser.add_argument(
+        '--num-groups',
+        type=int,
+        default=10,
+        help='Group number for strategy',
     )
     # logging
     parser.add_argument(
         '--log-level', type=str, default='INFO', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR']
     )
-    parser.add_argument('--no-mlflow', action='store_true', default=False, help='Disable MLflow tracking')
     parser.add_argument(
-        '--snapshot-interval', type=int, default=100,
+        '--no-mlflow', action='store_true', default=False, help='Disable MLflow tracking'
+    )
+    parser.add_argument(
+        '--snapshot-interval',
+        type=int,
+        default=100,
         help='Snapshot input/output every N calls (0=disabled)',
     )
     args = parser.parse_args()
@@ -116,10 +151,13 @@ def main() -> None:
     logging.basicConfig(
         level=getattr(logging, args.log_level),
         format='[%(levelname)s][%(asctime)s][%(filename)s:%(lineno)d] %(message)s',
-        handlers=[logging.StreamHandler(sys.stdout), logging.FileHandler(f'logs/{experiment_name}.txt', encoding='utf-8')],
+        handlers=[
+            logging.StreamHandler(sys.stdout),
+            logging.FileHandler(f'logs/{experiment_name}.txt', encoding='utf-8'),
+        ],
     )
 
-    logging.info(f"args: {args}")
+    logging.info(f'args: {args}')
 
     flow = Flow(queue_maxsize=GLOBAL_MAX_FACTOR_WINDOW)
 
@@ -133,8 +171,10 @@ def main() -> None:
     # ===== 1. 数据源节点 =====
     if args.data_source == 'baostock':
         from seafquant.baostock_data import BaoStockDataCallable
+
         gen_callable = BaoStockDataCallable(
             start_date=args.start_date,
+            update_start_date=args.update_start_date,
             precision=args.precision,
             mlflow_run_id=mlflow_run_id,
             max_stocks=args.max_stocks,
@@ -145,11 +185,15 @@ def main() -> None:
         args.n_stocks = 0
     elif args.data_source == 'synthetic':
         gen_callable = DataSourceCallable(
-            args.n_times, args.n_stocks, args.noise_ratio, args.seed, args.start_date,
+            args.n_times,
+            args.n_stocks,
+            args.noise_ratio,
+            args.seed,
+            args.start_date,
             precision=args.precision,
         )
     else:
-        raise ValueError(f"invalid data source: {args.data_source}")
+        raise ValueError(f'invalid data source: {args.data_source}')
 
     src_output_queues = [f'q_ohlc_to_{name}' for name, _ in factor_nodes]
     if is_ensemble:
@@ -161,7 +205,12 @@ def main() -> None:
         'src_data',
         gen_callable,
         src_output_queues,
-        context={'mlflow_name': experiment_name, 'mlflow_run_id': mlflow_run_id, 'start_date': args.start_date, 'precision': args.precision},
+        context={
+            'mlflow_name': experiment_name,
+            'mlflow_run_id': mlflow_run_id,
+            'start_date': args.start_date,
+            'precision': args.precision,
+        },
         snapshot_interval=args.snapshot_interval,
         log_level=args.log_level,
     )
@@ -184,7 +233,12 @@ def main() -> None:
             output_to=q_outs,
             window=fw['window'],
             min_periods=fw['min_periods'],
-            context={'mlflow_name': experiment_name, 'mlflow_run_id': mlflow_run_id, 'start_date': args.start_date, 'precision': args.precision},
+            context={
+                'mlflow_name': experiment_name,
+                'mlflow_run_id': mlflow_run_id,
+                'start_date': args.start_date,
+                'precision': args.precision,
+            },
             time_alignment='right',
             snapshot_interval=args.snapshot_interval,
             log_level=args.log_level,
@@ -208,7 +262,12 @@ def main() -> None:
 
     for mid, model_type in enumerate(model_types):
         signal_col = f'pred_signal_{model_type}' if is_ensemble else 'pred_signal'
-        mctx = model_context_base | {'model_type': model_type, 'signal_col': signal_col, 'seed': args.seed + mid, 'batch_size': args.batch_size}
+        mctx = model_context_base | {
+            'model_type': model_type,
+            'signal_col': signal_col,
+            'seed': args.seed + mid,
+            'batch_size': args.batch_size,
+        }
         sq = f'q_signal_{model_type}'
         ssq = f'q_signal_{model_type}_to_ensemble'
         all_signal_qs.append(sq)
@@ -225,7 +284,21 @@ def main() -> None:
             output_to=[sq, ssq],
             window=MODEL_WINDOW,
             min_periods=MODEL_MIN_PERIODS,
-            exclude_input_columns=['open','high','low','close_uq','turnover','volume','market_cap','peTTM','pbMRQ','psTTM','pcfNcfTTM','tradestatus','isST'],
+            exclude_input_columns=[
+                'open',
+                'high',
+                'low',
+                'close_uq',
+                'turnover',
+                'volume',
+                'market_cap',
+                'peTTM',
+                'pbMRQ',
+                'psTTM',
+                'pcfNcfTTM',
+                'tradestatus',
+                'isST',
+            ],
             context=mctx,
             time_alignment='right',
             snapshot_interval=args.snapshot_interval,
@@ -242,10 +315,16 @@ def main() -> None:
             min_periods=IC_MIN_PERIODS,
             input_columns=[signal_col, 'close'],
             epilogue_fn=ic_epilogue,
-            context={'mlflow_name':experiment_name,'fwd':fwd,'num_groups':10,
-                     'mlflow_run_id':mlflow_run_id,'start_date':args.start_date,
-                     'precision':args.precision,'name':f'ic_{model_type}',
-                     'signal_col':signal_col},
+            context={
+                'mlflow_name': experiment_name,
+                'fwd': fwd,
+                'num_groups': 10,
+                'mlflow_run_id': mlflow_run_id,
+                'start_date': args.start_date,
+                'precision': args.precision,
+                'name': f'ic_{model_type}',
+                'signal_col': signal_col,
+            },
             time_alignment='left',
             snapshot_interval=args.snapshot_interval,
             log_level=args.log_level,
@@ -260,9 +339,13 @@ def main() -> None:
             window=1,
             min_periods=1,
             epilogue_fn=ensemble_epilogue,
-            context={'mlflow_run_id': mlflow_run_id, 'mlflow_name': experiment_name,
-                     'precision': args.precision, 'start_date': args.start_date,
-                     'fwd': fwd},
+            context={
+                'mlflow_run_id': mlflow_run_id,
+                'mlflow_name': experiment_name,
+                'precision': args.precision,
+                'start_date': args.start_date,
+                'fwd': fwd,
+            },
             time_alignment='right',
             snapshot_interval=args.snapshot_interval,
             log_level=args.log_level,
@@ -278,9 +361,15 @@ def main() -> None:
             min_periods=IC_MIN_PERIODS,
             input_columns=['pred_signal', 'close'],
             epilogue_fn=ic_epilogue,
-            context={'mlflow_name':experiment_name,'fwd':fwd,'num_groups':10,
-                     'mlflow_run_id':mlflow_run_id,'start_date':args.start_date,
-                     'precision':args.precision,'name':'ic_bagging'},
+            context={
+                'mlflow_name': experiment_name,
+                'fwd': fwd,
+                'num_groups': 10,
+                'mlflow_run_id': mlflow_run_id,
+                'start_date': args.start_date,
+                'precision': args.precision,
+                'name': 'ic_bagging',
+            },
             time_alignment='left',
             snapshot_interval=args.snapshot_interval,
             log_level=args.log_level,
@@ -293,8 +382,8 @@ def main() -> None:
     # ===== 5. 策略绩效节点 =====
     strategy_context = {
         'fwd': fwd,
-        'num_groups': 10,
-        'initial_cash': 10_000_000,
+        'num_groups': args.num_groups,
+        'initial_cash': args.initial_cash,
         'mlflow_name': experiment_name,
         'mlflow_run_id': mlflow_run_id,
         'start_date': args.start_date,
@@ -322,7 +411,10 @@ def main() -> None:
         try:
             git_hash = subprocess.run(
                 ['git', 'rev-parse', '--short', 'HEAD'],
-                check=False, capture_output=True, text=True, timeout=5,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=5,
             ).stdout.strip()
             if git_hash:
                 mlflow.log_param('git_commit', git_hash)
@@ -337,11 +429,8 @@ def main() -> None:
             f' (tracking_uri=sqlite:///mlruns.db)'
         )
     logging.info(
-        f'SEAF Pipeline: n_times={args.n_times}, n_stocks={args.n_stocks}, '
-        f'noise_ratio={args.noise_ratio}, seed={args.seed}, start_date={args.start_date}, '
-        f'fwd={fwd}, model ensemble={args.ensemble}'
+        f'Flow Topology: 1 source -> {len(factor_nodes)} factor nodes -> {"+".join(model_types)} model(s) -> {"bagging+" if is_ensemble else ""}ic_analysis + strategy'
     )
-    logging.info(f'Topology: 1 source -> {len(factor_nodes)} factor nodes -> {"+".join(model_types)} model(s) -> {"bagging+" if is_ensemble else ""}ic_analysis + strategy')
     logging.info(f'Model window={MODEL_WINDOW}, IC window={IC_WINDOW}')
     factor_window_summary = ', '.join(
         f'{k}={v["window"]}' for k, v in sorted(FACTOR_WINDOWS.items())
@@ -349,7 +438,7 @@ def main() -> None:
     logging.info(f'Factor windows: {factor_window_summary}')
     logging.info('=' * 50)
 
-    logging.info(f"Flow Arch: {flow}")
+    logging.info(f'Flow Arch: {flow}')
     logging.info('=' * 50)
 
     flow.start()

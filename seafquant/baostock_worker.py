@@ -95,7 +95,7 @@ def _login_with_retry(bs, code: str) -> bool:
             return True
         if attempt < 2:
             time.sleep(1.0 * (attempt + 1))
-    logging.warning(f'login failed after 3 retries for {code}')
+    logging.warning(f'login failed after 3 retries for {code}. {lg.error_code}, {lg.error_msg}')
     return False
 
 
