@@ -10,7 +10,6 @@ import gc
 import sys
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -30,6 +29,12 @@ def _make_random_f3d(n_times: int = 200, n_stocks: int = 100, seed: int = 42) ->
     close_arr = 100.0 * np.exp(np.cumsum(log_ret, axis=0))
     close_arr = np.maximum(close_arr, 0.01)
     intraday_vol = close_arr * rng.uniform(0.005, 0.03, size=(n_times, n_stocks))
+    # 估值列（模拟真实 A 股分布）
+    eps_arr = close_arr * rng.lognormal(-4, 1.2, size=(n_times, n_stocks))
+    bvps_arr = close_arr * rng.lognormal(-2, 0.8, size=(n_times, n_stocks))
+    sps_arr = close_arr * rng.lognormal(-3, 1.5, size=(n_times, n_stocks))
+    cfps_arr = eps_arr * rng.lognormal(0, 0.6, size=(n_times, n_stocks))
+
     df = pd.DataFrame({
         'open': (close_arr * (1 + rng.normal(0, 0.005, size=(n_times, n_stocks)))).ravel(),
         'high': (close_arr + np.abs(intraday_vol)).ravel(),
@@ -38,6 +43,10 @@ def _make_random_f3d(n_times: int = 200, n_stocks: int = 100, seed: int = 42) ->
         'volume': rng.lognormal(15, 1.5, size=(n_times, n_stocks)).ravel().astype(np.int64),
         'turnover': rng.lognormal(-3, 1.0, size=(n_times, n_stocks)).ravel(),
         'market_cap': (close_arr * rng.lognormal(18, 2, size=(n_times, n_stocks))).ravel(),
+        'peTTM': (close_arr / np.maximum(eps_arr, 0.001)).ravel(),
+        'pbMRQ': (close_arr / np.maximum(bvps_arr, 0.001)).ravel(),
+        'psTTM': (close_arr / np.maximum(sps_arr, 0.001)).ravel(),
+        'pcfNcfTTM': (close_arr / np.maximum(cfps_arr, 0.001)).ravel(),
     }, index=mi)
     nan_mask = rng.random(len(df)) < 0.02
     df.loc[nan_mask, :] = np.nan

@@ -202,7 +202,8 @@ def _rolling_sliding(
             continue
         swv = sliding_window_view(arr, w, axis=0)  # (n_times-w+1, n_stocks, w)
         result = np.full((n_times, n_stocks), np.nan)
-        result[w - 1:] = agg_fn(swv, axis=2)
+        with np.errstate(all='ignore'):  # 全 NaN 窗口预期产生 NaN，不警告
+            result[w - 1:] = agg_fn(swv, axis=2)
         results[w] = result
     return results
 

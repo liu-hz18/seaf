@@ -4,8 +4,6 @@
 
 from __future__ import annotations
 
-import logging
-
 import numpy as np
 
 from qpipe.frame3d import Frame3D
@@ -68,7 +66,6 @@ def compute_value_factors(name: str, idx: int, f3d: Frame3D, context) -> Frame3D
     df['factor_val_cheap_low_turn'] = df['_d60'] - to_z
 
     # ---- 16: 价格在范围内位置 ----
-    close_mins = rolling_max_2d(-close_2d, [120])  # min via -max(-x)
     # Actually need min, not max of negative
     from seafquant.factor._perf import rolling_min_2d
     mins_120 = rolling_min_2d(close_2d, [120])

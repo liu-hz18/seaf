@@ -84,9 +84,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
 
-# ══════════════════════════════════════════════════════════════
-# BaoStockDataCallable
-# ══════════════════════════════════════════════════════════════
+TIMEING_INTEVAL = 20
 
 
 class BaoStockDataCallable:
@@ -346,7 +344,7 @@ class BaoStockDataCallable:
 
         # ── 常量 ──────────────────────────────────────────────
         MAX_WORKERS = 1  # 最大并行进程数
-        MAX_DAILY_CALLS = 45000  # 每日 API 调用上限
+        MAX_DAILY_CALLS = 10_0000  # 每日 API 调用上限
         STOCK_LIST_INTERVAL = 20  # 每 N 天调一次股票列表 API
 
         # ── 状态变量 ──────────────────────────────────────────
@@ -371,7 +369,7 @@ class BaoStockDataCallable:
         # _last_fetched_df: pd.DataFrame | None = None
         for day_idx, day in enumerate(trading_days):
             if _stop_flag.is_set() or _api_calls >= MAX_DAILY_CALLS:
-                logging.error(f'[{day_idx}][{day}] Stopped.')
+                logging.error(f'[{day_idx}][{day}] Stopped. {_stop_flag.is_set()=} {_api_calls=}')
                 break
 
             # ① 股票列表 (每隔 STOCK_LIST_INTERVAL 天 API 获取)
@@ -844,7 +842,7 @@ class BaoStockDataCallable:
                 {'daily_n_stocks': float(n_stocks), 'daily_n_cols': float(n_cols)},
                 step=day_count,
             )
-            if day_count % 100 == 0:
+            if day_count % TIMEING_INTEVAL == 0:
                 logging.info(
                     f'[{day_count}/{len(trading_days)}][{day}] stocks={n_stocks}, cols={n_cols}'
                 )

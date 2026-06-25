@@ -110,6 +110,11 @@ def main() -> None:
         default=10,
         help='Group number for strategy',
     )
+    parser.add_argument(
+        '--include-star',
+        action='store_true', default=False,
+        help='Include STAR stocks (prefix is sh.688, sz.300, sz.301, sz.302)',
+    )
     # logging
     parser.add_argument(
         '--log-level', type=str, default='INFO', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR']
@@ -184,6 +189,8 @@ def main() -> None:
         args.n_times = 0
         args.n_stocks = 0
     elif args.data_source == 'synthetic':
+        # synthetic 模式无估值列 → 移除估值因子节点
+        factor_nodes = [(n, f) for n, f in factor_nodes if n != 'factor_valuation']
         gen_callable = DataSourceCallable(
             args.n_times,
             args.n_stocks,
@@ -388,6 +395,7 @@ def main() -> None:
         'mlflow_run_id': mlflow_run_id,
         'start_date': args.start_date,
         'precision': args.precision,
+        'include_star': args.include_star,
     }
     flow.add_node(
         name='strategy',

@@ -4,8 +4,6 @@
 
 from __future__ import annotations
 
-import logging
-
 import numpy as np
 from numpy.lib.stride_tricks import sliding_window_view
 
@@ -50,7 +48,7 @@ def _nh_numba(price: np.ndarray, window: int) -> np.ndarray:
                 pass  # simplified: just recount in sliding window
             if p > cmax and cmax != -np.inf:
                 count += 1
-            if p > cmax: cmax = p
+            cmax = max(cmax, p)
             if i >= window - 1:
                 out[i, s] = count
     return out
@@ -61,7 +59,7 @@ def _new_high_nb(price: np.ndarray, window: int) -> np.ndarray:
     T, S = price.shape
     out = np.full((T, S), np.nan)
     if window > T: return out
-    
+
     swv = sliding_window_view(price, window, axis=0)  # (T-w+1, S, w)
     # 用 numba 加速循环
     @njit
@@ -79,7 +77,7 @@ def _new_high_nb(price: np.ndarray, window: int) -> np.ndarray:
                     elif v > best: cnt += 1; best = v
                 res[i, s2] = cnt
         return res
-    
+
     out[window - 1:] = _count(swv)
     return out
 

@@ -4,11 +4,11 @@ import duckdb
 
 DB_PATH = 'quant_stock.duckdb'
 code = 'sh.601003'
-chunk_start = '2007-01-01'
-chunk_end = '2007-12-31'
+chunk_start = '2016-01-01'
+chunk_end = '2016-12-31'
 
 con = duckdb.connect(DB_PATH, read_only=True, config={'threads': 16})
-con.execute("PRAGMA memory_limit='2GB'")
+# con.execute("PRAGMA memory_limit='2GB'")
 
 # existing = con.execute(
 #     "SELECT COUNT(*) FROM hot_daily_stock "
@@ -18,25 +18,25 @@ con.execute("PRAGMA memory_limit='2GB'")
 
 # print(existing)
 
-# rows = con.execute(
-#     "SELECT * FROM hot_daily_stock "
-#     "WHERE code = ? AND \"date\" >= ? AND \"date\" <= ? ORDER BY date",
-#     [code, chunk_start, chunk_end],
-# )
-# print(rows)
+rows = con.execute(
+    "SELECT code, date, close FROM hot_daily_stock "
+    "WHERE \"date\" >= ? AND \"date\" <= ? ORDER BY code, date",
+    [chunk_start, chunk_end],
+)
+print(rows)
 
-# for row in rows.fetchall():
-#     print(row)
+for row in rows.fetchall():
+    print(row)
 
 # columns = [desc[0] for desc in rows.description]
 # print(columns)
 
 
-day_str = '2010-11-16'
-df = con.execute(
-    'SELECT code, name FROM daily_stocks WHERE date = ? ORDER BY code', [day_str]
-).df()
-print(df)
+# day_str = '2010-11-16'
+# df = con.execute(
+#     'SELECT code, name FROM daily_stocks WHERE date = ? ORDER BY code', [day_str]
+# ).df()
+# print(df)
 
 con.close()
 

@@ -93,6 +93,7 @@ def strategy_fn(name: str, idx: int, f3d: Frame3D, context: Any) -> Frame3D:
     context.setdefault('groups', None)
     context.setdefault('first_date', None)
     context.setdefault('last_date', None)
+    context.setdefault('include_star', False)
 
     if context['groups'] is None:
         num_groups = context['num_groups']
@@ -112,12 +113,17 @@ def strategy_fn(name: str, idx: int, f3d: Frame3D, context: Any) -> Frame3D:
         df = df[df['tradestatus'] == 1]
     if 'isST' in df.columns:
         df = df[df['isST'] == 0]
+    # 指定 prefix 以方便排除创业板、科创版
+    if not context['include_star']:
+        CODE_PREFIXS = (
+            'sh.600', 'sh.601', 'sh.603', 'sh.605',  # 沪市主板
+            'sz.000', 'sz.001', 'sz.002', 'sz.003', 'sz.004'  # 深市主板
+        )  # tuple type
+        df = df[df['code'].str.startswith(CODE_PREFIXS, na=False)]
 
     times = sorted(df.index.get_level_values('key').unique())
 
     assert len(times) == 1
-    # if len(times) < 2:
-    #     return Frame3D(pd.DataFrame(index=df.index[:0]))
 
     # T-1 和 T
     t_curr = times[-1]

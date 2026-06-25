@@ -31,8 +31,8 @@ EpilogueFunc = Callable[[[str, int, dict | None], Any], None]
 # Source 生成器函数签名：无参，yield Frame3D
 GenFunc = Callable[[], Iterator[tuple[int, Frame3D]]]  # 实际是 Iterator[Frame3D]，但 pickle 兼容需要宽松类型
 
-MEM_CLEARING_INTEVAL = 10
-TIMEING_INTEVAL = 10
+MEM_CLEARING_INTEVAL = 20
+TIMEING_INTEVAL = 20
 
 
 class SourceNode(mp.Process):

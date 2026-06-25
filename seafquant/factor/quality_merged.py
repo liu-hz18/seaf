@@ -4,13 +4,15 @@
 
 from __future__ import annotations
 
-import logging
-
 import numpy as np
 
 from qpipe.frame3d import Frame3D
 from seafquant.factor._perf import (
-    _dd_duration_2d, _sign_change_2d, rolling_max_2d, rolling_mean_2d, rolling_std_2d,
+    _dd_duration_2d,
+    _sign_change_2d,
+    rolling_max_2d,
+    rolling_mean_2d,
+    rolling_std_2d,
 )
 
 

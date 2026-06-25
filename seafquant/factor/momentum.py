@@ -4,8 +4,6 @@
 
 from __future__ import annotations
 
-import logging
-
 import numpy as np
 
 from qpipe.frame3d import Frame3D
@@ -24,8 +22,8 @@ def compute_momentum_factors(name: str, idx: int, f3d: Frame3D, context) -> Fram
     # ── 提取 2D ──
     close_2d = close.unstack(level='code').values
     open_2d = open_p.unstack(level='code').values
-    high_2d = high.unstack(level='code').values
-    low_2d = low.unstack(level='code').values
+    # high_2d = high.unstack(level='code').values
+    # low_2d = low.unstack(level='code').values
 
     # 日收益 r[t] = C[t]/C[t-1] - 1
     ret1_2d = np.empty_like(close_2d); ret1_2d[0] = np.nan

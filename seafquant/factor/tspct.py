@@ -9,7 +9,6 @@ TSPCT 因子 — 时序百分位排名因子（40 个）。优化 v2：2D-array 
 
 from __future__ import annotations
 
-import logging
 from typing import Any
 
 import numpy as np

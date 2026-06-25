@@ -1,4 +1,4 @@
-"""因子计算主入口 — 合并后 11 节点，延迟均衡 ~2-7s。"""
+"""因子计算主入口 — 12 节点（含估值因子，baostock 专用）。"""
 
 from __future__ import annotations
 
@@ -13,14 +13,17 @@ from seafquant.factor.quality_merged import compute_quality_merged_factors
 from seafquant.factor.quality_pa import compute_quality_pa_factors
 from seafquant.factor.trend_cs import compute_trend_cs_factors
 from seafquant.factor.tspct import compute_tspct_factors
+from seafquant.factor.valuation import compute_valuation_factors
 from seafquant.factor.value import compute_value_factors
 from seafquant.factor.volatility import compute_volatility_factors
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+
     from qpipe.frame3d import Frame3D
 
-FACTOR_REGISTRY: dict[str, Callable[[str, Frame3D, Any], Frame3D]] = {
+
+FACTOR_REGISTRY: dict[str, Callable[[str, int, Frame3D, Any], Frame3D]] = {
     'momentum':         compute_momentum_factors,
     'volatility':       compute_volatility_factors,
     'liquidity':        compute_liquidity_factors,
@@ -32,6 +35,7 @@ FACTOR_REGISTRY: dict[str, Callable[[str, Frame3D, Any], Frame3D]] = {
     'interaction':      compute_interaction_factors,
     'precision':        compute_precision_factors,
     'tspct':            compute_tspct_factors,
+    'valuation':        compute_valuation_factors,
 }
 
 FACTOR_WINDOWS: dict[str, dict[str, int]] = {
@@ -46,6 +50,7 @@ FACTOR_WINDOWS: dict[str, dict[str, int]] = {
     'interaction':      {'window': 70, 'min_periods': 60},
     'precision':        {'window': 70, 'min_periods': 60},
     'tspct':            {'window': 70, 'min_periods': 60},
+    'valuation':        {'window': 130, 'min_periods': 120},  # max=120 (MA120, Z-score120)
 }
 
 GLOBAL_MAX_FACTOR_WINDOW = max(c['window'] for c in FACTOR_WINDOWS.values())
@@ -62,6 +67,7 @@ FACTOR_INPUT_COLUMNS: dict[str, list[str]] = {
     'interaction':      ['close', 'high', 'low', 'volume', 'turnover', 'market_cap'],
     'precision':        ['close', 'high', 'low'],
     'tspct':            ['open', 'high', 'low', 'close', 'volume', 'turnover'],
+    'valuation':        ['close', 'peTTM', 'pbMRQ', 'psTTM', 'pcfNcfTTM'],
 }
 
 FACTOR_PREFIXES: dict[str, str] = {
@@ -76,6 +82,7 @@ FACTOR_PREFIXES: dict[str, str] = {
     'interaction':      'factor_inter',
     'precision':        'factor_prec',
     'tspct':            'factor_tspct',
+    'valuation':        'factor_est',
 }
 
 __all__ = ['FACTOR_PREFIXES','FACTOR_REGISTRY','FACTOR_WINDOWS','GLOBAL_MAX_FACTOR_WINDOW']
