@@ -600,6 +600,7 @@ class BaoStockDataCallable:
                 if _stop_flag.is_set():
                     break
 
+            # 这里的记录是跳变的（阶梯式的），因为我们会在年初获取全年的数据，后续年内获取的就少了
             con_sum = self._init_db(read_only=True)
             db_rows = con_sum.execute('SELECT COUNT(*) FROM hot_daily_stock').fetchone()[0]
             con_sum.close()

@@ -35,6 +35,7 @@ class FlushStreamHandler(logging.StreamHandler):
         self.flush()  # 每次输出后立刻刷新
 
 
+# NOTE: 废弃，瓶颈不在 queue 中，因为 下游进程设置了 接收 thread, 很快就把数据获取到下游节点的 buffer 中了
 class PersistentQueue:
     """数据存储在磁盘，不占用内存，支持多进程，支持 maxsize"""
 

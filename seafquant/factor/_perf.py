@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import warnings
+
 import numpy as np
 from numpy.lib.stride_tricks import sliding_window_view
 
@@ -202,7 +204,8 @@ def _rolling_sliding(
             continue
         swv = sliding_window_view(arr, w, axis=0)  # (n_times-w+1, n_stocks, w)
         result = np.full((n_times, n_stocks), np.nan)
-        with np.errstate(all='ignore'):  # 全 NaN 窗口预期产生 NaN，不警告
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', RuntimeWarning)
             result[w - 1:] = agg_fn(swv, axis=2)
         results[w] = result
     return results

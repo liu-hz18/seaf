@@ -58,33 +58,33 @@ end_date = '2026-06-11'
 # sz.000/001/002/003/004 开头 = 深市A股主板（含原中小板）
 # sz.300/301/302 开头 = 创业板
 # 其余的prefix是指数等，我们不需要
-rs = bs.query_all_stock(day=start_date)  #当参数"day"为空时，默认取当天日期。闭市后日K线数据更新，该接口才会返回当天数据，否则返回空。[注意必须是真实的交易日才有数据]
-print('query_all_stock respond error_code:'+rs.error_code)
-print('query_all_stock respond  error_msg:'+rs.error_msg)
+# rs = bs.query_all_stock(day=start_date)  #当参数"day"为空时，默认取当天日期。闭市后日K线数据更新，该接口才会返回当天数据，否则返回空。[注意必须是真实的交易日才有数据]
+# print('query_all_stock respond error_code:'+rs.error_code)
+# print('query_all_stock respond  error_msg:'+rs.error_msg)
 
-keep_prefixes = (
-    # 沪市主板
-    'sh.600', 'sh.601', 'sh.603', 'sh.605',
-    # 科创板
-    'sh.688',
-    # 深市主板
-    'sz.000', 'sz.001', 'sz.002', 'sz.003', 'sz.004',
-    # 创业板
-    'sz.300', 'sz.301', 'sz.302',
-)
+# keep_prefixes = (
+#     # 沪市主板
+#     'sh.600', 'sh.601', 'sh.603', 'sh.605',
+#     # 科创板
+#     'sh.688',
+#     # 深市主板
+#     'sz.000', 'sz.001', 'sz.002', 'sz.003', 'sz.004',
+#     # 创业板
+#     'sz.300', 'sz.301', 'sz.302',
+# )
 
-#### 打印结果集 ####
-data_list = []
-while (rs.error_code == '0') & rs.next():
-    # 获取一条记录，将记录合并在一起
-    data_list.append(rs.get_row_data())
-result = pd.DataFrame(data_list, columns=rs.fields)
-mask = result['code'].str.startswith(keep_prefixes)
-result = result[mask].reset_index(drop=True)
+# #### 打印结果集 ####
+# data_list = []
+# while (rs.error_code == '0') & rs.next():
+#     # 获取一条记录，将记录合并在一起
+#     data_list.append(rs.get_row_data())
+# result = pd.DataFrame(data_list, columns=rs.fields)
+# mask = result['code'].str.startswith(keep_prefixes)
+# result = result[mask].reset_index(drop=True)
 
 #### 结果集输出到csv文件 ####
 # result.to_csv("D:\\all_stock.csv", encoding="utf-8", index=False)
-print(result)
+# print(result)
 # 输出 result:
 #            code tradeStatus code_name
 # 0     sh.600000           1      浦发银行
@@ -103,43 +103,33 @@ print(result)
 #### 获取沪深A股历史日K线数据 ####
 # 详细指标参数，参见"历史行情指标参数"章节；"分钟线"参数与"日线"参数不同。"分钟线"不包含指数。
 # 日线指标：date,code,open,high,low,close,volume,amount,adjustflag,turn,pctChg,peTTM,pbMRQ,psTTM,pcfNcfTTM
-# code = 'sh.600000'
-# start_date = '2015-01-01'
-# end_date = '2015-12-31'
+code = 'sh.601012'
+start_date = '2026-01-05'
+end_date = '2026-06-25'
 
-# import time
-# from tqdm import tqdm
-
-# TOTAL = 100
-# COUNT = 0
-# lg = bs.login()  # really time consuming
-# for _ in tqdm(range(TOTAL)):
-#     if lg.error_code == '0':
-#         rs = bs.query_history_k_data_plus(
-#             code=code,
-#             fields='date,code,open,high,low,close,preclose,volume,amount,adjustflag,turn,tradestatus,pctChg,isST,peTTM,pbMRQ,psTTM,pcfNcfTTM',
-#             start_date=start_date,
-#             end_date=end_date,
-#             frequency='d',
-#             adjustflag='3',
-#         )
-#         #### 打印结果集 ####
-#         data_list = []
-#         while (rs.error_code == '0') and rs.next():
-#             # 获取一条记录，将记录合并在一起
-#             data = rs.get_row_data()
-#             data_list.append(data)
-#             if rs.error_code != '0':
-#                 print(f"{rs.error_code} {rs.error_msg}")
-#                 break
-#         # bs.logout()
-#         print(f"{rs.error_code} {rs.error_msg}")
-#         result = pd.DataFrame(data_list, columns=rs.fields)
-#         if len(result) == 244:
-#             COUNT += 1
-#     time.sleep(5.0)
-
-# print(f"{COUNT} / {TOTAL}")
+lg = bs.login()  # really time consuming
+if lg.error_code == '0':
+    rs = bs.query_history_k_data_plus(
+        code=code,
+        fields='date,code,open,high,low,close,preclose,volume,amount,adjustflag,turn,tradestatus,pctChg,isST,peTTM,pbMRQ,psTTM,pcfNcfTTM',
+        start_date=start_date,
+        end_date=end_date,
+        frequency='d',
+        adjustflag='3',
+    )
+    #### 打印结果集 ####
+    data_list = []
+    while (rs.error_code == '0') and rs.next():
+        # 获取一条记录，将记录合并在一起
+        data = rs.get_row_data()
+        data_list.append(data)
+        if rs.error_code != '0':
+            print(f"{rs.error_code} {rs.error_msg}")
+            break
+    # bs.logout()
+    print(f"{rs.error_code} {rs.error_msg}")
+    result = pd.DataFrame(data_list, columns=rs.fields)
+    print(result)
 
 #### 结果集输出到csv文件 ####
 # result.to_csv('./history_A_stock_k_data_daily.csv', encoding="utf-8", index=False)

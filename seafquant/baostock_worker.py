@@ -21,7 +21,7 @@ from seafquant.baostock_schema import BAOSTOCK_DTYPES, BAOSTOCK_FIELDS, CLOSE_UQ
 
 _MAX_RETRIES: int = 5
 _RETRY_BASE_DELAY: float = 2.0
-_WORKER_TIMEOUT: float = 60.0
+_WORKER_TIMEOUT: float = 120.0
 
 
 def timeout(timeout_sec):
@@ -131,6 +131,7 @@ def _fetch_main_data(
     """API：后复权 OHLCV（adjustflag='1'）。"""
     for attempt in range(1, _MAX_RETRIES + 1):
         try:
+            logging.info(f"[_fetch_main_data] {attempt}/{_MAX_RETRIES} {code} [{s},{e}]...")
             rs = bs.query_history_k_data_plus(
                 code=code,
                 fields=BAOSTOCK_FIELDS,
@@ -177,6 +178,7 @@ def _fetch_close_uq(
     """API：不复权收盘价（adjustflag='3'），仅 close 字段。"""
     for attempt in range(1, _MAX_RETRIES + 1):
         try:
+            logging.info(f"[_fetch_close_uq] {attempt}/{_MAX_RETRIES} {code} [{s},{e}]...")
             rs = bs.query_history_k_data_plus(
                 code=code,
                 fields=CLOSE_UQ_FIELDS,

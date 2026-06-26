@@ -33,6 +33,7 @@ GenFunc = Callable[[], Iterator[tuple[int, Frame3D]]]  # 实际是 Iterator[Fram
 
 MEM_CLEARING_INTEVAL = 20
 TIMEING_INTEVAL = 20
+TIME_LOGGING_INTEVAL = 30  # second
 
 
 class SourceNode(mp.Process):
@@ -113,6 +114,9 @@ class SourceNode(mp.Process):
                 # 但生成器自身不累积逐日数据。此处 gc 为防御性措施。
                 if idx % MEM_CLEARING_INTEVAL == 0:
                     gc.collect()
+                    rss = _rss_mb()
+                    logging.info(f'[{idx}] mem#{idx}: rss={rss:.2f}MB')
+
         except Exception as e:
             logging.error(f'Exception in SourceNode: {e}', exc_info=True)
         finally:
@@ -226,9 +230,12 @@ class MultiInputNode(mp.Process):
         window_tail_index = 0
         round_time = 0
         day_idx = 0
+        loop_logging_time = time.time()
 
         try:
             while True:
+                round_time += 1
+
                 alive_workers_to_wait = [i for i in range(num_workers) if i not in dead_workers]
                 thread_round_time = 0
                 while alive_workers_to_wait and thread_round_time < self.THREAD_ROUND_MAX_TIME:
@@ -260,6 +267,19 @@ class MultiInputNode(mp.Process):
 
                 for i in submitted_workers:
                     ready_event[i].clear()
+
+                # ---- 内存回收与监控 ----
+                time_now = time.time()
+                if time_now - loop_logging_time > TIME_LOGGING_INTEVAL:
+                    gc.collect()
+                    rss = _rss_mb()
+                    buf_sizes = {f'b{i}': len(b) for i, b in enumerate(self.buffers)}
+                    logging.info(
+                        f'[{day_idx}] timelog#{round_time}: rss={rss:.2f}MB, '
+                        f'buf_sizes={buf_sizes} {window_tail_index=}, {window_start_index=}, tob_len={len(time_order_buffer)}'
+                    )
+                    # TODO: 增加 mlflow 对 buffer size 和 两个游标 的记录
+                    loop_logging_time = time_now
 
                 # [列属性维度的拼接] 遍历上游收集到的数据，进行必要的检查，合并多源上游的 dataframe，然后导入本地队列
                 for tval, frame_list in idx_frame_dict.items():
@@ -333,8 +353,8 @@ class MultiInputNode(mp.Process):
                         f'{ {c: latest_frame.df[c].isna().sum() for c in numeric_cols} }'
                     )
                     latest_frame = self.clean_output_frame(latest_frame, concated_window_frame)
-                    # fillna
-                    latest_frame.df.fillna(0.0, inplace=True)
+                    # fillna (仅数值列，避免对字符串列如 stock_name 写入 float)
+                    latest_frame.df[numeric_cols] = latest_frame.df[numeric_cols].fillna(0.0)
                     logging.debug(
                         f'[{day_idx}][{ts}] window_start_index:{window_start_index}, '
                         f'window_tail_index={window_tail_index}\n'
@@ -428,7 +448,6 @@ class MultiInputNode(mp.Process):
                 if len(dead_workers) == num_workers:
                     logging.info('All workers dead. Node process exited.')
                     break
-                round_time += 1
 
         except Exception as e:
             logging.error(f'[{day_idx}] Exception in {self.name}: {e}', exc_info=True)
@@ -547,7 +566,8 @@ class MultiInputNode(mp.Process):
 
     def concat_frames(self, frame_list: list[Frame3D], tval: int) -> pd.DataFrame:
         # frame_list: [Frame3D, ...] from buffers with same idxs
-        df_list = [f3d.df for f3d in frame_list]
+        # 先按 index 排序，消除 reindex 与原始数据之间的 code 顺序差异
+        df_list = [f3d.df.sort_index() for f3d in frame_list]
         # 校验多路上游 index 一致：任何节点的输出 index (key,code)
         # 必须完全相同，差异说明某节点产生了错误数据
         if len(df_list) > 1:

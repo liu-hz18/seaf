@@ -493,7 +493,7 @@ class MLPWrapper(BaseWrapper):
         else:
             X_val_t = y_val_t = None
 
-        logging.info(f"{X_t=} {y_t=}\n{X_val_t=} {y_val_t=}")
+        logging.info(f"{X_t=}(shape={X_t.shape})\n{y_t=}(shape={y_t.shape})\n{X_val_t=}\n(shape={X_val_t.shape})\n{y_val_t=}(shape={y_val_t.shape})")
         n = len(X_t)
         epoch_losses: list[dict] = []
         noise_std: float = 0.01  # 输入噪声正则化

@@ -119,7 +119,8 @@ def strategy_fn(name: str, idx: int, f3d: Frame3D, context: Any) -> Frame3D:
             'sh.600', 'sh.601', 'sh.603', 'sh.605',  # 沪市主板
             'sz.000', 'sz.001', 'sz.002', 'sz.003', 'sz.004'  # 深市主板
         )  # tuple type
-        df = df[df['code'].str.startswith(CODE_PREFIXS, na=False)]
+        code_series = pd.Series(df.index.get_level_values('code'), index=df.index)
+        df = df[code_series.str.startswith(CODE_PREFIXS, na=False)]
 
     times = sorted(df.index.get_level_values('key').unique())
 

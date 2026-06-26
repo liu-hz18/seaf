@@ -147,6 +147,7 @@ class Flow:
                 'type': 'source',
                 'inputs': [],
                 'outputs': list(output_to),
+                'time_alignment': None,  # source 不执行对齐
             }
         )
         for qname in output_to:
@@ -201,6 +202,7 @@ class Flow:
                 'type': 'node',
                 'inputs': list(input_from),
                 'outputs': list(output_to),
+                'time_alignment': time_alignment,
             }
         )
         for qname in input_from:
@@ -246,7 +248,35 @@ class Flow:
             elif not spec['inputs']:
                 errors.append(f"Node '{name}' has no input (orphan node)")
 
-        # ---- 5. 无环形链路 (DFS) ----
+        # ---- 5. 多输入节点的上游对齐方式一致性 ----
+        # 若 A、B 两个因子节点分别以 'right' 和 'left' 对齐后汇入同一
+        # 下游节点 C，其输出 index 的 code 集合可能不同（IPO/退市边界），
+        # 导致 concat_frames 校验失败。Source 节点无对齐，视为豁免。
+        node_align: dict[str, str | None] = {
+            s['name']: s.get('time_alignment') for s in self._node_specs
+        }
+        for spec in self._node_specs:
+            if spec['type'] != 'node':
+                continue
+            inputs = spec.get('inputs', [])
+            if len(inputs) <= 1:
+                continue
+            # 收集所有上游 producer 的 time_alignment
+            upstream_aligns: set[str] = set()
+            for qname in inputs:
+                producers = self._queue_writers.get(qname, [])
+                for p in producers:
+                    al = node_align.get(p)
+                    if al is not None:  # 忽略 source（无对齐）
+                        upstream_aligns.add(al)
+            if len(upstream_aligns) > 1:
+                errors.append(
+                    f"Node '{spec['name']}' has upstreams with "
+                    f"mixed time_alignment: {sorted(upstream_aligns)}. "
+                    f"All non-source producers must use the same alignment."
+                )
+
+        # ---- 6. 无环形链路 (DFS) ----
         node_names = {spec['name'] for spec in self._node_specs}
         graph: dict[str, set[str]] = {name: set() for name in node_names}
         for qname, writers in self._queue_writers.items():
