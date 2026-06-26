@@ -58,7 +58,28 @@ STOCK_PREFIXES: tuple[str, ...] = (
 # ═══════════════════════════════════════════════════════════════════════════
 # DuckDB DDL
 # ═══════════════════════════════════════════════════════════════════════════
-
+DDL_HOT_TABLE_COLS = [
+    'date',
+    'code',
+    'name',
+    'open',
+    'high',
+    'low',
+    'close',
+    'close_uq',
+    'preclose',
+    'volume',
+    'amount',
+    'adjustflag',
+    'turn',
+    'tradestatus',
+    'pctChg',
+    'peTTM',
+    'pbMRQ',
+    'psTTM',
+    'pcfNcfTTM',
+    'isST',
+]
 DDL_HOT_TABLE = """
 CREATE TABLE IF NOT EXISTS hot_daily_stock (
     "date"        DATE,

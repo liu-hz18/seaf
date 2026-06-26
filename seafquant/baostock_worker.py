@@ -226,6 +226,7 @@ def download_stock_worker(args: dict) -> dict:
             'calls': int, 'rows': int, 'data': list[dict]}
     失败时 rows=0, data=[] —— 主进程不插入任何行，下次运行自动重试。
     """
+    t0 = time.time()
     code: str = args['code']
     name: str = args['name']
     s: str = args['start']
@@ -238,6 +239,7 @@ def download_stock_worker(args: dict) -> dict:
     import baostock as bs
 
     if not _login_with_retry(bs, code):
+        elapsed = time.time() - t0
         return {
             'code': code,
             'name': name,
@@ -246,11 +248,11 @@ def download_stock_worker(args: dict) -> dict:
             'calls': 3,
             'rows': 0,
             'data': [],
+            'elapsed': elapsed,
         }
 
     try:
         logging.info(f'downloading kline [{s}, {e}]...')
-        t0 = time.time()
 
         # 主数据（后复权）+ 不复权 close
         try:
@@ -262,6 +264,7 @@ def download_stock_worker(args: dict) -> dict:
                 else:
                     raise ValueError(f'uq_df is empty but kdf={kdf} is not')
         except Exception as exc:
+            elapsed = time.time() - t0
             logging.error(f'ALL RETRIES EXHAUSTED for {s}~{e}: {exc}')
             return {
                 'code': code,
@@ -271,6 +274,7 @@ def download_stock_worker(args: dict) -> dict:
                 'calls': _MAX_RETRIES * 2,
                 'rows': 0,
                 'data': [],
+                'elapsed': elapsed,
             }
 
         elapsed = time.time() - t0
@@ -287,6 +291,7 @@ def download_stock_worker(args: dict) -> dict:
                 'calls': 2,
                 'rows': len(records),
                 'data': records,
+                'elapsed': elapsed,
             }
 
         logging.debug(f'{s}~{e} -> empty ({elapsed:.1f}s)')
@@ -298,6 +303,7 @@ def download_stock_worker(args: dict) -> dict:
             'calls': 2,
             'rows': 0,
             'data': [],
+            'elapsed': elapsed,
         }
     finally:
         bs.logout()

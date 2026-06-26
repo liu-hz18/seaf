@@ -74,6 +74,7 @@ from seafquant.baostock_api import bao_session, query_with_retry
 from seafquant.baostock_schema import (
     DDL_DAILY_STOCKS,
     DDL_HOT_TABLE,
+    DDL_HOT_TABLE_COLS,
     DDL_STOCK_LIST,
     DDL_TRADING_CALENDAR,
     STOCK_PREFIXES,
@@ -84,6 +85,11 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
 
+# ── 常量 ──────────────────────────────────────────────
+MAX_WORKERS = 1  # 最大并行进程数 NOTE: 多进程会出现登录失败的问题
+NUM_THREADS = 8
+MAX_DAILY_CALLS = 10_0000  # 每日 API 调用上限
+STOCK_LIST_INTERVAL = 20  # 每 N 天调一次股票列表 API
 TIMEING_INTEVAL = 20
 
 
@@ -342,11 +348,6 @@ class BaoStockDataCallable:
         import threading
         import time as _time
 
-        # ── 常量 ──────────────────────────────────────────────
-        MAX_WORKERS = 1  # 最大并行进程数
-        MAX_DAILY_CALLS = 10_0000  # 每日 API 调用上限
-        STOCK_LIST_INTERVAL = 20  # 每 N 天调一次股票列表 API
-
         # ── 状态变量 ──────────────────────────────────────────
         _api_calls = 0
         _total_rows = 0
@@ -432,7 +433,7 @@ class BaoStockDataCallable:
             tasks: list[dict] = []
             # NOTE: 这里多线程几乎没有提升
             try:
-                with ThreadPoolExecutor(max_workers=4) as check_executor:
+                with ThreadPoolExecutor(max_workers=NUM_THREADS) as check_executor:
                     futures = {
                         check_executor.submit(_check_stock, row): row['code']
                         for _, row in stocks_df.iterrows()
@@ -480,32 +481,14 @@ class BaoStockDataCallable:
 
             def dump_to_db(data: dict) -> None:
                 records = data.get('data', [])
+                elapsed = data.get('elapsed', 0.0)
                 if not records:
                     return  # 空结果 → 不插入，下次运行自动重试
                 kdf = pd.DataFrame(records)
-                cols = [
-                    'date',
-                    'code',
-                    'name',
-                    'open',
-                    'high',
-                    'low',
-                    'close',
-                    'close_uq',
-                    'preclose',
-                    'volume',
-                    'amount',
-                    'adjustflag',
-                    'turn',
-                    'tradestatus',
-                    'pctChg',
-                    'peTTM',
-                    'pbMRQ',
-                    'psTTM',
-                    'pcfNcfTTM',
-                    'isST',
-                ]
-                kdf = kdf[[c for c in cols if c in kdf.columns]]
+                kdf = kdf[[c for c in DDL_HOT_TABLE_COLS if c in kdf.columns]]
+                kdf['date'] = pd.to_datetime(kdf['date'])
+                start_date = kdf['date'].min()
+                end_date = kdf['date'].max()
                 con_w = None
                 try:
                     con_w = self._init_db()
@@ -519,13 +502,13 @@ class BaoStockDataCallable:
                     logging.info(
                         f'[{day_idx}][{day}] dump SUCCESS for '  # noqa: B023
                         f'{data.get("code", "?")}/'
-                        f'{data.get("start", "?")}~{data.get("end", "?")}, shape={kdf.shape}'
+                        f'[{start_date}, {end_date}], shape={kdf.shape}, elapsed={elapsed}s'
                     )
                 except Exception as exc:
                     logging.error(
                         f'[{day_idx}][{day}] dump FAILED for '  # noqa: B023
                         f'{data.get("code", "?")}/'
-                        f'{data.get("start", "?")}~{data.get("end", "?")}, shape={kdf.shape}: {exc}'
+                        f'[{start_date}, {end_date}], shape={kdf.shape}, elapsed={elapsed}s: {exc}'
                     )
                 finally:
                     if con_w is not None:

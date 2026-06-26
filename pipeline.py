@@ -395,7 +395,7 @@ def main() -> None:
         'mlflow_run_id': mlflow_run_id,
         'start_date': args.start_date,
         'precision': args.precision,
-        'include_star': args.include_star,
+        'include_star': args.include_star if args.data_source == 'synthetic' else True,
     }
     flow.add_node(
         name='strategy',
