@@ -486,14 +486,16 @@ class MLPWrapper(BaseWrapper):
 
         X_t = torch.tensor(X, dtype=torch.float32, device=self._device)
         y_t = torch.tensor(y.reshape(-1, 1), dtype=torch.float32, device=self._device)
+        logging.info(f"{X_t=}(shape={X_t.shape})\n{y_t=}(shape={y_t.shape})")
 
         if X_val is not None and y_val is not None:
             X_val_t = torch.tensor(X_val, dtype=torch.float32, device=self._device)
             y_val_t = torch.tensor(y_val.reshape(-1, 1), dtype=torch.float32, device=self._device)
+            logging.info(f"{X_val_t=}(shape={X_val_t.shape})\n{y_val_t=}(shape={y_val_t.shape})")
         else:
             X_val_t = y_val_t = None
+            logging.info(f"{X_val_t=} {y_val_t=}")
 
-        logging.info(f"{X_t=}(shape={X_t.shape})\n{y_t=}(shape={y_t.shape})\n{X_val_t=}\n(shape={X_val_t.shape})\n{y_val_t=}(shape={y_val_t.shape})")
         n = len(X_t)
         epoch_losses: list[dict] = []
         noise_std: float = 0.01  # 输入噪声正则化

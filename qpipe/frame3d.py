@@ -58,17 +58,21 @@ class Frame3D:
         return self._df.index.get_level_values(0).min()
 
     def last_frame(self) -> Frame3D:
-        return Frame3D(self._df[self._df.index.get_level_values(0) == self.last_key()])
+        return Frame3D(self._df[self._df.index.get_level_values(0) == self.last_key()].copy())
 
     def first_frame(self) -> Frame3D:
-        return Frame3D(self._df[self._df.index.get_level_values(0) == self.first_key()])
+        return Frame3D(self._df[self._df.index.get_level_values(0) == self.first_key()].copy())
 
     def to(self, dtype: type = np.float32) -> Frame3D:
         # 筛选出所有浮点数列
         float_cols = self._df.select_dtypes(include=['floating']).columns
         # 批量转换
         if len(float_cols) > 0:
-            self._df[float_cols] = self._df[float_cols].astype(dtype, copy=False)
+            # 修复：如果 _df 是视图（例如从外部切片传入），先 copy 避免警告
+            if getattr(self._df, '_is_view', False):
+                self._df = self._df.copy()
+            self._df.loc[:, float_cols] = self._df.loc[:, float_cols].astype(dtype)
+            # self._df[float_cols] = self._df[float_cols].astype(dtype, copy=False)
         return self
 
     # ========================================================================
@@ -321,7 +325,7 @@ class Frame3D:
         返回只保留 mask 中为 True 的 stock 的新 Frame3D。
         cp=False 时原地操作。
         """
-        df = self._df.copy() if cp else self._df
         valid_stocks = mask[mask].index
-        df = df[df.index.get_level_values('code').isin(valid_stocks)]
-        return Frame3D(df)
+        # 修复：先切片，再根据 cp 决定是否拷贝，提高性能并避免视图问题
+        sub_df = self._df[self._df.index.get_level_values('code').isin(valid_stocks)]
+        return Frame3D(sub_df.copy() if cp else sub_df)

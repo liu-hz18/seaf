@@ -30,9 +30,7 @@ mlflow db upgrade sqlite:///mlruns.db
 
 mlflow ui --backend-store-uri sqlite:///mlruns.db
 
-python .\pipeline.py --n-times 1000 --n-stocks 50 --model-type lgbm --fwd 20 --model-window 250 --noise-ratio 0.5 > output.txt 2> error.txt
-
-python pipeline.py --data-source synthetic --noise-ratio 0.3 --n-times 500 --n-stocks 40 --model-window 100 --fwd 20 --ensemble mlp --precision 2 --loss ic > output.txt 2> error.txt
+python pipeline.py --data-source synthetic --noise-ratio 0.3 --n-times 500 --n-stocks 5000 --model-window 200 --fwd 20 --ensemble mlp --precision 2 --loss ic > output.txt 2> error.txt
 
 python pipeline.py --data-source baostock --start-date 2007-01-01 --fwd 20 --model-window 200 --ensemble mlp > output.txt 2> error.txt
 
