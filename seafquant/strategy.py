@@ -124,7 +124,36 @@ def strategy_fn(name: str, idx: int, f3d: Frame3D, context: Any) -> Frame3D:
 
     times = sorted(df.index.get_level_values('key').unique())
 
-    assert len(times) == 1
+    # 空帧守卫：三道过滤器（tradestatus/isST/CODE_PREFIXS）叠加后
+    # 某天可能无幸存股票，此时返回含一个占位行的 Frame3D。
+    # 不能返回空 Frame3D — 框架 node.py:346 会调 last_frame()，
+    # 空 DataFrame 的 .max() 触发 ValueError。
+    if len(times) == 0:
+        logging.warning(
+            f'[{name}][{idx}] Empty frame after filtering '
+            f'(before filter shape={f3d.df.shape}, after={df.shape}). '
+            f'Returning placeholder Frame3D.'
+        )
+        t_fallback = f3d.last_key()
+        placeholder_mi = pd.MultiIndex.from_tuples(
+            [(t_fallback, '_PLACEHOLDER_')], names=['key', 'code']
+        )
+        placeholder_df = pd.DataFrame(
+            {'pred_signal': [0.0], 'close': [np.nan], 'close_uq': [np.nan]},
+            index=placeholder_mi,
+        )
+        return Frame3D(placeholder_df)
+
+    # 理论上 window=1 时 len(times)==1，但多路上游在 IPO/退市边界
+    # 经过 concat_frames(axis=1) 后可能产生多余 time key（pandas 拼接行为）。
+    # 此时保守取最新时间片，并结合日志排底层根因。
+    if len(times) != 1:
+        logging.warning(
+            f'[{name}][{idx}] Expected window=1 but got {len(times)} times: '
+            f'{times[:min(len(times), 3)]}... (df.shape={df.shape}). Taking latest.'
+        )
+        df = df.loc[times[-1]]
+        times = [times[-1]]
 
     # T-1 和 T
     t_curr = times[-1]

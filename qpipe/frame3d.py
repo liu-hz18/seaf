@@ -10,6 +10,7 @@ Frame3D — 三维数据容器（时间 × 股票 × 属性）。
 from __future__ import annotations
 
 import sys
+import warnings
 from typing import Any
 
 import numpy as np
@@ -191,8 +192,10 @@ class Frame3D:
         对每个 time 独立计算。std=0 时返回 0。cp=False 时原地操作。"""
         df = self._df.copy() if cp else self._df
         grp = df.groupby('key')[col]
-        cs_mean = grp.transform('mean')
-        cs_std = grp.transform('std')
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', RuntimeWarning)
+            cs_mean = grp.transform('mean')
+            cs_std = grp.transform('std')
         with np.errstate(divide='ignore', invalid='ignore'):
             z = (df[col] - cs_mean) / cs_std.replace(0, np.nan)
             df[col] = z.fillna(0.0)
@@ -204,8 +207,12 @@ class Frame3D:
         std=0 时返回 0。cp=False 时原地操作。"""
         df = self._df.copy() if cp else self._df
         grp = df.groupby('key')[cols]
-        cs_mean = grp.transform('mean')
-        cs_std = grp.transform('std')
+        # pandas transform('std'/'mean') 内部调 np.nanstd/nanmean，
+        # 在全 NaN 切片上触发 RuntimeWarning。errstate 无法穿透 pandas。
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', RuntimeWarning)
+            cs_mean = grp.transform('mean')
+            cs_std = grp.transform('std')
         with np.errstate(divide='ignore', invalid='ignore'):
             z = (df[cols] - cs_mean) / cs_std.replace(0, np.nan)
             df[cols] = z.fillna(0.0)
