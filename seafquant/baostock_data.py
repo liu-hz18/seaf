@@ -394,7 +394,11 @@ class BaoStockDataCallable:
             # 只要保证 数据获取长度 > STOCK_LIST_INTERVAL 即可，不然也是浪费 api 调用次数
             # 如果是最后一年，再利用 trading_days 列表进行计算
             _day_now = str(trading_days[-1])[:10] if _now.hour >= 18 else str(trading_days[-2])[:10]
-            next_trade_day = trading_days[day_idx+STOCK_LIST_INTERVAL] if day_idx+STOCK_LIST_INTERVAL < len(trading_days) else _day_now
+            next_trade_day = (
+                trading_days[day_idx + STOCK_LIST_INTERVAL]
+                if day_idx + STOCK_LIST_INTERVAL < len(trading_days)
+                else _day_now
+            )
             next_trade_day_str = str(next_trade_day)[:10]
             year_end_str = next_trade_day_str[:4] + '-12-31'
             # 2. 取 year_end_str 和 _day_now 中的较小值，确保不超过 _day_now
@@ -568,7 +572,7 @@ class BaoStockDataCallable:
                         except Exception as exc:
                             logging.warning(
                                 f'[{day_idx}][{day}] Worker exception: '
-                                f'{task.get("code", "?")} {exc}'
+                                f'{task.get("code", "?")} [{task.get("start", "?")},{task.get("end", "?")}] {exc}'
                             )
                             continue
 
@@ -712,7 +716,9 @@ class BaoStockDataCallable:
           [5] 迭代: 逐日 _read_day() + 停牌前向填充 + _frame_to_f3d() → yield
           [6] 归档: 每 30 天将热表数据导出 Parquet
         """
-        logging.info(f'backtest dates=[{self.start_date}, {self.end_date}], db={self.db_path}, update-dates=[{self.update_start_date}, {self.end_date}]')
+        logging.info(
+            f'backtest dates=[{self.start_date}, {self.end_date}], db={self.db_path}, update-dates=[{self.update_start_date}, {self.end_date}]'
+        )
 
         # ── 预检 ───────────────────────────────────────────────
         con0 = self._init_db(read_only=True)
@@ -725,7 +731,9 @@ class BaoStockDataCallable:
         con0.close()
 
         need_fetch = (
-            db_start is None or str(db_start) > min(self.update_start_date, self.start_date) or str(db_end) < self.end_date
+            db_start is None
+            or str(db_start) > min(self.update_start_date, self.start_date)
+            or str(db_end) < self.end_date
         )
         logging.info(
             f'db_range=[{db_start}, {db_end}], request=[{min(self.update_start_date, self.start_date)}, {self.end_date}], '
@@ -737,7 +745,8 @@ class BaoStockDataCallable:
             with bao_session() as bs:
                 td_df = query_with_retry(
                     lambda: bs.query_trade_dates(
-                        start_date=min(self.update_start_date, self.start_date), end_date=self.end_date
+                        start_date=min(self.update_start_date, self.start_date),
+                        end_date=self.end_date,
                     ),
                     'trade_dates',
                 )
@@ -764,7 +773,9 @@ class BaoStockDataCallable:
             db_trading_days = td_df['date'].tolist()
             logging.info(f'Update DB Trading days length: {len(db_trading_days)}')
             if len(db_trading_days) > 0:
-                logging.info(f'Update DB Trading days: [{db_trading_days[0]}-{db_trading_days[-1]}]')
+                logging.info(
+                    f'Update DB Trading days: [{db_trading_days[0]}-{db_trading_days[-1]}]'
+                )
             self._mlflow_log(
                 {
                     'db_trading_days': float(len(db_trading_days)),

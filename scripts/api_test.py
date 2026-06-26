@@ -103,9 +103,9 @@ end_date = '2026-06-11'
 #### 获取沪深A股历史日K线数据 ####
 # 详细指标参数，参见"历史行情指标参数"章节；"分钟线"参数与"日线"参数不同。"分钟线"不包含指数。
 # 日线指标：date,code,open,high,low,close,volume,amount,adjustflag,turn,pctChg,peTTM,pbMRQ,psTTM,pcfNcfTTM
-code = 'sh.601012'
-start_date = '2026-01-05'
-end_date = '2026-06-25'
+code = 'sh.600747'
+start_date = '2019-04-04'
+end_date = '2019-12-31'
 
 lg = bs.login()  # really time consuming
 if lg.error_code == '0':
