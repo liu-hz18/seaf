@@ -118,6 +118,8 @@ def rolling_std_2d(
     n_times, n_stocks = arr.shape
 
     arr_filled = np.nan_to_num(arr, nan=0.0)
+    # 防止大值平方溢出（如极端价格 × 换手率乘积）
+    arr_filled = np.clip(arr_filled, -1e100, 1e100)
     valid = (~np.isnan(arr)).astype(np.float64)
 
     cumsum_val = np.vstack([np.zeros((1, n_stocks)),
@@ -142,8 +144,8 @@ def rolling_std_2d(
         valid_mask = cnt_w >= min_p
 
         mean_w = sum_w / np.maximum(cnt_w, 1.0)
-        var_w = sum2_w / np.maximum(cnt_w, 1.0) - mean_w ** 2
-        var_w = np.maximum(var_w, 0.0)  # 防止浮点误差导致的负值
+        # var = E[X²] - E[X]² — 合并为单次 np.maximum 避免中间负值触发 RuntimeWarning
+        var_w = np.maximum(sum2_w / np.maximum(cnt_w, 1.0) - mean_w ** 2, 0.0)
 
         result[w - 1:] = np.where(valid_mask, np.sqrt(var_w), np.nan)
         results[w] = result

@@ -353,8 +353,11 @@ class MultiInputNode(mp.Process):
                         f'{ {c: latest_frame.df[c].isna().sum() for c in numeric_cols} }'
                     )
                     latest_frame = self.clean_output_frame(latest_frame, concated_window_frame)
-                    # fillna (仅数值列，避免对字符串列如 stock_name 写入 float)
-                    latest_frame.df[numeric_cols] = latest_frame.df[numeric_cols].fillna(0.0)
+                    # fillna + 替换 inf (仅数值列)
+                    latest_frame.df[numeric_cols] = (
+                        latest_frame.df[numeric_cols].fillna(0.0)
+                        .replace([np.inf, -np.inf], 0.0)
+                    )
                     logging.debug(
                         f'[{day_idx}][{ts}] window_start_index:{window_start_index}, '
                         f'window_tail_index={window_tail_index}\n'

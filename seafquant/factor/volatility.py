@@ -50,7 +50,7 @@ def compute_volatility_factors(name: str, idx: int, f3d: Frame3D, context) -> Fr
 
     # Parkinson
     hl_ratio = high_2d / np.where(low_2d > 0, low_2d, np.nan)
-    loghl_2d = np.where(hl_ratio > 0, np.log(hl_ratio), np.nan)
+    loghl_2d = np.log(np.where(hl_ratio > 0, hl_ratio, np.nan))
     park_factor = 1.0 / (4 * np.log(2))
     park_sq_2d = park_factor * loghl_2d ** 2
     park_means = rolling_mean_2d(park_sq_2d, [5, 20])
@@ -60,7 +60,8 @@ def compute_volatility_factors(name: str, idx: int, f3d: Frame3D, context) -> Fr
     # GK
     co_ratio = close_2d / np.where(open_p.unstack(level='code').values > 0,
                                    open_p.unstack(level='code').values, np.nan)
-    log_co_2d = np.where(co_ratio > 0, np.log(co_ratio), np.nan)
+    # np.log(x) 仅在 x>0 时求值，避免除零警告
+    log_co_2d = np.log(np.where(co_ratio > 0, co_ratio, np.nan))
     gk_2d = 0.5 * loghl_2d ** 2 - (2 * np.log(2) - 1) * log_co_2d ** 2
     gk_mean = rolling_mean_2d(gk_2d, [5])[5]
     df['factor_vol_gk_5d'] = np.sqrt(np.abs(gk_mean.ravel()))

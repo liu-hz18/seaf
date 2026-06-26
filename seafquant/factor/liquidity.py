@@ -61,7 +61,7 @@ def compute_liquidity_factors(name: str, idx: int, f3d: Frame3D, context) -> Fra
                                   - df['factor_liq_turnover_vol_20d'])
 
     # ===== 规模：16 cols =====
-    df['factor_size_log_mcap'] = -np.where(mcap_2d > 0, np.log(mcap_2d), np.nan).ravel()
+    df['factor_size_log_mcap'] = -np.log(np.where(mcap_2d > 0, mcap_2d, np.nan)).ravel()
     df['factor_size_cs_rank'] = f3d.cs_rank('market_cap').df['market_cap']
 
     for p in [5, 20, 60]:
@@ -81,9 +81,9 @@ def compute_liquidity_factors(name: str, idx: int, f3d: Frame3D, context) -> Fra
     df['factor_size_mcap_cube_root'] = -np.cbrt(mcap)
 
     ratio_2d = mcap_2d / np.where(close_2d != 0, close_2d, np.nan)
-    df['factor_size_price'] = np.where(ratio_2d > 0, np.log(ratio_2d), np.nan).ravel()
+    df['factor_size_price'] = np.log(np.where(ratio_2d > 0, ratio_2d, np.nan)).ravel()
     df['factor_size_quintile'] = f3d.cs_rank('market_cap').df['market_cap']
-    df['factor_size_small_and_rising'] = (-np.where(mcap_2d > 0, np.log(mcap_2d), np.nan).ravel()
+    df['factor_size_small_and_rising'] = (-np.log(np.where(mcap_2d > 0, mcap_2d, np.nan)).ravel()
                                           * df['factor_size_mcap_mom_20d'])
 
     ret20_2d = np.roll(close_2d, 20, axis=0)

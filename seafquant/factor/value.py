@@ -23,7 +23,7 @@ def compute_value_factors(name: str, idx: int, f3d: Frame3D, context) -> Frame3D
 
     # ---- 1-3: 基础价值 ----
     df['factor_val_inv_price'] = 1.0 / close
-    df['factor_val_log_mcap'] = -np.where(mcap > 0, np.log(mcap), np.nan)
+    df['factor_val_log_mcap'] = -np.log(np.where(mcap > 0, mcap, np.nan))
     df['factor_val_mcap_to_price'] = mcap / close
 
     # ---- 4-6: 价格相对 MA 偏离 ----

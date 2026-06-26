@@ -309,7 +309,9 @@ def model_train_predict(name: str, idx: int, f3d: Frame3D, context: Any) -> Fram
         nan_total = sum(~valid) + len(y)
         nan_ratio = (nan_total > 0 and (sum(~valid)) / nan_total) or 0.0
         X, y = X[valid], y[valid]
-        X = np.nan_to_num(X, nan=0.0)  # 保留样本的 NaN → 0
+        # NaN → 0, ±inf → 0（inf 同样破坏模型训练）
+        X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
+        y = np.nan_to_num(y, nan=0.0, posinf=0.0, neginf=0.0)
         logging.info(
             f'[{idx}] NaN handling: {sum(~valid)} removed '
             f'(y_nan={sum(y_nan)}, drop>{n_feats // 2}feat_nan={sum(drop_mask)}), '
@@ -377,7 +379,7 @@ def model_train_predict(name: str, idx: int, f3d: Frame3D, context: Any) -> Fram
         logging.warning(
             f'[{idx}] {nan_rows.sum()}/{len(X_latest)} stocks NaN features, filled=0'
         )
-        X_latest = np.nan_to_num(X_latest, nan=0.0)
+        X_latest = np.nan_to_num(X_latest, nan=0.0, posinf=0.0, neginf=0.0)
 
     pred_raw = wrapper.predict(X_latest)
     pred_signal = _cs_zscore(pred_raw)
