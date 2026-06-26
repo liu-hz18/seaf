@@ -62,7 +62,7 @@ def timeout(timeout_sec):
     return decorator
 
 
-def _configure_worker_logging(log_files: list[str], taskid: int = -1, code: str = '') -> None:
+def _configure_worker_logging(log_files: list[str]) -> None:
     """配置 Worker 日志：兼容进程池复用——每次调用强制重建 handler。
 
     ProcessPoolExecutor 复用 worker 进程时，logging.basicConfig 对已有
@@ -82,12 +82,12 @@ def _configure_worker_logging(log_files: list[str], taskid: int = -1, code: str 
             handlers.append(logging.FileHandler(lf, encoding='utf-8'))
     logging.basicConfig(
         level=logging.INFO,
-        format=f'[%(levelname)s][%(asctime)s][%(filename)s:%(lineno)d][worker-{os.getpid()}][{code}][{taskid}] %(message)s',
+        format=f'[%(levelname)s][%(asctime)s][%(filename)s:%(lineno)d][worker-{os.getpid()}] %(message)s',
         handlers=handlers,
     )
 
 
-def _login_with_retry(bs, code: str) -> bool:
+def _login_with_retry(bs, code: str="") -> bool:
     """登录 baostock，最多重试 3 次。"""
     for attempt in range(3):
         lg = bs.login()
@@ -95,7 +95,10 @@ def _login_with_retry(bs, code: str) -> bool:
             return True
         if attempt < 2:
             time.sleep(1.0 * (attempt + 1))
-    logging.warning(f'login failed after 3 retries for {code}. {lg.error_code}, {lg.error_msg}')
+    if code:
+        logging.warning(f'login failed after 3 retries for {code}. {lg.error_code}, {lg.error_msg}')
+    else:
+        logging.warning(f'login failed after 3 retries for init. {lg.error_code}, {lg.error_msg}')
     return False
 
 
@@ -115,7 +118,7 @@ def _convert_kdf_types(kdf: pd.DataFrame) -> pd.DataFrame:
     for col, dtype in BAOSTOCK_DTYPES.items():
         if col in kdf.columns:
             with suppress(Exception):
-                if dtype in {'int64', 'int8'}:
+                if dtype in {'int64', 'int32', 'int8'}:
                     kdf[col] = pd.to_numeric(kdf[col], errors='coerce').fillna(0).astype(dtype)
                 elif 'float' in dtype:
                     kdf[col] = pd.to_numeric(kdf[col], errors='coerce')
@@ -131,7 +134,7 @@ def _fetch_main_data(
     """API：后复权 OHLCV（adjustflag='1'）。"""
     for attempt in range(1, _MAX_RETRIES + 1):
         try:
-            logging.info(f"[_fetch_main_data] {attempt}/{_MAX_RETRIES} {code} [{s},{e}]...")
+            logging.info(f"[_fetch_main_data][{code}][{s},{e}] {attempt}/{_MAX_RETRIES}...")
             rs = bs.query_history_k_data_plus(
                 code=code,
                 fields=BAOSTOCK_FIELDS,
@@ -141,30 +144,30 @@ def _fetch_main_data(
                 adjustflag='1',
             )
             if rs.error_code != '0':
-                raise ConnectionError(f'[{attempt}/{_MAX_RETRIES}] API error during connection: {rs.error_msg} (code={rs.error_code})')
+                raise ConnectionError(f'[{attempt}/{_MAX_RETRIES}][{code}][{s},{e}] API error during connection: {rs.error_msg} (code={rs.error_code})')
             data_list = []
             while rs.next():
                 data_list.append(rs.get_row_data())
             if rs.error_code != '0':
-                raise ConnectionError(f'[{attempt}/{_MAX_RETRIES}] API error during iteration: {rs.error_msg} (code={rs.error_code})')
+                raise ConnectionError(f'[{attempt}/{_MAX_RETRIES}][{code}][{s},{e}] API error during iteration: {rs.error_msg} (code={rs.error_code})')
             if data_list:
                 return pd.DataFrame(data_list, columns=rs.fields)
             return pd.DataFrame()
         except Exception as exc:
             delay = _RETRY_BASE_DELAY * (2 ** (attempt - 1))
             logging.warning(
-                f'[{attempt}/{_MAX_RETRIES}] attempt '
-                f'failed for {s}~{e}: {exc}. Retrying in {delay:.1f}s...'
+                f'[{attempt}/{_MAX_RETRIES}][{code}][{s},{e}] attempt '
+                f'failed: {exc}. Retrying in {delay:.1f}s...'
             )
             time.sleep(delay)
 
             _err_msg = str(exc)
             succ = False
             if _should_relogin(_err_msg) and attempt < _MAX_RETRIES:
-                logging.warning(f'[{attempt}/{_MAX_RETRIES}] socket error, re-login')
+                logging.warning(f'[{attempt}/{_MAX_RETRIES}][{code}][{s},{e}] socket error, re-login')
                 succ = _relogin(code)
             if attempt == _MAX_RETRIES or not succ:
-                raise ConnectionError(f'[{attempt}/{_MAX_RETRIES}] relogin failed') from exc
+                raise ConnectionError(f'[{attempt}/{_MAX_RETRIES}][{code}][{s},{e}] relogin failed') from exc
 
     return pd.DataFrame()
 
@@ -178,7 +181,7 @@ def _fetch_close_uq(
     """API：不复权收盘价（adjustflag='3'），仅 close 字段。"""
     for attempt in range(1, _MAX_RETRIES + 1):
         try:
-            logging.info(f"[_fetch_close_uq] {attempt}/{_MAX_RETRIES} {code} [{s},{e}]...")
+            logging.info(f"[_fetch_close_uq][{code}][{s},{e}] {attempt}/{_MAX_RETRIES}...")
             rs = bs.query_history_k_data_plus(
                 code=code,
                 fields=CLOSE_UQ_FIELDS,
@@ -188,12 +191,12 @@ def _fetch_close_uq(
                 adjustflag='3',
             )
             if rs.error_code != '0':
-                raise ConnectionError(f'[{attempt}/{_MAX_RETRIES}] close_uq API error: {rs.error_msg} (code={rs.error_code})')
+                raise ConnectionError(f'[{attempt}/{_MAX_RETRIES}][{code}][{s},{e}] close_uq API error: {rs.error_msg} (code={rs.error_code})')
             uq_list = []
             while rs.next():
                 uq_list.append(rs.get_row_data())
             if rs.error_code != '0':
-                raise ConnectionError(f'[{attempt}/{_MAX_RETRIES}] API error during iteration: {rs.error_msg} (code={rs.error_code})')
+                raise ConnectionError(f'[{attempt}/{_MAX_RETRIES}][{code}][{s},{e}] API error during iteration: {rs.error_msg} (code={rs.error_code})')
             if uq_list:
                 uq_df = pd.DataFrame(uq_list, columns=['date', 'code', 'close_uq'])
                 uq_df['close_uq'] = pd.to_numeric(uq_df['close_uq'], errors='coerce')
@@ -202,108 +205,171 @@ def _fetch_close_uq(
         except Exception as exc:
             delay = _RETRY_BASE_DELAY * (2 ** (attempt - 1))
             logging.warning(
-                f'[{attempt}/{_MAX_RETRIES}] attempt '
-                f'failed for {s}~{e}: {exc}. Retrying in {delay:.1f}s...'
+                f'[{attempt}/{_MAX_RETRIES}][{code}][{s},{e}] attempt '
+                f'failed. Retrying in {delay:.1f}s...'
             )
             time.sleep(delay)
             _err_msg = str(exc)
             succ = False
             if _should_relogin(_err_msg) and attempt < _MAX_RETRIES:
-                logging.warning(f'[{attempt}/{_MAX_RETRIES}] socket error, re-login')
+                logging.warning(f'[{attempt}/{_MAX_RETRIES}][{code}][{s},{e}] socket error, re-login')
                 succ = _relogin(code)
             if attempt == _MAX_RETRIES or not succ:
-                raise ConnectionError(f'[{attempt}/{_MAX_RETRIES}] relogin failed') from exc
+                raise ConnectionError(f'[{attempt}/{_MAX_RETRIES}][{code}][{s},{e}] relogin failed') from exc
 
     return pd.DataFrame()
 
 
 @timeout(timeout_sec=_WORKER_TIMEOUT)
-def download_stock_worker(args: dict) -> dict:
-    """多进程 Worker：下载单只股票单个 chunk 的数据并返回。
+def _download_single_task(bs, task: dict) -> dict:
+    """下载单个 task 的数据（主数据 + close_uq），不管理 login/logout。
 
-    args: code, name, start, end, _log_files
-    返回: {'code': str, 'name': str, 'start': str, 'end': str,
-            'calls': int, 'rows': int, 'data': list[dict]}
-    失败时 rows=0, data=[] —— 主进程不插入任何行，下次运行自动重试。
+    由 download_stock_worker / download_stock_batch 调用。
+    返回格式与 download_stock_worker 一致。
     """
     t0 = time.time()
-    code: str = args['code']
-    name: str = args['name']
-    s: str = args['start']
-    e: str = args['end']
-    taskid: int = args['taskid']
-    log_files: list[str] = args.get('_log_files', [])
+    code: str = task['code']
+    name: str = task['name']
+    s: str = task['start']
+    e: str = task['end']
 
-    _configure_worker_logging(log_files, taskid, code)
+    logging.info(f'downloading kline [{s}, {e}]...')
+
+    # 主数据（后复权）+ 不复权 close
+    try:
+        kdf = _fetch_main_data(bs, code, s, e)
+        if not kdf.empty:
+            uq_df = _fetch_close_uq(bs, code, s, e)
+            if not uq_df.empty:
+                kdf = kdf.merge(uq_df, on=['date', 'code'], how='left')
+            else:
+                raise ValueError(f'[{code}][{s},{e}] uq_df is empty but kdf={kdf} is not')
+    except Exception as exc:
+        elapsed = time.time() - t0
+        logging.error(f'[{code}][{s},{e}] ALL RETRIES EXHAUSTED: {exc}')
+        return {
+            'code': code, 'name': name,
+            'start': s, 'end': e,
+            'calls': _MAX_RETRIES * 2, 'rows': 0,
+            'data': [], 'elapsed': elapsed,
+        }
+
+    elapsed = time.time() - t0
+    if not kdf.empty:
+        kdf = _convert_kdf_types(kdf)
+        kdf['name'] = name
+        records = kdf.to_dict('records')
+        logging.debug(f'[{code}][{s},{e}] -> {len(records)} rows in {elapsed:.1f}s')
+        return {
+            'code': code, 'name': name,
+            'start': s, 'end': e,
+            'calls': 2, 'rows': len(records),
+            'data': records, 'elapsed': elapsed,
+        }
+
+    logging.debug(f'[{code}][{s},{e}] -> empty ({elapsed:.1f}s)')
+    return {
+        'code': code, 'name': name,
+        'start': s, 'end': e,
+        'calls': 2, 'rows': 0,
+        'data': [], 'elapsed': elapsed,
+    }
+
+
+# ── 批处理入口 ─────────────────────────────────────────────────
+
+# 批处理超时 = 单任务超时 × batch 大小 + 余量
+_BATCH_TIMEOUT: float = _WORKER_TIMEOUT * 20 + 60.0
+
+
+@timeout(timeout_sec=_BATCH_TIMEOUT)
+def download_stock_batch(tasks: list[dict]) -> list[dict]:
+    """批处理 Worker：一次 login 处理多个 task，最后 logout。
+
+    每个 task 的内部重试 + 断连重登逻辑由 _fetch_main_data /
+    _fetch_close_uq 负责，这些函数在失败时会调用 _relogin()
+    自行重建连接。
+
+    Args:
+        tasks: list of task dicts，每个包含:
+               code, name, start, end, taskid, _log_files
+
+    Returns:
+        list of result dicts（与 download_stock_worker 返回格式一致）
+    """
+    import baostock as bs
+
+    if not tasks:
+        return []
+
+    first_task = tasks[0]
+    log_files = first_task.get('_log_files', [])
+
+    _configure_worker_logging(log_files)
+
+    results: list[dict] = []
+    n = len(tasks)
+
+    if not _login_with_retry(bs):
+        logging.error(f'batch login failed, {n} tasks aborted')
+        for t in tasks:
+            results.append({
+                'code': t['code'], 'name': t['name'],
+                'start': t['start'], 'end': t['end'],
+                'calls': 3, 'rows': 0, 'data': [], 'elapsed': 0,
+            })
+        return results
+
+    try:
+        for i, t in enumerate(tasks):
+            logging.info(
+                f'batch task [{i + 1}/{n}] '
+                f'code={t["code"]} {t["start"]}~{t["end"]}'
+            )
+            result = _download_single_task(bs, t)
+            results.append(result)
+    except Exception as e:
+        logging.error(f"Exception: {e}")
+        results.append({
+            'code': t['code'], 'name': t['name'],
+            'start': t['start'], 'end': t['end'],
+            'calls': 3, 'rows': 0, 'data': [], 'elapsed': 0,
+        })
+    finally:
+        bs.logout()
+
+    ok_count = sum(1 for r in results if r.get('rows', 0) > 0)
+    logging.info(
+        f'batch done: {ok_count}/{n} tasks OK, '
+        f'total_rows={sum(r.get("rows", 0) for r in results)}'
+    )
+    return results
+
+
+# ── 单任务入口（兼容旧接口）────────────────────────────────────
+
+@timeout(timeout_sec=_WORKER_TIMEOUT)
+def download_stock_worker(args: dict) -> dict:
+    """多进程 Worker：下载单只股票单个 chunk 的数据并返回（兼容旧接口）。
+
+    内部委托给 _download_single_task；login/logout 由本函数管理。
+    """
+    code: str = args['code']
+    log_files: list[str] = args.get('_log_files', [])
+    _configure_worker_logging(log_files)
 
     import baostock as bs
 
+    t0 = time.time()
     if not _login_with_retry(bs, code):
-        elapsed = time.time() - t0
         return {
-            'code': code,
-            'name': name,
-            'start': s,
-            'end': e,
-            'calls': 3,
-            'rows': 0,
-            'data': [],
-            'elapsed': elapsed,
+            'code': code, 'name': args['name'],
+            'start': args['start'], 'end': args['end'],
+            'calls': 3, 'rows': 0, 'data': [],
+            'elapsed': time.time() - t0,
         }
 
     try:
-        logging.info(f'downloading kline [{s}, {e}]...')
-
-        # 主数据（后复权）+ 不复权 close
-        try:
-            kdf = _fetch_main_data(bs, code, s, e)
-            if not kdf.empty:
-                uq_df = _fetch_close_uq(bs, code, s, e)
-                if not uq_df.empty:
-                    kdf = kdf.merge(uq_df, on=['date', 'code'], how='left')
-                else:
-                    raise ValueError(f'uq_df is empty but kdf={kdf} is not')
-        except Exception as exc:
-            elapsed = time.time() - t0
-            logging.error(f'ALL RETRIES EXHAUSTED for {s}~{e}: {exc}')
-            return {
-                'code': code,
-                'name': name,
-                'start': s,
-                'end': e,
-                'calls': _MAX_RETRIES * 2,
-                'rows': 0,
-                'data': [],
-                'elapsed': elapsed,
-            }
-
-        elapsed = time.time() - t0
-        if not kdf.empty:
-            kdf = _convert_kdf_types(kdf)
-            kdf['name'] = name
-            records = kdf.to_dict('records')
-            logging.debug(f'{s}~{e} -> {len(records)} rows in {elapsed:.1f}s')
-            return {
-                'code': code,
-                'name': name,
-                'start': s,
-                'end': e,
-                'calls': 2,
-                'rows': len(records),
-                'data': records,
-                'elapsed': elapsed,
-            }
-
-        logging.debug(f'{s}~{e} -> empty ({elapsed:.1f}s)')
-        return {
-            'code': code,
-            'name': name,
-            'start': s,
-            'end': e,
-            'calls': 2,
-            'rows': 0,
-            'data': [],
-            'elapsed': elapsed,
-        }
+        return _download_single_task(bs, args)
     finally:
         bs.logout()

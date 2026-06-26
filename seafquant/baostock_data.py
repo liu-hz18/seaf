@@ -79,7 +79,7 @@ from seafquant.baostock_schema import (
     DDL_TRADING_CALENDAR,
     STOCK_PREFIXES,
 )
-from seafquant.baostock_worker import download_stock_worker
+from seafquant.baostock_worker import download_stock_batch
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -87,6 +87,7 @@ if TYPE_CHECKING:
 
 # ── 常量 ──────────────────────────────────────────────
 MAX_WORKERS = 1  # 最大并行进程数 NOTE: 多进程会出现登录失败的问题
+BATCH_SIZE = 32  # 每个子进程一次 login 处理的 task 数量
 NUM_THREADS = 8
 MAX_DAILY_CALLS = 10_0000  # 每日 API 调用上限
 STOCK_LIST_INTERVAL = 20  # 每 N 天调一次股票列表 API
@@ -515,59 +516,75 @@ class BaoStockDataCallable:
                         with suppress(Exception):
                             con_w.close()
 
-            # ③ 多进程并行下载 (进程池)。注意：夜间下载接口显著更稳定
+            # ③ 多进程并行下载 (进程池 + 批处理)。
+            # 每个子进程调用 download_stock_batch 处理一批 task，
+            # 内部只 login/logout 一次，避免逐 task 反复建连/断连。
+            # 注意：夜间下载接口显著更稳定。
             from concurrent.futures import ProcessPoolExecutor, as_completed
 
             total_tasks = len(tasks)
             completed = 0
             deadline = _time.time() + 3600 * 24  # 24h 全局超时
 
-            if total_tasks > 0:
-                with ProcessPoolExecutor(max_workers=min(MAX_WORKERS, total_tasks)) as pool:
-                    # 一次提交所有任务；submit 不阻塞
-                    future_to_task: dict = {}
-                    for t in tasks:
-                        future = pool.submit(download_stock_worker, t)
-                        future_to_task[future] = t
-                        logging.debug(f'[{day_idx}][{day}] submit task: {t}')
+            # ── 分批 ──
+            batches = [tasks[i : i + BATCH_SIZE] for i in range(0, total_tasks, BATCH_SIZE)]
+            logging.info(
+                f'[{day_idx}][{day}] {total_tasks} tasks '
+                f'→ {len(batches)} batches (batch_size={BATCH_SIZE})'
+            )
 
-                    # as_completed 流式收集 —— 先完成先处理，无需手动管 Queue
-                    for future in as_completed(future_to_task):
-                        task = future_to_task[future]
+            if batches:
+                with ProcessPoolExecutor(max_workers=min(MAX_WORKERS, len(batches))) as pool:
+                    # 提交各批；每批内串行处理，复用连接
+                    future_to_batch: dict = {}
+                    for bi, batch in enumerate(batches):
+                        future = pool.submit(download_stock_batch, batch)
+                        future_to_batch[future] = (bi, batch)
+                        logging.debug(
+                            f'[{day_idx}][{day}] submit batch {bi + 1}/{len(batches)} '
+                            f'({len(batch)} tasks)'
+                        )
 
-                        # SIGINT / 超时 → 取消剩余任务
+                    # as_completed 流式收集
+                    for future in as_completed(future_to_batch):
+                        bi, batch = future_to_batch[future]
+
+                        # SIGINT / 超时
                         if _stop_flag.is_set():
-                            for f in future_to_task:
+                            for f in future_to_batch:
                                 f.cancel()
                             logging.warning(f'[{day_idx}][{day}] Stopped by SIGINT')
                             break
                         if _time.time() > deadline:
-                            for f in future_to_task:
+                            for f in future_to_batch:
                                 f.cancel()
                             logging.error(f'[{day_idx}][{day}] Global timeout, aborting')
                             break
 
-                        completed += 1
-
-                        # 获取结果 (download_stock_worker 返回 dict)
+                        # 获取批次结果（list[dict]）
                         try:
-                            data = future.result(timeout=10)
+                            batch_results = future.result(timeout=10 * BATCH_SIZE)
+                            logging.info(
+                                f'[{day_idx}][{day}] Batch {bi + 1}/{len(batches)} success.'
+                            )
                         except Exception as exc:
                             logging.warning(
-                                f'[{day_idx}][{day}] Worker exception: '
-                                f'{task.get("code", "?")} [{task.get("start", "?")},{task.get("end", "?")}] {exc}'
+                                f'[{day_idx}][{day}] Batch {bi + 1}/{len(batches)} failed: {exc}'
                             )
                             continue
 
-                        # Worker 返回空 → rows=0, data=[] → 不插入，下次自动重试
-                        if data.get('rows', 0) == 0 and not data.get('data'):
-                            continue
+                        # 逐个处理批次内结果
+                        for data in batch_results:
+                            completed += 1
 
-                        _api_calls += data['calls']
-                        _total_rows += data['rows']
+                            if data.get('rows', 0) == 0 and not data.get('data'):
+                                continue
 
-                        # INSERT OR REPLACE 入库
-                        dump_to_db(data)
+                            _api_calls += data['calls']
+                            _total_rows += data['rows']
+
+                            # INSERT OR REPLACE 入库
+                            dump_to_db(data)
 
                         if completed % 5 == 0 or completed == total_tasks:
                             con_check = self._init_db(read_only=True)
@@ -581,9 +598,9 @@ class BaoStockDataCallable:
                                 f'API={_api_calls}, rows={_total_rows},'
                                 f' db_rows={db_rows}'
                             )
-                    # with 退出时自动 shutdown(wait=True)，无需手动 terminate/join
+                    # with 退出时自动 shutdown
 
-                logging.info(f'[{day_idx}][{day}] Multi process fetch done')
+                logging.info(f'[{day_idx}][{day}] All batches done')
                 if _stop_flag.is_set():
                     break
 
@@ -640,45 +657,47 @@ class BaoStockDataCallable:
             'high': np.nan,
             'low': np.nan,
             'close': np.nan,
-            'turnover': np.nan,
+            'close_uq': np.nan,
+            'turn': np.nan,
             'volume': np.nan,
             'market_cap': np.nan,
             'peTTM': np.nan,
             'pbMRQ': np.nan,
             'psTTM': np.nan,
             'pcfNcfTTM': np.nan,
+            'tradestatus': 0,
+            'isST': 0,
         }
         for col, default in needed.items():
             if col not in df.columns:
                 df[col] = default
+                logging.warning(f"missing col '{col}' in {df.columns=}")
 
         # 价格精度对齐
-        for col in ['open', 'high', 'low', 'close']:
-            df[col] = np.round(df[col].astype(float), self.precision)
+        for col in ['open', 'high', 'low', 'close', 'close_uq', 'turn']:
+            df[col] = np.round(df[col].astype(np.float32), self.precision)
 
         # 构建 MultiIndex
         arrays = [df['date'].values, df['code'].values]
         mi = pd.MultiIndex.from_arrays(arrays, names=['key', 'code'])
-        stock_names = df.get('name', pd.Series('', index=df.index)).tolist()
-
         out_df = pd.DataFrame(
             {
-                'stock_name': stock_names,
+                'stock_name': df['name'].tolist(),
                 'open': df['open'].values,
                 'high': df['high'].values,
                 'low': df['low'].values,
                 'close': df['close'].values,
                 'close_uq': df['close_uq'].values,
                 # baostock turn 是百分比 → 除以 100 转为小数
-                'turnover': df.get('turn', pd.Series(np.nan, index=df.index)).values / 100.0,
+                'turnover': df['turn'].values / 100.0,
                 'volume': df['volume'].values,
                 'market_cap': df['market_cap'].values,
                 'peTTM': df['peTTM'].values,
                 'pbMRQ': df['pbMRQ'].values,
                 'psTTM': df['psTTM'].values,
                 'pcfNcfTTM': df['pcfNcfTTM'].values,
-                'tradestatus': df.get('tradestatus', pd.Series(1, index=df.index)).values,
-                'isST': df.get('isST', pd.Series(0, index=df.index)).values,
+                'tradestatus': df['tradestatus'].values,
+                'isST': df['isST'].values,
             },
             index=mi,
         )

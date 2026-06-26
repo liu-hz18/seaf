@@ -170,17 +170,6 @@ def strategy_fn(name: str, idx: int, f3d: Frame3D, context: Any) -> Frame3D:
     if 'stock_name' in df.columns:
         stock_name_map = df.xs(t_curr, level='key')['stock_name'].to_dict()
 
-    # ---- 首次调用：用 T-1 信号为每个 group 初始化 pending_signal ----
-    # if context.get('_primed') is None:
-    #     signal_first = df.xs(t_prev, level='key')['pred_signal']
-    #     first_groups = _rank_into_groups(signal_first, context['num_groups'])
-    #     for gctx in context['groups']:
-    #         gid = gctx['group_id']
-    #         sig = first_groups.get(gid, {})
-    #         if sig:
-    #             gctx['pending_signal'] = sig
-    #     context['_primed'] = True
-
     # ---- T 日信号分组 + 每组独立 on_bar ----
     signal_curr = df.xs(t_curr, level='key')['pred_signal']
     group_signals = _rank_into_groups(signal_curr, context['num_groups'])
