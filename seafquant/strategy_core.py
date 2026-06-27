@@ -14,6 +14,7 @@ from typing import Any
 # =============================================================================
 # 初始化
 # =============================================================================
+TICK_SIZE = 0.01
 
 
 def _init_group_context(
@@ -22,6 +23,7 @@ def _init_group_context(
     commission_rate: float,
     min_commission: float,
     group_id: int,
+    slip_ticks: int,
 ) -> dict[str, Any]:
     """初始化单个 group 的回测上下文。"""
     return {
@@ -30,6 +32,7 @@ def _init_group_context(
         'fwd': fwd,
         'commission_rate': commission_rate,
         'min_commission': min_commission,
+        'slip_ticks': slip_ticks,
         # 核心状态
         'cash': initial_cash,
         'peak_nav': 1.0,
@@ -136,6 +139,7 @@ def _process_delta_trade(
         return
 
     rate, min_comm = ctx['commission_rate'], ctx['min_commission']
+    slip_ticks = ctx['slip_ticks']
     old_shares = sum(
         _get_actual_shares(ctx['positions'][k], f_today) for k in maturing_keys
     )
@@ -144,21 +148,23 @@ def _process_delta_trade(
     delta = target_shares - old_shares
 
     if delta > 0:
-        trade_value = delta * p_uq
+        trade_price = p_uq + slip_ticks * TICK_SIZE  # 考虑滑点
+        trade_value = delta * trade_price
         commission = _calc_commission(trade_value, rate, min_comm, ctx.get('precision', 2))
         if ctx['cash'] >= trade_value + commission:
             ctx['cash'] -= (trade_value + commission)
-            _log_trade(ctx, date, sid, sname, 'buy', delta, p_uq, trade_value, commission,
+            _log_trade(ctx, date, sid, sname, 'buy', delta, trade_price, trade_value, commission,
                        signal_value=signal_value, hfq_price=p_hfq)
         else:
+            # 处理资金不足的情况
             max_aff = max(0.0, ctx['cash'] - min_comm)
-            buy_shares = math.floor(max_aff / p_uq / 100) * 100
+            buy_shares = math.floor(max_aff / trade_price / 100) * 100
             if buy_shares > 0:
-                trade_value = buy_shares * p_uq
+                trade_value = buy_shares * trade_price
                 commission = _calc_commission(trade_value, rate, min_comm, ctx.get('precision', 2))
                 if ctx['cash'] >= trade_value + commission:
                     ctx['cash'] -= (trade_value + commission)
-                    _log_trade(ctx, date, sid, sname, 'buy', buy_shares, p_uq,
+                    _log_trade(ctx, date, sid, sname, 'buy', buy_shares, trade_price,
                                trade_value, commission,
                                signal_value=signal_value, hfq_price=p_hfq)
                     target_shares = old_shares + buy_shares
@@ -167,11 +173,12 @@ def _process_delta_trade(
             else:
                 target_shares = old_shares
     elif delta < 0:
+        trade_price = p_uq - slip_ticks * TICK_SIZE  # 考虑滑点
         sell_shares = min(abs(delta), old_shares)
-        trade_value = sell_shares * p_uq
+        trade_value = sell_shares * trade_price
         commission = _calc_commission(trade_value, rate, min_comm, ctx.get('precision', 2))
         ctx['cash'] += (trade_value - commission)
-        _log_trade(ctx, date, sid, sname, 'sell', sell_shares, p_uq, trade_value, commission,
+        _log_trade(ctx, date, sid, sname, 'sell', sell_shares, trade_price, trade_value, commission,
                    signal_value=signal_value, hfq_price=p_hfq)
         target_shares = old_shares - sell_shares
 
@@ -193,26 +200,28 @@ def _process_new_trade(
     if p_uq <= 0 or sid not in f_today:
         return
     rate, min_comm = ctx['commission_rate'], ctx['min_commission']
+    slip_ticks = ctx['slip_ticks']
     target_value = slice_capital * weight
-    target_shares = math.floor(target_value / p_uq / 100) * 100
+    trade_price = p_uq + slip_ticks * TICK_SIZE  # 考虑滑点
+    target_shares = math.floor(target_value / trade_price / 100) * 100
     if target_shares <= 0:
         return
-    trade_value = target_shares * p_uq
+    trade_value = target_shares * trade_price
     commission = _calc_commission(trade_value, rate, min_comm, ctx.get('precision', 2))
     if ctx['cash'] >= trade_value + commission:
         ctx['cash'] -= (trade_value + commission)
-        _log_trade(ctx, date, sid, sname, 'buy', target_shares, p_uq, trade_value, commission,
+        _log_trade(ctx, date, sid, sname, 'buy', target_shares, trade_price, trade_value, commission,
                    signal_value=signal_value, hfq_price=p_hfq)
         _create_position(ctx, sid, dc, target_shares, f_today[sid], date)
     else:
         max_aff = max(0.0, ctx['cash'] - min_comm)
-        buy_shares = math.floor(max_aff / p_uq / 100) * 100
+        buy_shares = math.floor(max_aff / trade_price / 100) * 100
         if buy_shares > 0:
-            trade_value = buy_shares * p_uq
+            trade_value = buy_shares * trade_price
             commission = _calc_commission(trade_value, rate, min_comm, ctx.get('precision', 2))
             if ctx['cash'] >= trade_value + commission:
                 ctx['cash'] -= (trade_value + commission)
-                _log_trade(ctx, date, sid, sname, 'buy', buy_shares, p_uq,
+                _log_trade(ctx, date, sid, sname, 'buy', buy_shares, trade_price,
                            trade_value, commission,
                            signal_value=signal_value, hfq_price=p_hfq)
                 _create_position(ctx, sid, dc, buy_shares, f_today[sid], date)
@@ -231,14 +240,16 @@ def _process_close_trade(
             ctx['positions'][key]['mature_dc'] = dc + 1
         return
     rate, min_comm = ctx['commission_rate'], ctx['min_commission']
+    slip_ticks = ctx['slip_ticks']
+    trade_price = p_uq - slip_ticks * TICK_SIZE  # 考虑滑点
     for key in maturing_keys:
         pos = ctx['positions'][key]
         actual_shares = _get_actual_shares(pos, f_today)
         if actual_shares > 0:
-            trade_value = actual_shares * p_uq
+            trade_value = actual_shares * trade_price
             commission = _calc_commission(trade_value, rate, min_comm, ctx.get('precision', 2))
             ctx['cash'] += (trade_value - commission)
-            _log_trade(ctx, date, sid, sname, 'sell', actual_shares, p_uq,
+            _log_trade(ctx, date, sid, sname, 'sell', actual_shares, trade_price,
                        trade_value, commission,
                        signal_value=signal_value, hfq_price=p_hfq)
         del ctx['positions'][key]

@@ -135,6 +135,7 @@ class SourceNode(mp.Process):
                     handler.flush()
             sys.stdout.flush()
             sys.stderr.flush()
+            gc.collect()
             logging.info(f'[{idx}] SourceNode stopped.')
 
 
@@ -478,6 +479,7 @@ class MultiInputNode(mp.Process):
                     handler.flush()
             sys.stdout.flush()
             sys.stderr.flush()
+            gc.collect()
             logging.info(f'[{day_idx}] Node {self.name} stopped.')
 
     def _call_func(self, name: str, idx: int, f3d: Frame3D, ctx: Any) -> Frame3D:

@@ -115,6 +115,12 @@ def main() -> None:
         action='store_true', default=False,
         help='Include STAR stocks (prefix is sh.688, sz.300, sz.301, sz.302)',
     )
+    parser.add_argument(
+        '--slip-ticks',
+        type=int,
+        default=0,
+        help='Slipping ticks for each trade',
+    )
     # logging
     parser.add_argument(
         '--log-level', type=str, default='INFO', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR']
@@ -396,6 +402,7 @@ def main() -> None:
         'start_date': args.start_date,
         'precision': args.precision,
         'include_star': args.include_star if args.data_source == 'synthetic' else True,
+        'slip_ticks': args.slip_ticks,
     }
     flow.add_node(
         name='strategy',

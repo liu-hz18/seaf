@@ -94,6 +94,7 @@ def strategy_fn(name: str, idx: int, f3d: Frame3D, context: Any) -> Frame3D:
     context.setdefault('first_date', None)
     context.setdefault('last_date', None)
     context.setdefault('include_star', False)
+    context.setdefault('slip_ticks', 0)
 
     if context['groups'] is None:
         num_groups = context['num_groups']
@@ -101,8 +102,9 @@ def strategy_fn(name: str, idx: int, f3d: Frame3D, context: Any) -> Frame3D:
         ic = context['initial_cash']
         cr = context['commission_rate']
         mc = context['min_commission']
+        slip_ticks = context['slip_ticks']
         context['groups'] = [
-            _init_group_context(ic, fwd, cr, mc, g)
+            _init_group_context(ic, fwd, cr, mc, g, slip_ticks)
             for g in range(num_groups)
         ]
 
@@ -171,6 +173,8 @@ def strategy_fn(name: str, idx: int, f3d: Frame3D, context: Any) -> Frame3D:
         stock_name_map = df.xs(t_curr, level='key')['stock_name'].to_dict()
 
     # ---- T 日信号分组 + 每组独立 on_bar ----
+    # T 日收盘收到 signal_T → 存储为 pending；
+    # 同时执行 pending（signal_{T-1}），用 T 日不复权价撮合。
     signal_curr = df.xs(t_curr, level='key')['pred_signal']
     group_signals = _rank_into_groups(signal_curr, context['num_groups'])
     for gctx in context['groups']:
