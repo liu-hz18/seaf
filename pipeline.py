@@ -101,7 +101,7 @@ def main() -> None:
     parser.add_argument(
         '--initial-cash',
         type=float,
-        default=1_000_000.0,
+        default=1_0000_0000.0,
         help='Initial cash for strategy',
     )
     parser.add_argument(

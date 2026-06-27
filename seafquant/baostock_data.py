@@ -62,6 +62,7 @@ BaoStock 真实数据源 — 编排层 (BaoStockDataCallable)。
 from __future__ import annotations
 
 import logging
+import time
 from contextlib import suppress
 from typing import TYPE_CHECKING
 
@@ -864,6 +865,8 @@ class BaoStockDataCallable:
             logging.debug(f'[{day_count}/{len(trading_days)}][{day}] {f3d=}')
             yield (day_count, f3d)
             prev_f3d = f3d
+            if day_count > 300:
+                time.sleep(5.0)  # 防止下游占用过多内存导致 OOM
 
         con_db.close()
         logging.info(f'Generator exhausted. Total days yielded: {len(trading_days)}')

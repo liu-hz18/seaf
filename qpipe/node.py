@@ -546,7 +546,7 @@ class MultiInputNode(mp.Process):
                     )
                 finally:
                     ready_event.set()
-        logging.info(f'[thread-{queue_idx}] stop.')
+        logging.info(f'[thread-{queue_idx}] subthread exit.')
 
     def receive_common_idx_frames(
         self, worker_buffer: list[dict[Any, Frame3D]]
