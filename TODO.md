@@ -2,8 +2,7 @@
 1. 开展回测
 2. 回测 label_clip 的效果
 3. node.py 中增加 mlflow 对 buffer size 和 两个游标 的记录
-4. 排查策略节点 position_value 增长缓慢的问题
-5. 每日交易计划每日都要dump，而不是在 epilogue 进行 dump
+4. 排查策略节点 position_value 先上升后下降最后又接近0的问题
 
 
 作为资深的机器学习量化研究员，我们的模型训练的 label 为 cs_zscore(close_{t+N} / close_{t+1} - 1), 这代表未来 N 日个股截面超额收益，也说明我们会在模型给出预测后的 t+1 收盘时进行买入，t+N 日收盘时进行卖出。并且，我们的交易是逐日进行的，尽管模型的预测周期是N, 但是我们在将资金分摊到了 N 天来进行预测和交易。这样既降低了滑点成本，也使得交易样本数量增加，从而与模型训练阶段的信号绩效更加对齐。至于损失函数，我们的模型训练应该最大化 截面IC, 也就是截面上 预测收益率向量 和 实际收益率向量的 pearson 相关系数。可以看到，对于一个支持做多和做空的市场，预测信号的截面IC就是该日风险调整后的相对于大盘收益均值的超额收益，截面IC越大，则预测越准确，策略将在单位波动率下获得更大的超额收益。这使得模型的训练、预测和实盘交易的指标更加对齐。此外，为了方便调试，你还需要在 model 节点的各个关键功能处给出充分的日志记录，用于前期团队对该节点的正确性和完整性进行测试和评估。你需要审视 model_node.py 查看是否有与上述要求不一致的地方，结合框架全局和业务特点，给出系统性的model节点搭建方案。
@@ -653,3 +652,19 @@ TOTAL                          4.729      7.270     27.045     48.724    113.678
 原来的子进程单任务执行代码在 seafquant\baostock_worker.py 中，每个任务涉及到login,logout 以及 2次api调用，并由 _MAX_RETRIES 全局变量控制每个api的重试次数。每次失败时，都要重新执行 logout 和 login 来尝试重建连接。你需要将该部分代码改造成适应 batch tasks 的形式。
 此外为了实现数据下载过程中全流程的监控，设置了很多logging日志，你在batch化的代码中也要保留并适配这些日志。
 请认真梳理 baostock data 节点的框架结构、逻辑关系和关键变量，仔细规划方案和步骤，耐心完成任务。
+
+【关键迭代】策略每日数据逐日dump到mlflow artifact: 
+strategy 节点 (seafquant\strategy.py) 在 strategy_epilogue 函数中会保存若干 artifact 文件，包括 nav, trade_log, position_log, daily_plans. 其中 trade_log 是每日实际交易时记录的，记录实际交易内容，在 seafquant\strategy_core.py 文件中实现；position_log 是每日交易结束时记录的，记录了当日的持仓快照，在 seafquant\strategy_daily.py 中实现；daily_plans 是 strategy 节点接收到当日信号之后生成的，在 seafquant\strategy.py 和 seafquant\strategy_daily.py 分别有调用和实现。
+目前的代码是在节点退出时，统一 dump 这三类日志。并且 trade_log, position_log 是将所有数据合并成了一个大的 dataframe 然后保存到 artifact 文件的；daily_plans 是每日有一个 artifact 文件。
+现在，你需要对该部分逻辑进行改造：收集 trade_log, position_log, daily_plans 当日记录的数据，并在 strategy_fn 中（也就是数据产生当日），记录到 mlflow 的 artifact 中，每日保存一个当日的文件。保存的文件格式分别为：f'strategy/{name}_g{gid}/trade/trade_{date_str}', f'strategy/{name}_g{gid}/position/position_{date_str}', f'strategy/{name}_g{gid}/daily_plans/daily_plan_{date_str}'. 其中 daily_plans 的保存方式与现在是一致的，trade_log和position_log你需要适当的改造。
+请充分认真理解 strategy 节点的框架结构、数据流和子模块逻辑关系，仔细设计合理的方案，保持耐心，完成上述任务。
+
+seafquant\ic_analysis.py 的 IC 节点中，ic_analysis_fn 返回值是 f3d，几乎就是这个节点的输入值，没有体现该节点的任何信息。现在我们希望 IC 节点的返回值能更有意义。要求返回：t+fwd 卖出日当天 的 code, stock_name, close, close_uq, fwd_ret(buy_t -> sell_t), cs_excess_fwd_ret(buy_t -> sell_t), pred_signal(at pred_t) 这几个属性。请充分理解 IC 节点的逻辑和架构，完成该任务。
+
+seafquant\strategy.py 中 strategy_fn 最后会记录逐股逐组持仓市值 Frame3D。但是我运行 python pipeline.py --data-source baostock --start-date 2007-01-01 --fwd 20 --model-window 200 --ensemble mlp 发现实际记录的 持仓市值存在为负的情况，并且都是-0.0x 的小数字，而且不同的股票在多个 group 中的mv是完全一样的，如下：
+keycodestock_nameg0_mvg1_mvg2_mvg3_mvg4_mvg5_mvg6_mvg7_mvg8_mvg9_mv
+6/23/2009sh.600000浦发银行0-0.026659558-0.026659558-0.040116259-0.026659558-0.026659558-0.037696345-0.026659558-0.042988241-0.046923322
+6/23/2009sh.600001邯郸钢铁0-0.026659558-0.026659558-0.040116259-0.026659558-0.026659558-0.037696345-0.026659558-0.042988241-0.046923322
+6/23/2009sh.600004白云机场0-0.026659558-0.026659558-0.040116259-0.026659558-0.026659558-0.037696345-0.026659558-0.042988241-0.046923322
+6/23/2009sh.600005武钢股份0-0.026659558-0.026659558-0.040116259-0.026659558-0.026659558-0.037696345-0.026659558-0.042988241-0.046923322
+请仔细检查 strategy 节点的逻辑，排查出现该现象的原因。

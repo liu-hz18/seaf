@@ -16,16 +16,14 @@ from __future__ import annotations
 
 import logging
 import warnings
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import numpy as np
 import pandas as pd
 
 # scipy 延迟导入到 ic_analysis_fn 内，节省顶层导入时间
+from qpipe.frame3d import Frame3D
 from qpipe.utils import mlflow_log_metrics
-
-if TYPE_CHECKING:
-    from qpipe.frame3d import Frame3D
 
 
 def ic_analysis_fn(name: str, idx: int, f3d: Frame3D, context: Any) -> Frame3D:
@@ -67,14 +65,20 @@ def ic_analysis_fn(name: str, idx: int, f3d: Frame3D, context: Any) -> Frame3D:
         context['first_signal_day'] = pred_t
     context['last_signal_day'] = pred_t
 
-    cs_pred = df.index.get_level_values('key') == pred_t
-    cs_buy = df.index.get_level_values('key') == buy_t
-    cs_sell = df.index.get_level_values('key') == sell_t
+    # ---- 按股票代码对齐，一次计算服务 IC 统计 + 输出帧两个用途 ----
+    pred_df = df.xs(pred_t, level='key')
+    buy_df = df.xs(buy_t, level='key')
+    sell_df = df.xs(sell_t, level='key')
+
+    codes = pred_df.index.intersection(buy_df.index).intersection(sell_df.index)
+    n_codes = len(codes)
+    if n_codes == 0:
+        return f3d
 
     signal_col = context.get('signal_col', 'pred_signal')
-    pred_signal = df.loc[cs_pred, signal_col].values.astype(float)
-    close_buy = df.loc[cs_buy, 'close'].values.astype(float)
-    close_sell = df.loc[cs_sell, 'close'].values.astype(float)
+    pred_signal = pred_df.loc[codes, signal_col].astype(float).values
+    close_buy = buy_df.loc[codes, 'close'].astype(float).values
+    close_sell = sell_df.loc[codes, 'close'].astype(float).values
 
     # close 为 0（退市/停牌）时 log 报除零 → clip 到极小正数
     eps = np.finfo(float).eps
@@ -82,11 +86,17 @@ def ic_analysis_fn(name: str, idx: int, f3d: Frame3D, context: Any) -> Frame3D:
 
     valid_mask = ~np.isnan(fwd_ret) & ~np.isnan(pred_signal)
 
+    # 全量 cs_excess（默认全 NaN；valid 子集在 IC 计算块中填充）
+    cs_excess_full = np.full(n_codes, np.nan, dtype=float)
+
     if valid_mask.sum() >= 10:
         pred_valid = pred_signal[valid_mask]
         fwd_valid = fwd_ret[valid_mask]
 
         # Raw return std（未经 cs_zscore 的截面收益率标准差）
+        raw_ret_min = float(np.nanmin(fwd_valid))
+        raw_ret_max = float(np.nanmax(fwd_valid))
+        raw_ret_mean = float(np.nanmean(fwd_valid))
         raw_ret_std = float(np.nanstd(fwd_valid))
         context['raw_ret_std_history'].append(raw_ret_std)
         # Raw return skew（截面收益率偏度）
@@ -98,6 +108,9 @@ def ic_analysis_fn(name: str, idx: int, f3d: Frame3D, context: Any) -> Frame3D:
         cs_mean = np.nanmean(fwd_valid)
         cs_std = np.nanstd(fwd_valid)
         cs_excess = (fwd_valid - cs_mean) / cs_std if cs_std > 0 else np.zeros_like(fwd_valid)
+
+        # 全量 cs_excess（含 NaN 股票，供输出帧使用）
+        cs_excess_full[valid_mask] = cs_excess
 
         # Pearson IC
         with warnings.catch_warnings():
@@ -143,6 +156,9 @@ def ic_analysis_fn(name: str, idx: int, f3d: Frame3D, context: Any) -> Frame3D:
         mlflow_log_metrics(mlflow_run_id, name, {
             'pearson_ic': pearson_ic,
             'rank_ic': rank_ic,
+            'raw_ret_min': raw_ret_min,
+            'raw_ret_max': raw_ret_max,
+            'raw_ret_mean': raw_ret_mean,
             'raw_ret_std': raw_ret_std,
             'raw_ret_skew': raw_ret_skew,
             'theo_log_nav_spread': theo_log_nav_spread,
@@ -173,7 +189,24 @@ def ic_analysis_fn(name: str, idx: int, f3d: Frame3D, context: Any) -> Frame3D:
         context['raw_ret_std_history'].append(np.nan)
         context['day_count'] += 1
 
-    return f3d
+    # ---- 构建富信息输出 Frame3D ----
+    # pred_signal / close_sell / fwd_ret / cs_excess_full 已在上方计算完成
+
+    # 元数据列
+    close_uq_vec = sell_df.loc[codes, 'close_uq'].astype(float).values if 'close_uq' in sell_df.columns else np.full(n_codes, np.nan)
+    stock_name_vec = sell_df.loc[codes, 'stock_name'].values if 'stock_name' in sell_df.columns else np.full(n_codes, '', dtype=object)
+
+    mi = pd.MultiIndex.from_product([[sell_t], codes], names=['key', 'code'])
+    result_df = pd.DataFrame({
+        'stock_name': stock_name_vec,
+        'close': close_sell,
+        'close_uq': close_uq_vec,
+        'fwd_ret': fwd_ret,
+        'cs_excess_fwd_ret': cs_excess_full,
+        'pred_signal': pred_signal,
+    }, index=mi)
+
+    return Frame3D(result_df)
 
 
 def ic_epilogue(name: str, idx: int, context: dict[str, Any] | None) -> None:

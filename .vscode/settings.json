@@ -4,6 +4,10 @@
     "terminal.integrated.profiles.windows": {
         "PowerShell": {
             "source": "PowerShell",
+            "env": {
+                "DO_NOT_TRACK": "true",
+                "MLFLOW_DISABLE_TELEMETRY": "true"
+            },
             "args": [
                 "-NoExit",
                 "-Command",

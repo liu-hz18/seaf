@@ -326,7 +326,7 @@ def main() -> None:
             output_to=[],
             window=IC_WINDOW,
             min_periods=IC_MIN_PERIODS,
-            input_columns=[signal_col, 'close'],
+            input_columns=[signal_col, 'close', 'close_uq', 'stock_name'],
             epilogue_fn=ic_epilogue,
             context={
                 'mlflow_name': experiment_name,
@@ -372,7 +372,7 @@ def main() -> None:
             output_to=[],
             window=IC_WINDOW,
             min_periods=IC_MIN_PERIODS,
-            input_columns=['pred_signal', 'close'],
+            input_columns=['pred_signal', 'close', 'close_uq', 'stock_name'],
             epilogue_fn=ic_epilogue,
             context={
                 'mlflow_name': experiment_name,

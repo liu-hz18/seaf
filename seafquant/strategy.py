@@ -32,13 +32,13 @@ from qpipe.utils import mlflow_log_metrics
 from seafquant.strategy_core import _init_group_context
 from seafquant.strategy_daily import _generate_daily_plan, _on_bar
 
+
 # =============================================================================
 # 信号 ranking → 分组字典
 # =============================================================================
-
-
 def _rank_into_groups(
-    signal_series: pd.Series, num_groups: int,
+    signal_series: pd.Series,
+    num_groups: int,
 ) -> dict[int, dict[str, dict[str, float]]]:
     """按截面 signal 排名分为 num_groups 组，等权分配。
 
@@ -66,8 +66,6 @@ def _rank_into_groups(
 # =============================================================================
 # 主入口：strategy_fn
 # =============================================================================
-
-
 def strategy_fn(name: str, idx: int, f3d: Frame3D, context: Any) -> Frame3D:
     """策略节点主函数 — 每个 frame 包含 window=1 天的数据。
 
@@ -104,8 +102,7 @@ def strategy_fn(name: str, idx: int, f3d: Frame3D, context: Any) -> Frame3D:
         mc = context['min_commission']
         slip_ticks = context['slip_ticks']
         context['groups'] = [
-            _init_group_context(ic, fwd, cr, mc, g, slip_ticks)
-            for g in range(num_groups)
+            _init_group_context(ic, fwd, cr, mc, g, slip_ticks) for g in range(num_groups)
         ]
 
     df = f3d.df.copy()
@@ -118,8 +115,15 @@ def strategy_fn(name: str, idx: int, f3d: Frame3D, context: Any) -> Frame3D:
     # 指定 prefix 以方便排除创业板、科创版
     if not context['include_star']:
         CODE_PREFIXS = (
-            'sh.600', 'sh.601', 'sh.603', 'sh.605',  # 沪市主板
-            'sz.000', 'sz.001', 'sz.002', 'sz.003', 'sz.004'  # 深市主板
+            'sh.600',
+            'sh.601',
+            'sh.603',
+            'sh.605',  # 沪市主板
+            'sz.000',
+            'sz.001',
+            'sz.002',
+            'sz.003',
+            'sz.004',  # 深市主板
         )  # tuple type
         code_series = pd.Series(df.index.get_level_values('code'), index=df.index)
         df = df[code_series.str.startswith(CODE_PREFIXS, na=False)]
@@ -132,7 +136,7 @@ def strategy_fn(name: str, idx: int, f3d: Frame3D, context: Any) -> Frame3D:
     # 空 DataFrame 的 .max() 触发 ValueError。
     if len(times) == 0:
         logging.warning(
-            f'[{name}][{idx}] Empty frame after filtering '
+            f'[{idx}] Empty frame after filtering '
             f'(before filter shape={f3d.df.shape}, after={df.shape}). '
             f'Returning placeholder Frame3D.'
         )
@@ -151,8 +155,8 @@ def strategy_fn(name: str, idx: int, f3d: Frame3D, context: Any) -> Frame3D:
     # 此时保守取最新时间片，并结合日志排底层根因。
     if len(times) != 1:
         logging.warning(
-            f'[{name}][{idx}] Expected window=1 but got {len(times)} times: '
-            f'{times[:min(len(times), 3)]}... (df.shape={df.shape}). Taking latest.'
+            f'[{idx}] Expected window=1 but got {len(times)} times: '
+            f'{times[: min(len(times), 3)]}... (df.shape={df.shape}). Taking latest.'
         )
         df = df.loc[times[-1]]
         times = [times[-1]]
@@ -189,29 +193,47 @@ def strategy_fn(name: str, idx: int, f3d: Frame3D, context: Any) -> Frame3D:
         if sig and gctx['pending_signal']:
             dc = gctx['day_counter']
             plan_df = _generate_daily_plan(
-                gctx, t_curr, dc, gctx['pending_signal'],
-                close_uq_t, close_hfq_t, stock_name_map,
+                gctx,
+                t_curr,
+                dc,
+                gctx['pending_signal'],
+                close_uq_t,
+                close_hfq_t,
+                stock_name_map,
             )
             if not plan_df.empty:
                 gctx['daily_plans'].append(plan_df)
 
-    # ---- MLflow 逐日指标 ----
     run_id = context.get('mlflow_run_id', '')
+    # ---- MLflow 逐日指标 ----
     if run_id:
+        mlflow_log_metrics(
+            run_id,
+            f'{name}',
+            {
+                'candidate_stocks': len(df),
+            },
+            step=idx,
+        )
         for gctx in context['groups']:
             if gctx['nav_log']:
                 last_nav = gctx['nav_log'][-1]
                 ic = gctx.get('initial_cash', 1.0)
-                mlflow_log_metrics(run_id, f'{name}.g{gctx["group_id"]}', {
-                    'nav': last_nav.get('nav', last_nav.get('total_equity', 0) / ic),
-                    'value': last_nav.get('value', last_nav['total_equity']),
-                    'cash': last_nav['cash'],
-                    'drawdown': last_nav.get('drawdown', 0.0),
-                    'cumsum_fee': last_nav.get('cumsum_fee', 0.0),
-                    'position_value': last_nav['position_value'],
-                    'n_positions': float(last_nav['n_positions']),
-                    'turnover': last_nav.get('turnover', 0.0),
-                }, step=idx)
+                mlflow_log_metrics(
+                    run_id,
+                    f'{name}.g{gctx["group_id"]}',
+                    {
+                        'nav': last_nav.get('nav', last_nav.get('total_equity', 0) / ic),
+                        'value': last_nav.get('value', last_nav['total_equity']),
+                        'cash': last_nav['cash'],
+                        'drawdown': last_nav.get('drawdown', 0.0),
+                        'cumsum_fee': last_nav.get('cumsum_fee', 0.0),
+                        'position_value': last_nav['position_value'],
+                        'n_positions': float(last_nav['n_positions']),
+                        'turnover': last_nav.get('turnover', 0.0),
+                    },
+                    step=idx,
+                )
         # top-bottom NAV spread
         ng = context['num_groups']
         if ng >= 2:
@@ -222,21 +244,73 @@ def strategy_fn(name: str, idx: int, f3d: Frame3D, context: Any) -> Frame3D:
                 bot_nav = nav0[-1].get('nav', 0)
                 top_val = nav1[-1].get('value', nav1[-1]['total_equity'])
                 bot_val = nav0[-1].get('value', nav0[-1]['total_equity'])
-                mlflow_log_metrics(run_id, f'{name}.spread', {
-                    'top_nav': top_nav,
-                    'bottom_nav': bot_nav,
-                    'top_bottom_log_nav_spread': np.log(top_nav) - np.log(bot_nav),
-                    'top_value': top_val,
-                    'bottom_value': bot_val,
-                    'top_bottom_value_gap': top_val - bot_val,
-                }, step=idx)
+                mlflow_log_metrics(
+                    run_id,
+                    f'{name}.spread',
+                    {
+                        'top_nav': top_nav,
+                        'bottom_nav': bot_nav,
+                        'top_bottom_log_nav_spread': np.log(top_nav) - np.log(bot_nav),
+                        'top_value': top_val,
+                        'bottom_value': bot_val,
+                        'top_bottom_value_gap': top_val - bot_val,
+                    },
+                    step=idx,
+                )
 
-    dc_global = context['groups'][0]['day_counter'] if context['groups'] else 0
-    if dc_global % 50 == 0:
-        navs = [g['nav_log'][-1]['total_equity'] if g['nav_log'] else 0
-                for g in context['groups']]
+        # ---- MLflow 逐日 artifact 导出 (trade / position / daily_plan) ----
+        date_str = str(t_curr)[:10]  # YYYY-MM-DD
+        for gctx in context['groups']:
+            gid = gctx['group_id']
+            base = f'strategy/{name}_g{gid}'
+            # trade_log: 仅今日
+            if gctx['trade_log']:
+                today_trades = [t for t in gctx['trade_log'] if str(t['date'])[:10] == date_str]
+                if today_trades:
+                    today_trades = pd.DataFrame(today_trades)
+                    logging.debug(f'[{idx}][{t_curr}][trade][g{gid}] {today_trades}')
+                    _export_artifact(
+                        run_id,
+                        '',
+                        f'trade_{date_str}',
+                        today_trades,
+                        artifact_subdir=f'{base}/trade',
+                        filename=f'trade_{date_str}.csv',
+                    )
+            # position_log: 仅今日
+            if gctx['position_log']:
+                today_positions = [
+                    p for p in gctx['position_log'] if str(p['date'])[:10] == date_str
+                ]
+                if today_positions:
+                    today_positions = pd.DataFrame(today_positions)
+                    logging.debug(f'[{idx}][{t_curr}][position][g{gid}] {today_positions}')
+                    _export_artifact(
+                        run_id,
+                        '',
+                        f'position_{date_str}',
+                        today_positions,
+                        artifact_subdir=f'{base}/position',
+                        filename=f'position_{date_str}.csv',
+                    )
+            # daily_plans: 今日（最近追加的一个）
+            if gctx['daily_plans']:
+                plan_df = gctx['daily_plans'][-1]
+                logging.debug(f'[{idx}][{t_curr}][plan][g{gid}] {plan_df}')
+                if not plan_df.empty:
+                    _export_artifact(
+                        run_id,
+                        '',
+                        f'daily_plan_{date_str}',
+                        plan_df,
+                        artifact_subdir=f'{base}/daily_plans',
+                        filename=f'daily_plan_{date_str}.csv',
+                    )
+
+    if idx % 50 == 0:
+        navs = [g['nav_log'][-1]['total_equity'] if g['nav_log'] else 0 for g in context['groups']]
         logging.info(
-            f'[{idx}] day#{dc_global} date={t_curr}: '
+            f'[{idx}][{t_curr}] '
             f'navs=[{min(navs):.2f}..{max(navs):.2f}] '
             f'mean_nav={np.mean(navs):.2f}'
         )
@@ -261,8 +335,6 @@ def strategy_fn(name: str, idx: int, f3d: Frame3D, context: Any) -> Frame3D:
 # =============================================================================
 # Epilogue：汇总统计 & MLflow 导出
 # =============================================================================
-
-
 def strategy_epilogue(name: str, idx: int, context: dict[str, Any] | None) -> None:
     """退出前汇总：每个 group 的绩效指标 + 数据导出到 MLflow artifact。"""
     if context is None or not context.get('groups'):
@@ -280,8 +352,12 @@ def strategy_epilogue(name: str, idx: int, context: dict[str, Any] | None) -> No
             continue
 
         nav_df = pd.DataFrame(gctx['nav_log'])
-        values = nav_df['value'].values if 'value' in nav_df.columns else nav_df['total_equity'].values
-        nav_series = nav_df['nav'].values if 'nav' in nav_df.columns else values / gctx['initial_cash']
+        values = (
+            nav_df['value'].values if 'value' in nav_df.columns else nav_df['total_equity'].values
+        )
+        nav_series = (
+            nav_df['nav'].values if 'nav' in nav_df.columns else values / gctx['initial_cash']
+        )
         start_value = gctx['initial_cash']
         final_value = values[-1]
         final_nav = nav_series[-1]
@@ -305,7 +381,9 @@ def strategy_epilogue(name: str, idx: int, context: dict[str, Any] | None) -> No
         n_buys = sum(1 for t in gctx['trade_log'] if t['action'] == 'buy')
 
         # ---- 平均换手率 ----
-        turnovers = [nl.get('turnover', 0.0) for nl in gctx['nav_log'] if nl.get('turnover') is not None]
+        turnovers = [
+            nl.get('turnover', 0.0) for nl in gctx['nav_log'] if nl.get('turnover') is not None
+        ]
         avg_turnover = float(np.mean(turnovers)) if turnovers else 0.0
 
         logging.info(
@@ -320,64 +398,53 @@ def strategy_epilogue(name: str, idx: int, context: dict[str, Any] | None) -> No
 
         # ---- MLflow 指标 ----
         if run_id:
-            mlflow_log_metrics(run_id, f'{name}_summary.g{gid}', {
-                'final_value': final_value,
-                'final_nav': final_nav,
-                'total_return': total_return,
-                'ann_return': ann_ret,
-                'ann_volatility_value': ann_vol,
-                'ann_volatility_nav': nav_ann_vol,
-                'sharpe_ratio': sharpe,
-                'max_drawdown': max_dd,
-                'n_trades': float(n_trades),
-                'n_buys': float(n_buys),
-            }, step=0)
+            mlflow_log_metrics(
+                run_id,
+                f'{name}_summary.g{gid}',
+                {
+                    'final_value': final_value,
+                    'final_nav': final_nav,
+                    'total_return': total_return,
+                    'ann_return': ann_ret,
+                    'ann_volatility_value': ann_vol,
+                    'ann_volatility_nav': nav_ann_vol,
+                    'sharpe_ratio': sharpe,
+                    'max_drawdown': max_dd,
+                    'n_trades': float(n_trades),
+                    'n_buys': float(n_buys),
+                },
+                step=0,
+            )
 
-        # ---- MLflow artifact: nav / trade / position CSV ----
-        if run_id:
+            # ---- MLflow artifact: nav CSV (累加全量) ----
             _export_artifact(run_id, f'{name}_g{gid}', 'nav', pd.DataFrame(gctx['nav_log']))
-            if gctx['trade_log']:
-                _export_artifact(run_id, f'{name}_g{gid}', 'trades',
-                                 pd.DataFrame(gctx['trade_log']))
-            if gctx['position_log']:
-                _export_artifact(run_id, f'{name}_g{gid}', 'positions',
-                                 pd.DataFrame(gctx['position_log']))
-
-    logging.info(f'[{idx}] ==========================================')
-
-    for gctx in context['groups']:
-        # ---- MLflow artifact: 每日交易计划 CSV ----
-        if run_id and gctx['daily_plans']:
-            all_plans = pd.concat(gctx['daily_plans'], ignore_index=True)
-            if not all_plans.empty:
-                for plan_date, day_df in all_plans.groupby('date', sort=True):
-                    date_str = str(plan_date)[:10]  # Timestamp → YYYY-MM-DD，避免冒号
-                    _export_artifact(
-                        run_id, f'{name}_g{gid}', f'daily_plan_{date_str}',
-                        day_df, artifact_subdir=f'strategy/{name}_g{gid}/daily_plans',
-                    )
-                logging.info(
-                    f'[{idx}] Group {gid}: {len(all_plans)} plan rows '
-                    f'({all_plans["date"].nunique()} days) exported'
-                )
 
     logging.info(f'[{idx}] ==========================================')
 
 
 def _export_artifact(
-    run_id: str, prefix: str, kind: str, df: pd.DataFrame,
+    run_id: str,
+    prefix: str,
+    kind: str,
+    df: pd.DataFrame,
     artifact_subdir: str = '',
+    filename: str | None = None,
 ) -> None:
-    """将 DataFrame 写入 CSV 并上传到 MLflow artifact。"""
+    """将 DataFrame 写入 CSV 并上传到 MLflow artifact。
+
+    filename 为空时自动生成 {prefix}_{kind}.csv。
+    """
     import os
     import tempfile
     from contextlib import suppress
 
     try:
         import mlflow
+
         mlflow.set_tracking_uri('sqlite:///mlruns.db')
         tmp_dir = tempfile.mkdtemp(prefix='strat_')
-        tmp_path = os.path.join(tmp_dir, f'{prefix}_{kind}.csv')
+        fn = filename or f'{prefix}_{kind}.csv'
+        tmp_path = os.path.join(tmp_dir, fn)
         try:
             df.to_csv(tmp_path, index=False)
             art_path = artifact_subdir or f'strategy/{prefix}'
@@ -388,4 +455,4 @@ def _export_artifact(
             with suppress(Exception):
                 os.rmdir(tmp_dir)
     except Exception as e:
-        logging.error(f"mlflow artifact Exception: {e}")
+        logging.error(f'mlflow artifact Exception: {e}')

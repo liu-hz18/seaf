@@ -412,6 +412,7 @@ class MLPWrapper(BaseWrapper):
         torch.manual_seed(torch_seed)
         if torch.cuda.is_available():
             torch.cuda.manual_seed(torch_seed)
+            torch.cuda.empty_cache()
 
         loss_name = context.get('loss', 'mse')
         self._loss: LossFunction = LOSS_REGISTRY.get(loss_name, MSELossFn())
