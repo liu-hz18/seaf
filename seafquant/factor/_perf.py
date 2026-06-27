@@ -11,9 +11,8 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 import warnings
+from typing import TYPE_CHECKING
 
 import numpy as np
 from numpy.lib.stride_tricks import sliding_window_view
@@ -118,8 +117,11 @@ def rolling_std_2d(
     n_times, n_stocks = arr.shape
 
     arr_filled = np.nan_to_num(arr, nan=0.0)
-    # 防止大值平方溢出（如极端价格 × 换手率乘积）
-    arr_filled = np.clip(arr_filled, -1e100, 1e100)
+    # 防止大值平方溢出（如极端价格 × 换手率乘积）。
+    # 注意：下游因子节点接收 float32 数据，1e100 远超 float32 上限
+    # (~3.4e38)，clip 会触发 "overflow in cast"。
+    _fmax = np.finfo(arr_filled.dtype).max / 2
+    arr_filled = np.clip(arr_filled, -_fmax, _fmax)
     valid = (~np.isnan(arr)).astype(np.float64)
 
     cumsum_val = np.vstack([np.zeros((1, n_stocks)),

@@ -653,6 +653,7 @@ class BaoStockDataCallable:
         Index: MultiIndex (key=date, code=stock_code).
         """
         # 缺失列填充 np.nan
+        needed_cols = ['open', 'high', 'low', 'close', 'close_uq', 'turn', 'volume', 'peTTM', 'pbMRQ', 'psTTM', 'pcfNcfTTM', 'tradestatus', 'isST']
         needed = {
             'open': np.nan,
             'high': np.nan,
@@ -661,7 +662,7 @@ class BaoStockDataCallable:
             'close_uq': np.nan,
             'turn': np.nan,
             'volume': np.nan,
-            'market_cap': np.nan,
+            'market_cap': np.nan,  # TODO: baostock 没有市值信息
             'peTTM': np.nan,
             'pbMRQ': np.nan,
             'psTTM': np.nan,
@@ -669,14 +670,18 @@ class BaoStockDataCallable:
             'tradestatus': 0,
             'isST': 0,
         }
+        for col in needed_cols:
+            if col not in df.columns:
+                logging.warning(f"missing col '{col}' in {df.columns=}")
         for col, default in needed.items():
             if col not in df.columns:
                 df[col] = default
-                logging.warning(f"missing col '{col}' in {df.columns=}")
 
         # 价格精度对齐
-        for col in ['open', 'high', 'low', 'close', 'close_uq', 'turn']:
+        for col in ['close_uq']:
             df[col] = np.round(df[col].astype(np.float32), self.precision)
+        for col in ['open', 'high', 'low', 'close', 'turn', 'peTTM', 'pbMRQ', 'psTTM', 'pcfNcfTTM']:
+            df[col] = df[col].astype(np.float32)
 
         # 构建 MultiIndex
         arrays = [df['date'].values, df['code'].values]
@@ -707,7 +712,6 @@ class BaoStockDataCallable:
     # ══════════════════════════════════════════════════════════
     # 主入口 — 生成器
     # ══════════════════════════════════════════════════════════
-
     def __call__(self) -> Iterator[Frame3D]:
         """生成器入口: 补全缺失数据 → 按交易日历逐日 yield Frame3D。
 
