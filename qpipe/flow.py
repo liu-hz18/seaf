@@ -169,6 +169,7 @@ class Flow:
         context: dict | None = None,
         epilogue_fn: EpilogueFunc | None = None,
         time_alignment: str = 'right',
+        apply_cs_zscore_to_output: bool = False,
         snapshot_interval: int = 0,
         log_level: str = 'INFO',
     ) -> MultiInputNode:
@@ -192,6 +193,7 @@ class Flow:
             epilogue_fn=epilogue_fn,
             output_queue_names=list(output_to),
             time_alignment=time_alignment,
+            apply_cs_zscore_to_output=apply_cs_zscore_to_output,
             snapshot_interval=snapshot_interval,
             log_level=log_level,
         )

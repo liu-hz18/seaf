@@ -253,6 +253,7 @@ def main() -> None:
                 'precision': args.precision,
             },
             time_alignment='right',
+            apply_cs_zscore_to_output=True,
             snapshot_interval=args.snapshot_interval,
             log_level=args.log_level,
         )
@@ -314,6 +315,7 @@ def main() -> None:
             ],
             context=mctx,
             time_alignment='right',
+            apply_cs_zscore_to_output=True,
             snapshot_interval=args.snapshot_interval,
             log_level=args.log_level,
         )
@@ -360,6 +362,7 @@ def main() -> None:
                 'fwd': fwd,
             },
             time_alignment='right',
+            apply_cs_zscore_to_output=True,
             snapshot_interval=args.snapshot_interval,
             log_level=args.log_level,
         )

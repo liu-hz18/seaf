@@ -161,6 +161,7 @@ class MultiInputNode(mp.Process):
         epilogue_fn: EpilogueFunc | None = None,
         output_queue_names: list[str] | None = None,
         time_alignment: str = 'right',
+        apply_cs_zscore_to_output: bool = False,
         snapshot_interval: int = 0,
         log_level: str = 'INFO',
     ) -> None:
@@ -187,6 +188,7 @@ class MultiInputNode(mp.Process):
         self.epilogue_fn = epilogue_fn
         self.time_alignment = time_alignment
         assert time_alignment in ['left', 'right']
+        self.apply_cs_zscore_to_output = apply_cs_zscore_to_output
         self.snapshot_interval = snapshot_interval
         self.log_level = log_level
         self.buffers: list[dict[Any, Frame3D]] = [{} for _ in input_queues]
@@ -345,9 +347,11 @@ class MultiInputNode(mp.Process):
                     )
                     # 只传输最后一个 frame, 并转换为 fp32
                     latest_frame = output_frame.last_frame().to(np.float32)
-                    # cs_zscore
+                    # cs_zscore — 仅对有效下游消费者标准化，终端节点（strategy/IC）
+                    # 的输出值（如持仓市值）不应被 z-score 破坏原始量纲。
                     numeric_cols = latest_frame.df.select_dtypes(include=['float', 'int']).columns.tolist()
-                    latest_frame = latest_frame.cs_zscore_batch(numeric_cols, cp=False)
+                    if self.output_queues and self.apply_cs_zscore_to_output:
+                        latest_frame = latest_frame.cs_zscore_batch(numeric_cols, cp=False)
                     # 检查 nan
                     logging.debug(
                         f'[{day_idx}][{ts}] NaN factors (length={latest_frame.df.shape}): '
