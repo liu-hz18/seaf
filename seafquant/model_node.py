@@ -129,10 +129,10 @@ def _run_cv(
     X: np.ndarray,
     y: np.ndarray,
     n_splits: int = 3,
-) -> tuple[list[float], bool]:
+) -> tuple[list[float], int]:
     """时间序列交叉验证，IC 导向。
 
-    Returns (cv_scores, is_mlp)。
+    Returns (cv_scores, best_epoch)。
     """
     from scipy.stats import spearmanr  # 延迟导入
     from sklearn.model_selection import TimeSeriesSplit  # 延迟导入
@@ -166,10 +166,11 @@ def _run_cv(
             pass
 
     # MLP：CV 完成后从 epoch 统计中确定全量训练 epoch 数
+    best_epoch = -1
     if is_mlp and hasattr(wrapper, 'finalize_epochs'):
-        wrapper.finalize_epochs()
+        best_epoch = wrapper.finalize_epochs()
 
-    return cv_scores, is_mlp
+    return cv_scores, best_epoch
 
 
 # =============================================================================
@@ -305,10 +306,10 @@ def model_train_predict(name: str, idx: int, f3d: Frame3D, context: Any) -> Fram
             mlflow_run_id,
             name,
             {
-                'label_mean': float(np.mean(y)),
-                'label_std': float(np.std(y)),
-                'label_min': float(np.min(y)),
-                'label_max': float(np.max(y)),
+                'label_mean': float(np.nanmean(y)),
+                'label_std': float(np.nanstd(y)),
+                'label_min': float(np.nanmin(y)),
+                'label_max': float(np.nanmax(y)),
             },
             step=idx,
         )
@@ -345,7 +346,7 @@ def model_train_predict(name: str, idx: int, f3d: Frame3D, context: Any) -> Fram
         wrapper = wrapper_cls(context)  # 每次训练重新构建模型
 
         # 5. 交叉验证
-        cv_scores, _ = _run_cv(name, idx, wrapper, X, y)
+        cv_scores, best_epoch = _run_cv(name, idx, wrapper, X, y)
 
         # 6. 全量训练
         wrapper.fit(X, y)
@@ -375,6 +376,7 @@ def model_train_predict(name: str, idx: int, f3d: Frame3D, context: Any) -> Fram
                 'train_mse': train_mse,
                 'train_npic': train_npic,
                 'cv_ic_mean': float(np.mean(cv_scores)) if cv_scores else 0.0,
+                'eval_best_epoch': best_epoch,
             },
             step=idx,
         )
