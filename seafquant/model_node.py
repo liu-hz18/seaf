@@ -38,21 +38,21 @@ from seafquant.model_wrappers import WRAPPER_REGISTRY
 # =============================================================================
 # 工具函数
 # =============================================================================
-def _empty_result(n_stocks: int, index: pd.Index, key=None,
-                  signal_col: str = 'pred_signal') -> Frame3D:
+def _empty_result(
+    n_stocks: int, index: pd.Index, key=None, signal_col: str = 'pred_signal'
+) -> Frame3D:
     """构造空预测结果（未训练或数据不足时返回）。"""
     if not isinstance(index, pd.MultiIndex):
         if key is None:
             key = pd.Timestamp('1970-01-01')
-        index = pd.MultiIndex.from_arrays(
-            [[key] * len(index), index], names=['key', 'code']
-        )
+        index = pd.MultiIndex.from_arrays([[key] * len(index), index], names=['key', 'code'])
     return Frame3D(pd.DataFrame({signal_col: [0.0] * n_stocks}, index=index))
 
 
 # =============================================================================
 # 数据预处理（从 Frame3D 中提取 X, y）
 # =============================================================================
+CLIP_PERCENT = 1
 
 
 def _prepare_training_data(
@@ -86,13 +86,32 @@ def _prepare_training_data(
         cs_mask_sell = df.index.get_level_values('key') == t_fwd
         close_buy = df.loc[cs_mask_buy, 'close'].values
         close_sell = df.loc[cs_mask_sell, 'close'].values
-        fwd_ret = np.log(close_sell) - np.log(close_buy)
-        label_xd = _cs_zscore(fwd_ret)
+
+        with np.errstate(divide='ignore', invalid='ignore'):
+            log_sell = np.log(close_sell)
+            log_buy = np.log(close_buy)
+        # NOTE: 因为 model 节点是 right alignment padding, 而且窗口比较长，所以在准备训练样本时，
+        # 会有一部分标的还没有上市，也就是 close 列还是 nan。我们保留这部分样本的 label 为 nan，以免进入训练环节
+        log_sell[close_sell <= 0] = np.nan
+        log_buy[close_buy <= 0] = np.nan
+        fwd_ret = log_sell - log_buy
+
+        # clip labels
+        # fwd=20 的情况下，股价最高可以翻 1.1^20 = 6.72 倍；1.2^20 = 38.3 倍
+        fwd_ret_p01, fwd_ret_p99 = np.nanpercentile(fwd_ret, [CLIP_PERCENT, 100 - CLIP_PERCENT])
+        fwd_ret_clipped = np.clip(fwd_ret, fwd_ret_p01, fwd_ret_p99)
+
+        label_xd = _cs_zscore(fwd_ret_clipped)
+        # logging.debug(f"{close_buy=}\n{close_sell=}\n{fwd_ret=}\n{fwd_ret_clipped=}\n{label_xd=}")
+        # logging.debug(f"{close_buy[fwd_ret <= fwd_ret_p01]=}\n{close_sell[fwd_ret >= fwd_ret_p99]=}")
+        # logging.debug(f"{df.loc[cs_mask_buy, 'close'].iloc[fwd_ret <= fwd_ret_p01]=}\n{df.loc[cs_mask_sell, 'close'].iloc[fwd_ret <= fwd_ret_p01]=}")
+        # logging.debug(f"{df.loc[cs_mask_buy, 'close'].iloc[fwd_ret >= fwd_ret_p99]=}\n{df.loc[cs_mask_sell, 'close'].iloc[fwd_ret >= fwd_ret_p99]=}")
 
         X_list.append(X_cs)
         y_list.append(label_xd)
         cs_stats.append({
-            't': t, 'n': len(fwd_ret),
+            't': t,
+            'n': len(fwd_ret),
             'ret_mean': float(np.nanmean(fwd_ret)),
             'ret_std': float(np.nanstd(fwd_ret)),
         })
@@ -103,8 +122,6 @@ def _prepare_training_data(
 # =============================================================================
 # 交叉验证调度
 # =============================================================================
-
-
 def _run_cv(
     name: str,
     idx: int,
@@ -158,8 +175,6 @@ def _run_cv(
 # =============================================================================
 # MLflow 日志记录
 # =============================================================================
-
-
 def _log_feature_importance(
     run_id: str,
     name: str,
@@ -184,12 +199,12 @@ def _log_feature_importance(
     top_n = min(10, len(fi))
     top_items = list(fi.items())[:top_n]
     logging.info(
-        f'Feature importance top-{top_n}: '
-        + ', '.join(f'{k}={v:.4f}' for k, v in top_items)
+        f'Feature importance top-{top_n}: ' + ', '.join(f'{k}={v:.4f}' for k, v in top_items)
     )
     if run_id:
         try:
             import mlflow
+
             mlflow.set_tracking_uri('sqlite:///mlruns.db')
             mlflow.log_dict(
                 fi,
@@ -203,8 +218,6 @@ def _log_feature_importance(
 # =============================================================================
 # 主入口：model_train_predict
 # =============================================================================
-
-
 def model_train_predict(name: str, idx: int, f3d: Frame3D, context: Any) -> Frame3D:
     """模型训练与预测主函数 — 编排层。
 
@@ -232,10 +245,9 @@ def model_train_predict(name: str, idx: int, f3d: Frame3D, context: Any) -> Fram
     # 此处仅排除 close（label 列）+ 内部 _ 列 + 非数值元数据列。
     if context['feature_cols'] is None:
         context['feature_cols'] = [
-            c for c in df.columns
-            if c != 'close'
-            and not c.startswith('_')
-            and pd.api.types.is_numeric_dtype(df[c])
+            c
+            for c in df.columns
+            if c != 'close' and not c.startswith('_') and pd.api.types.is_numeric_dtype(df[c])
         ]
     feature_cols: list[str] = context['feature_cols']
 
@@ -289,12 +301,17 @@ def model_train_predict(name: str, idx: int, f3d: Frame3D, context: Any) -> Fram
         )
 
         # 2. Label 统计 → MLflow
-        mlflow_log_metrics(mlflow_run_id, name, {
-            'label_mean': float(np.mean(y)),
-            'label_std': float(np.std(y)),
-            'label_min': float(np.min(y)),
-            'label_max': float(np.max(y)),
-        }, step=idx)
+        mlflow_log_metrics(
+            mlflow_run_id,
+            name,
+            {
+                'label_mean': float(np.mean(y)),
+                'label_std': float(np.std(y)),
+                'label_min': float(np.min(y)),
+                'label_max': float(np.max(y)),
+            },
+            step=idx,
+        )
 
         # 3. NaN 处理
         #   规则：标签 y 为 NaN 的样本直接丢弃；
@@ -348,14 +365,19 @@ def model_train_predict(name: str, idx: int, f3d: Frame3D, context: Any) -> Fram
         context['days_since_train'] = 0
 
         # 10. 训练指标 → MLflow
-        mlflow_log_metrics(mlflow_run_id, name, {
-            'train_samples': float(len(y)),
-            'train_features': float(len(feature_cols)),
-            'train_nan_ratio': nan_ratio,
-            'train_mse': train_mse,
-            'train_npic': train_npic,
-            'cv_ic_mean': float(np.mean(cv_scores)) if cv_scores else 0.0,
-        }, step=idx)
+        mlflow_log_metrics(
+            mlflow_run_id,
+            name,
+            {
+                'train_samples': float(len(y)),
+                'train_features': float(len(feature_cols)),
+                'train_nan_ratio': nan_ratio,
+                'train_mse': train_mse,
+                'train_npic': train_npic,
+                'cv_ic_mean': float(np.mean(cv_scores)) if cv_scores else 0.0,
+            },
+            step=idx,
+        )
 
         cv_mean = np.mean(cv_scores) if cv_scores else 0.0
         cv_std = np.std(cv_scores) if cv_scores else 0.0
@@ -363,7 +385,7 @@ def model_train_predict(name: str, idx: int, f3d: Frame3D, context: Any) -> Fram
             f'[{idx}] ===== RETRAIN DONE ===== '
             f'samples={len(y):,}, feats={len(feature_cols)}, '
             f'cv_ic={cv_mean:.4f} +- {cv_std:.4f}, n_folds={len(cv_scores)}, '
-            f"train_mse={train_mse:.3f}, train_npic={train_npic:.3f}, "
+            f'train_mse={train_mse:.3f}, train_npic={train_npic:.3f}, '
             f'predict_day={latest_t}'
         )
 
@@ -376,19 +398,22 @@ def model_train_predict(name: str, idx: int, f3d: Frame3D, context: Any) -> Fram
 
     nan_rows = np.any(np.isnan(X_latest), axis=1)
     if nan_rows.any():
-        logging.warning(
-            f'[{idx}] {nan_rows.sum()}/{len(X_latest)} stocks NaN features, filled=0'
-        )
+        logging.warning(f'[{idx}] {nan_rows.sum()}/{len(X_latest)} stocks NaN features, filled=0')
         X_latest = np.nan_to_num(X_latest, nan=0.0, posinf=0.0, neginf=0.0)
 
     pred_raw = wrapper.predict(X_latest)
     pred_signal = _cs_zscore(pred_raw)
 
-    mlflow_log_metrics(mlflow_run_id, name, {
-        'pred_signal_min': float(np.min(pred_signal)),
-        'pred_signal_max': float(np.max(pred_signal)),
-        'pred_signal_skew': float(pd.Series(pred_signal).skew()),
-    }, step=idx)
+    mlflow_log_metrics(
+        mlflow_run_id,
+        name,
+        {
+            'pred_signal_min': float(np.min(pred_signal)),
+            'pred_signal_max': float(np.max(pred_signal)),
+            'pred_signal_skew': float(pd.Series(pred_signal).skew()),
+        },
+        step=idx,
+    )
 
     logging.info(
         f'[{idx}] Predict day={latest_t} (fwd={fwd}): '

@@ -25,6 +25,8 @@ import pandas as pd
 from qpipe.frame3d import Frame3D
 from qpipe.utils import mlflow_log_metrics
 
+CLIP_PERCENT = 1
+
 
 def ic_analysis_fn(name: str, idx: int, f3d: Frame3D, context: Any) -> Frame3D:
     """每日 IC 计算函数。
@@ -80,37 +82,42 @@ def ic_analysis_fn(name: str, idx: int, f3d: Frame3D, context: Any) -> Frame3D:
     close_buy = buy_df.loc[codes, 'close'].astype(float).values
     close_sell = sell_df.loc[codes, 'close'].astype(float).values
 
-    # close 为 0（退市/停牌）时 log 报除零 → clip 到极小正数
-    eps = np.finfo(float).eps
-    fwd_ret = np.log(np.clip(close_sell, eps, None)) - np.log(np.clip(close_buy, eps, None))
-
-    valid_mask = ~np.isnan(fwd_ret) & ~np.isnan(pred_signal)
+    # close 为 0（退市/停牌）时 log 报除零
+    with np.errstate(divide='ignore', invalid='ignore'):
+        log_sell = np.log(close_sell)
+        log_buy = np.log(close_buy)
+    log_sell[close_sell <= 0] = np.nan
+    log_buy[close_buy <= 0] = np.nan
+    fwd_ret = log_sell - log_buy
 
     # 全量 cs_excess（默认全 NaN；valid 子集在 IC 计算块中填充）
     cs_excess_full = np.full(n_codes, np.nan, dtype=float)
 
+    valid_mask = ~np.isnan(fwd_ret) & ~np.isnan(pred_signal)
     if valid_mask.sum() >= 10:
         pred_valid = pred_signal[valid_mask]
         fwd_valid = fwd_ret[valid_mask]
-
-        # Raw return std（未经 cs_zscore 的截面收益率标准差）
-        raw_ret_min = float(np.nanmin(fwd_valid))
-        raw_ret_max = float(np.nanmax(fwd_valid))
-        raw_ret_mean = float(np.nanmean(fwd_valid))
-        raw_ret_std = float(np.nanstd(fwd_valid))
-        context['raw_ret_std_history'].append(raw_ret_std)
-        # Raw return skew（截面收益率偏度）
-        context['cumsum_raw_ret_std'] += raw_ret_std
-        raw_ret_skew = float(pd.Series(fwd_valid).skew())
-        context['raw_ret_skew_history'].append(raw_ret_skew)
 
         # 截面标准化（与 model label 定义一致）
         cs_mean = np.nanmean(fwd_valid)
         cs_std = np.nanstd(fwd_valid)
         cs_excess = (fwd_valid - cs_mean) / cs_std if cs_std > 0 else np.zeros_like(fwd_valid)
-
         # 全量 cs_excess（含 NaN 股票，供输出帧使用）
         cs_excess_full[valid_mask] = cs_excess
+
+        # 记录统计指标
+        # Raw return std（未经 cs_zscore 的截面收益率标准差）
+        raw_ret_min = float(np.nanmin(fwd_valid))
+        raw_ret_max = float(np.nanmax(fwd_valid))
+        raw_ret_p01, raw_ret_p99 = np.nanpercentile(fwd_valid, [CLIP_PERCENT, 100 - CLIP_PERCENT])
+        raw_ret_mean = float(cs_mean)
+        raw_ret_std = float(cs_std)
+
+        context['raw_ret_std_history'].append(raw_ret_std)
+        # Raw return skew（截面收益率偏度）
+        context['cumsum_raw_ret_std'] += raw_ret_std
+        raw_ret_skew = float(pd.Series(fwd_valid).skew())
+        context['raw_ret_skew_history'].append(raw_ret_skew)
 
         # Pearson IC
         with warnings.catch_warnings():
@@ -158,6 +165,8 @@ def ic_analysis_fn(name: str, idx: int, f3d: Frame3D, context: Any) -> Frame3D:
             'rank_ic': rank_ic,
             'raw_ret_min': raw_ret_min,
             'raw_ret_max': raw_ret_max,
+            'raw_ret_p01': raw_ret_p01,
+            'raw_ret_p99': raw_ret_p99,
             'raw_ret_mean': raw_ret_mean,
             'raw_ret_std': raw_ret_std,
             'raw_ret_skew': raw_ret_skew,

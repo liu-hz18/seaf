@@ -18,8 +18,6 @@ _EPS: float = 1e-8
 # =============================================================================
 # 损失函数抽象层 — 可扩展的损失函数族
 # =============================================================================
-
-
 class LossFunction(ABC):
     """损失函数抽象协议：LGBM custom objective / PyTorch loss / early stopping 方向。"""
     import torch
@@ -115,8 +113,6 @@ LOSS_REGISTRY: dict[str, LossFunction] = {
 # =============================================================================
 # 抽象基类
 # =============================================================================
-
-
 class BaseWrapper(ABC):
     """模型包装器协议：屏蔽 sklearn / torch / 自定义后端差异。"""
 
@@ -143,8 +139,6 @@ class BaseWrapper(ABC):
 # =============================================================================
 # sklearn 系包装器（LGBM / Ridge 共用基类）
 # =============================================================================
-
-
 class _SklearnWrapper(BaseWrapper):
     """LGBM / Ridge 共用：fit + predict + 特征重要性模式一致。"""
 
@@ -152,6 +146,7 @@ class _SklearnWrapper(BaseWrapper):
 
     def __init__(self, context: dict[str, Any]) -> None:
         loss_name = context.get('loss', 'mse')
+        self._context = context
         self._loss: LossFunction = LOSS_REGISTRY.get(loss_name, MSELossFn())
         self._model = self._build(context)
 
@@ -244,8 +239,6 @@ class RidgeWrapper(_SklearnWrapper):
 # =============================================================================
 # PyTorch MLP 包装器
 # =============================================================================
-
-
 class _ResidualMLP:
     """残差 MLP — Transformer Feed-Forward 风格。
 
@@ -435,7 +428,6 @@ class MLPWrapper(BaseWrapper):
         )
 
     # ---- 网络构建 ----
-
     def _build_network(self, input_dim: int) -> Any:
         nn = self._torch.nn
         init = self._torch.nn.init
@@ -463,7 +455,6 @@ class MLPWrapper(BaseWrapper):
         return nn.Sequential(*layers).to(self._device)
 
     # ---- 训练循环 ----
-
     def _train_epochs(
         self,
         X: np.ndarray,
@@ -479,19 +470,18 @@ class MLPWrapper(BaseWrapper):
             self._input_dim = X.shape[1]
 
         model = self._model
-        model.train()
         optimizer = torch.optim.AdamW(
             model.parameters(), lr=self._lr, betas=(0.9, 0.98), weight_decay=self._weight_decay
         )
         loss_fn = self._loss.torch_fn()
 
-        X_t = torch.tensor(X, dtype=torch.float32, device=self._device)
-        y_t = torch.tensor(y.reshape(-1, 1), dtype=torch.float32, device=self._device)
+        X_t = torch.tensor(X, dtype=torch.float32)
+        y_t = torch.tensor(y.reshape(-1, 1), dtype=torch.float32)
         logging.info(f"{X_t=}(shape={X_t.shape})\n{y_t=}(shape={y_t.shape})")
 
         if X_val is not None and y_val is not None:
-            X_val_t = torch.tensor(X_val, dtype=torch.float32, device=self._device)
-            y_val_t = torch.tensor(y_val.reshape(-1, 1), dtype=torch.float32, device=self._device)
+            X_val_t = torch.tensor(X_val, dtype=torch.float32)
+            y_val_t = torch.tensor(y_val.reshape(-1, 1), dtype=torch.float32)
             logging.info(f"{X_val_t=}(shape={X_val_t.shape})\n{y_val_t=}(shape={y_val_t.shape})")
         else:
             X_val_t = y_val_t = None
@@ -509,14 +499,17 @@ class MLPWrapper(BaseWrapper):
 
         batch_size = min(n, self._batch_size)
         for ep in range(epochs):
-            perm = torch.randperm(n, device=self._device)
+            perm = torch.randperm(n)
             total_loss = 0.0
+            model.train()
             for i in range(0, n, batch_size):
                 idx = perm[i : i + batch_size]
+                x_batch = X_t[idx].to(self._device)
+                y_batch = y_t[idx].to(self._device)
                 # 输入噪声注入：小方差高斯噪声，等价于岭正则化
-                x_batch = X_t[idx] + torch.randn_like(X_t[idx]) * noise_std
+                x_batch = x_batch + torch.randn_like(x_batch) * noise_std
                 pred = model(x_batch)
-                loss = loss_fn(pred, y_t[idx])
+                loss = loss_fn(pred, y_batch)
                 optimizer.zero_grad()
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
@@ -526,12 +519,18 @@ class MLPWrapper(BaseWrapper):
             train_loss = total_loss / n
 
             val_loss = float('nan')
+            val_loss_list = []
             if X_val_t is not None:
                 model.eval()
                 with torch.no_grad():
-                    val_pred = model(X_val_t)
-                    val_loss = loss_fn(val_pred, y_val_t).item()
-                model.train()
+                    n_eval = len(X_val_t)
+                    for i in range(0, n_eval, batch_size):
+                        x_val_batch = X_val_t[i : i + batch_size].to(self._device)
+                        y_val_batch = y_val_t[i : i + batch_size].to(self._device)
+                        val_pred = model(x_val_batch)
+                        val_loss = loss_fn(val_pred, y_val_batch).item()
+                        val_loss_list.append(val_loss)
+                val_loss = np.mean(val_loss_list) if val_loss_list else float('nan')
                 # TODO: best_epoch 应该取最高的三个epoch表现的中位数？
                 improved = val_loss < best_loss
                 if improved:
@@ -565,19 +564,18 @@ class MLPWrapper(BaseWrapper):
         }
 
     # ---- 公共接口 ----
-
     def fit(self, X: np.ndarray, y: np.ndarray) -> dict[str, float]:
         return self._train_epochs(X, y, self._epochs)
 
     def predict(self, X: np.ndarray) -> np.ndarray:
         torch = self._torch
         self._model.eval()
-        X_t = torch.tensor(X, dtype=torch.float32, device=self._device)
+        X_t = torch.tensor(X, dtype=torch.float32)
         preds: list[np.ndarray] = []
         with torch.no_grad():
             eval_batch_size = min(len(X_t), self._batch_size * 4)
             for i in range(0, len(X_t), eval_batch_size):
-                batch = X_t[i : i + eval_batch_size]
+                batch = X_t[i : i + eval_batch_size].to(self._device)
                 preds.append(self._model(batch).cpu().numpy().ravel())
         return np.concatenate(preds)
 
@@ -635,7 +633,6 @@ class MLPWrapper(BaseWrapper):
 # =============================================================================
 # 包装器注册表
 # =============================================================================
-
 WRAPPER_REGISTRY: dict[str, type[BaseWrapper]] = {
     'lgbm': LGBMWrapper,
     'ridge': RidgeWrapper,

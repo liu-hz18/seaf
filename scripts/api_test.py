@@ -1,7 +1,6 @@
 import baostock as bs
 import pandas as pd
 
-
 pd.set_option('display.max_rows', 10)
 pd.set_option('display.max_columns', 50)
 pd.set_option('display.max_colwidth', 20)
@@ -103,19 +102,20 @@ end_date = '2026-06-11'
 #### 获取沪深A股历史日K线数据 ####
 # 详细指标参数，参见"历史行情指标参数"章节；"分钟线"参数与"日线"参数不同。"分钟线"不包含指数。
 # 日线指标：date,code,open,high,low,close,volume,amount,adjustflag,turn,pctChg,peTTM,pbMRQ,psTTM,pcfNcfTTM
-code = 'sh.600000'
-start_date = '2026-06-20'
-end_date = '2026-06-26'
+code = 'sh.600213'
+start_date = '2007-07-05'
+end_date = '2007-08-01'
 
 lg = bs.login()  # really time consuming
 if lg.error_code == '0':
     rs = bs.query_history_k_data_plus(
         code=code,
-        fields='date,code,open,high,low,close,preclose,volume,amount,adjustflag,turn,tradestatus,pctChg,isST,peTTM,pbMRQ,psTTM,pcfNcfTTM',
+        # fields='date,code,open,high,low,close,preclose,volume,amount,adjustflag,turn,tradestatus,pctChg,isST,peTTM,pbMRQ,psTTM,pcfNcfTTM',
+        fields='date,code,close,preclose,tradestatus,isST',
         start_date=start_date,
         end_date=end_date,
         frequency='d',
-        adjustflag='3',
+        adjustflag='1',
     )
     #### 打印结果集 ####
     data_list = []
