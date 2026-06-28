@@ -653,7 +653,21 @@ class BaoStockDataCallable:
         Index: MultiIndex (key=date, code=stock_code).
         """
         # 缺失列填充 np.nan
-        needed_cols = ['open', 'high', 'low', 'close', 'close_uq', 'turn', 'volume', 'peTTM', 'pbMRQ', 'psTTM', 'pcfNcfTTM', 'tradestatus', 'isST']
+        needed_cols = [
+            'open',
+            'high',
+            'low',
+            'close',
+            'close_uq',
+            'turn',
+            'volume',
+            'peTTM',
+            'pbMRQ',
+            'psTTM',
+            'pcfNcfTTM',
+            'tradestatus',
+            'isST',
+        ]
         needed = {
             'open': np.nan,
             'high': np.nan,
@@ -667,6 +681,7 @@ class BaoStockDataCallable:
             'pbMRQ': np.nan,
             'psTTM': np.nan,
             'pcfNcfTTM': np.nan,
+            'pctChg': 0.0,
             'tradestatus': 0,
             'isST': 0,
         }
@@ -680,12 +695,42 @@ class BaoStockDataCallable:
         # 价格精度对齐
         for col in ['close_uq']:
             df[col] = np.round(df[col].astype(np.float32), self.precision)
-        for col in ['open', 'high', 'low', 'close', 'turn', 'peTTM', 'pbMRQ', 'psTTM', 'pcfNcfTTM']:
+        for col in [
+            'open',
+            'high',
+            'low',
+            'close',
+            'turn',
+            'peTTM',
+            'pbMRQ',
+            'psTTM',
+            'pcfNcfTTM',
+            'pctChg',
+        ]:
             df[col] = df[col].astype(np.float32)
 
         # 构建 MultiIndex
         arrays = [df['date'].values, df['code'].values]
         mi = pd.MultiIndex.from_arrays(arrays, names=['key', 'code'])
+        # 涨跌停股票标记为不可交易
+        tradestatus = []
+        for code, ts, pct, is_st in zip(
+            df['code'].values,
+            df['tradestatus'].values,
+            df['pctChg'].values,
+            df['isST'].values,
+            strict=True,
+        ):
+            pctchg_abs = abs(pct)
+            if (
+                (code.startswith(('sh.60', 'sz.00')) and is_st and pctchg_abs >= 4.9)
+                or (code.startswith(('sh.60', 'sz.00')) and pctchg_abs >= 9.9)
+                or (code.startswith(('sh.68', 'sz.30')) and pctchg_abs >= 19.9)
+            ):
+                tradestatus.append(0)
+            else:
+                tradestatus.append(ts)
+
         out_df = pd.DataFrame(
             {
                 'stock_name': df['name'].tolist(),
@@ -702,7 +747,7 @@ class BaoStockDataCallable:
                 'pbMRQ': df['pbMRQ'].values,
                 'psTTM': df['psTTM'].values,
                 'pcfNcfTTM': df['pcfNcfTTM'].values,
-                'tradestatus': df['tradestatus'].values,
+                'tradestatus': np.array(tradestatus, dtype=np.int8),
                 'isST': df['isST'].values,
             },
             index=mi,
