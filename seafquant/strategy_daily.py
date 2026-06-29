@@ -28,6 +28,7 @@ from seafquant.strategy_core import (
 def _on_bar(
     ctx: dict, date, signal: dict[str, float],
     close_uq: dict[str, float], close_hfq: dict[str, float],
+    tradestatus: dict[str, str],
     stock_name_map: dict[str, str] | None = None,
 ) -> None:
     """逐日调用：对齐信号、交易与净值。
@@ -65,29 +66,32 @@ def _on_bar(
         # 先卖后买：优先卖出释放现金，再买入分配资金
         # 1. 到期-信号 → 平仓（纯卖）
         for sid in mat_sids - sig_sids:
-            sname = (stock_name_map or {}).get(sid, '')
-            _process_close_trade(
-                ctx, date, dc, sid, sname, maturing[sid], close_uq, f_today,
-                close_hfq=close_hfq, signal_value=0.0,
-            )
+            if tradestatus[sid] == 1:
+                sname = (stock_name_map or {}).get(sid, '')
+                _process_close_trade(
+                    ctx, date, dc, sid, sname, maturing[sid], close_uq, f_today,
+                    close_hfq=close_hfq, signal_value=0.0,
+                )
         # 2. 信号∩到期 → 差额交易（可能买卖，内部先判断方向）
         for sid in sig_sids & mat_sids:
-            sw = sig[sid]['w']
-            sv = sig[sid]['v']
-            sname = (stock_name_map or {}).get(sid, '')
-            _process_delta_trade(
-                ctx, date, dc, sid, sname, sw, slice_capital,
-                maturing[sid], close_uq, close_hfq, f_today, signal_value=sv,
-            )
+            if tradestatus[sid] == 1:
+                sw = sig[sid]['w']
+                sv = sig[sid]['v']
+                sname = (stock_name_map or {}).get(sid, '')
+                _process_delta_trade(
+                    ctx, date, dc, sid, sname, sw, slice_capital,
+                    maturing[sid], close_uq, close_hfq, f_today, signal_value=sv,
+                )
         # 3. 信号-到期 → 新开仓（纯买，最后执行确保现金充足）
         for sid in sig_sids - mat_sids:
-            sw = sig[sid]['w']
-            sv = sig[sid]['v']
-            sname = (stock_name_map or {}).get(sid, '')
-            _process_new_trade(
-                ctx, date, dc, sid, sname, sw, slice_capital, close_uq, f_today,
-                close_hfq=close_hfq, signal_value=sv,
-            )
+            if tradestatus[sid] == 1:
+                sw = sig[sid]['w']
+                sv = sig[sid]['v']
+                sname = (stock_name_map or {}).get(sid, '')
+                _process_new_trade(
+                    ctx, date, dc, sid, sname, sw, slice_capital, close_uq, f_today,
+                    close_hfq=close_hfq, signal_value=sv,
+                )
 
         # 累加当日新增手续费
         day_trades = ctx['trade_log'][n_trades_before:]

@@ -106,10 +106,11 @@ def strategy_fn(name: str, idx: int, f3d: Frame3D, context: Any) -> Frame3D:
         ]
 
     df = f3d.df.copy()
+    origin_df = df
 
     # 过滤 ST 和停牌股票（仅策略节点排除，模型训练/推理保留这些样本）
-    if 'tradestatus' in df.columns:
-        df = df[df['tradestatus'] == 1]
+    # if 'tradestatus' in df.columns:
+    #     df = df[df['tradestatus'] == 1]
     if 'isST' in df.columns:
         df = df[df['isST'] == 0]
     # 指定 prefix 以方便排除创业板、科创版
@@ -167,14 +168,15 @@ def strategy_fn(name: str, idx: int, f3d: Frame3D, context: Any) -> Frame3D:
         context['first_date'] = t_curr
     context['last_date'] = t_curr
 
+    # NOTE: 提供信息类的应该用原始 df, 以提供更完整的信息；只有次日交易计划需要用到过滤后的 df
     # T 日的价格（纯 name 索引 Series → dict ）
-    close_uq_t = df.xs(t_curr, level='key')['close_uq'].to_dict()
-    close_hfq_t = df.xs(t_curr, level='key')['close'].to_dict()
+    close_uq_t = origin_df.xs(t_curr, level='key')['close_uq'].to_dict()
+    close_hfq_t = origin_df.xs(t_curr, level='key')['close'].to_dict()
 
     # 股票名映射（artifact 导出用）
-    stock_name_map = {}
-    if 'stock_name' in df.columns:
-        stock_name_map = df.xs(t_curr, level='key')['stock_name'].to_dict()
+    stock_name_map = origin_df.xs(t_curr, level='key')['stock_name'].to_dict()
+    # 当日 tradestatus
+    tradestatus_map = origin_df.xs(t_curr, level='key')['tradestatus'].to_dict()
 
     # ---- T 日信号分组 + 每组独立 on_bar ----
     # T 日收盘收到 signal_T → 存储为 pending；
@@ -184,7 +186,7 @@ def strategy_fn(name: str, idx: int, f3d: Frame3D, context: Any) -> Frame3D:
     for gctx in context['groups']:
         gid = gctx['group_id']
         sig = group_signals.get(gid, {})
-        _on_bar(gctx, t_curr, sig, close_uq_t, close_hfq_t, stock_name_map)
+        _on_bar(gctx, t_curr, sig, close_uq_t, close_hfq_t, tradestatus_map, stock_name_map)
 
     # ---- 生成次日交易计划（T 日收盘后可立即给出） ----
     for gctx in context['groups']:
@@ -211,7 +213,7 @@ def strategy_fn(name: str, idx: int, f3d: Frame3D, context: Any) -> Frame3D:
             run_id,
             f'{name}',
             {
-                'candidate_stocks': len(df),
+                'active_stocks': len(df),
             },
             step=idx,
         )
@@ -316,7 +318,7 @@ def strategy_fn(name: str, idx: int, f3d: Frame3D, context: Any) -> Frame3D:
         )
 
     # 返回逐股逐组持仓市值 Frame3D（与 factor 节点格式对齐）
-    stocks_sorted = sorted(df.xs(t_curr, level='key').index)
+    stocks_sorted = sorted(origin_df.xs(t_curr, level='key').index)
     ng = context['num_groups']
     data: dict[str, list[float]] = {}
     for g in range(ng):

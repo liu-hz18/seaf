@@ -4,8 +4,8 @@ import duckdb
 
 DB_PATH = 'quant_stock.duckdb'
 code = 'sh.601003'
-chunk_start = '2016-01-01'
-chunk_end = '2016-12-31'
+chunk_start = '2008-09-19'
+chunk_end = '2008-09-19'
 
 con = duckdb.connect(DB_PATH, read_only=True, config={'threads': 16})
 # con.execute("PRAGMA memory_limit='2GB'")
@@ -19,7 +19,7 @@ con = duckdb.connect(DB_PATH, read_only=True, config={'threads': 16})
 # print(existing)
 
 rows = con.execute(
-    "SELECT code, date, close FROM hot_daily_stock "
+    "SELECT code, name, date, close, pctChg, tradestatus, isST FROM hot_daily_stock "
     "WHERE \"date\" >= ? AND \"date\" <= ? ORDER BY code, date",
     [chunk_start, chunk_end],
 )
