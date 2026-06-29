@@ -122,8 +122,6 @@ def _create_position(
 # =============================================================================
 # 三种交易处理
 # =============================================================================
-
-
 def _process_delta_trade(
     ctx: dict, date, dc: int, sid: str, sname: str,
     weight: float, slice_capital: float,

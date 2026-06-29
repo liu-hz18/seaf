@@ -4,8 +4,8 @@ import duckdb
 
 DB_PATH = 'quant_stock.duckdb'
 code = 'sh.600000'
-chunk_start = '2026-06-26'
-chunk_end = '2026-06-26'
+chunk_start = '2026-06-29'
+chunk_end = '2026-06-29'
 
 con = duckdb.connect(DB_PATH, read_only=True, config={'threads': 16})
 # con.execute("PRAGMA memory_limit='2GB'")

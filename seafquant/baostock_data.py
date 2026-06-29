@@ -62,6 +62,7 @@ BaoStock 真实数据源 — 编排层 (BaoStockDataCallable)。
 from __future__ import annotations
 
 import logging
+import os
 import time
 from contextlib import suppress
 from typing import TYPE_CHECKING
@@ -87,6 +88,7 @@ if TYPE_CHECKING:
 
 
 # ── 常量 ──────────────────────────────────────────────
+DEFAULT_DOWNLOAD_START_DATE = '2007-01-01'
 MAX_WORKERS = 1  # 最大并行进程数 NOTE: 多进程会出现登录失败的问题
 BATCH_SIZE = 32  # 每个子进程一次 login 处理的 task 数量
 NUM_THREADS = 8
@@ -103,12 +105,11 @@ class BaoStockDataCallable:
     """
 
     # ── 构造 ────────────────────────────────────────────────
-
     def __init__(
         self,
         start_date: str = '2007-01-01',
         end_date: str | None = None,
-        update_start_date: str = '2007-01-01',
+        update_start_date: str | None = None,
         db_path: str = 'quant_stock.duckdb',
         precision: int = 2,
         max_stocks: int | None = None,
@@ -116,8 +117,9 @@ class BaoStockDataCallable:
         mlflow_run_id: str = '',
     ) -> None:
         """参数:
-        start_date:   下载起始日期 (YYYY-MM-DD).
-        end_date:     下载终止日期，默认今天.
+        start_date:   回测起始日期 (YYYY-MM-DD).
+        end_date:     下载和回测的终止日期，默认今天.
+        update_start_date: 下载起始日期 (YYYY-MM-DD).
         db_path:      DuckDB 数据库文件路径.
         precision:    OHLC 价格精度 (小数位数).
         max_stocks:   限制下载股票数量 (None = 全部).
@@ -361,10 +363,18 @@ class BaoStockDataCallable:
             if isinstance(h, logging.FileHandler):
                 _log_files.append(h.baseFilename)
 
+        def force_exit():
+            """定时器回调：强制退出"""
+            logging.warning('Timeout reached, forcing exit...')
+            os._exit(1)  # 强制退出，不执行清理操作
+
         # Ctrl+C 信号处理
         def _on_interrupt(signum, frame):
             logging.warning('SIGINT received, stopping...')
             _stop_flag.set()
+            _shutdown_timer = threading.Timer(10.0, force_exit)
+            _shutdown_timer.daemon = True # 设置为守护线程，防止主线程退出时卡住
+            _shutdown_timer.start()
 
         _signal.signal(_signal.SIGINT, _on_interrupt)
 
@@ -622,6 +632,8 @@ class BaoStockDataCallable:
                 f'[{day_idx}][{day}] api_calls={_api_calls}, total_rows={_total_rows}, db_rows={db_rows}'
             )
 
+        # 取消监听 Ctrl+C 事件，恢复默认
+        _signal.signal(_signal.SIGINT, _signal.SIG_DFL)
         logging.info(f'[{day_idx}][{day}] Download complete. API={_api_calls}, rows={_total_rows}')
 
     # ══════════════════════════════════════════════════════════
@@ -778,10 +790,6 @@ class BaoStockDataCallable:
           [5] 迭代: 逐日 _read_day() + 停牌前向填充 + _frame_to_f3d() → yield
           [6] 归档: 每 30 天将热表数据导出 Parquet
         """
-        logging.info(
-            f'backtest dates=[{self.start_date}, {self.end_date}], db={self.db_path}, update-dates=[{self.update_start_date}, {self.end_date}]'
-        )
-
         # ── 预检 ───────────────────────────────────────────────
         con0 = self._init_db(read_only=True)
         pre_rows = con0.execute('SELECT COUNT(*) FROM hot_daily_stock').fetchone()[0]
@@ -791,6 +799,17 @@ class BaoStockDataCallable:
         db_range = con0.execute('SELECT MIN(date), MAX(date) FROM trading_calendar').fetchone()
         db_start, db_end = db_range[0], db_range[1]
         con0.close()
+
+        # 确定数据下载的起始日期
+        if not self.update_start_date:
+            if (db_start is None or db_end is None):
+                self.update_start_date = DEFAULT_DOWNLOAD_START_DATE
+            else:
+                self.update_start_date = db_end
+
+        logging.info(
+            f'backtest dates=[{self.start_date}, {self.end_date}], db={self.db_path}, update-dates=[{self.update_start_date}, {self.end_date}]'
+        )
 
         need_fetch = (
             db_start is None

@@ -57,7 +57,7 @@ def main() -> None:
     parser.add_argument(
         '--update-db', action='store_true', default=False, help='Update baostock data db'
     )
-    parser.add_argument('--update-start-date', type=str, default='2007-01-01')
+    parser.add_argument('--update-start-date', type=str, default=None)  # 2007-01-01
     # model
     parser.add_argument(
         '--fwd',
@@ -118,7 +118,7 @@ def main() -> None:
     parser.add_argument(
         '--slip-ticks',
         type=int,
-        default=0,
+        default=1,
         help='Slipping ticks for each trade',
     )
     # logging
