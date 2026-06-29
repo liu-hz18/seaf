@@ -18,6 +18,7 @@ from seafquant.strategy_core import (
     _process_close_trade,
     _process_delta_trade,
     _process_new_trade,
+    _process_delist_trade,
 )
 
 # =============================================================================
@@ -29,7 +30,7 @@ def _on_bar(
     ctx: dict, date, signal: dict[str, float],
     close_uq: dict[str, float], close_hfq: dict[str, float],
     tradestatus: dict[str, str],
-    stock_name_map: dict[str, str] | None = None,
+    stock_name_map: dict[str, str],
 ) -> None:
     """逐日调用：对齐信号、交易与净值。
 
@@ -66,28 +67,31 @@ def _on_bar(
         # 先卖后买：优先卖出释放现金，再买入分配资金
         # 1. 到期-信号 → 平仓（纯卖）
         for sid in mat_sids - sig_sids:
-            if tradestatus[sid] == 1:
-                sname = (stock_name_map or {}).get(sid, '')
+            if tradestatus.get(sid, 0) == 1:
+                sname = stock_name_map.get(sid, '')
                 _process_close_trade(
                     ctx, date, dc, sid, sname, maturing[sid], close_uq, f_today,
                     close_hfq=close_hfq, signal_value=0.0,
                 )
+            else:
+                sname = stock_name_map.get(sid, '')  # 目前：退市股票名字为空
+                _process_delist_trade(ctx, date, dc, sid, sname, maturing[sid])
         # 2. 信号∩到期 → 差额交易（可能买卖，内部先判断方向）
         for sid in sig_sids & mat_sids:
-            if tradestatus[sid] == 1:
+            if tradestatus.get(sid, 0) == 1:
                 sw = sig[sid]['w']
                 sv = sig[sid]['v']
-                sname = (stock_name_map or {}).get(sid, '')
+                sname = stock_name_map.get(sid, '')
                 _process_delta_trade(
                     ctx, date, dc, sid, sname, sw, slice_capital,
                     maturing[sid], close_uq, close_hfq, f_today, signal_value=sv,
                 )
         # 3. 信号-到期 → 新开仓（纯买，最后执行确保现金充足）
         for sid in sig_sids - mat_sids:
-            if tradestatus[sid] == 1:
+            if tradestatus.get(sid, 0) == 1:
                 sw = sig[sid]['w']
                 sv = sig[sid]['v']
-                sname = (stock_name_map or {}).get(sid, '')
+                sname = stock_name_map.get(sid, '')
                 _process_new_trade(
                     ctx, date, dc, sid, sname, sw, slice_capital, close_uq, f_today,
                     close_hfq=close_hfq, signal_value=sv,
@@ -179,7 +183,7 @@ def _generate_daily_plan(
     """
     dc_tomorrow = dc + 1
 
-    # 到期持仓
+    # 收集所有的到期持仓，按股票id分组
     maturing: dict[str, list] = defaultdict(list)
     for key, pos in list(ctx['positions'].items()):
         if pos['mature_dc'] == dc_tomorrow:

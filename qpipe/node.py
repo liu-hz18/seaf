@@ -82,7 +82,7 @@ class SourceNode(mp.Process):
         try:
             for idx, frame in self.gen_func():
                 max_key = frame.last_key()
-                latest_f3d = frame.last_frame().to(np.float32)
+                latest_f3d = frame.last_frame().to(np.float32).reset_index()
 
                 # ---- 快照采样 ----
                 if self.snapshot_interval > 0 and idx > 0 and idx % self.snapshot_interval == 0:
@@ -592,12 +592,17 @@ class MultiInputNode(mp.Process):
                     _oth_sample = list(other_df.index)[:PRINT_NUM]
                     _only_base_sample = list(diff_only_base)[:PRINT_NUM]
                     _only_oth_sample = list(diff_only_other)[:PRINT_NUM]
+                    dup_base = base_idx.duplicated().sum()
+                    dup_oth = other_df.index.duplicated().sum()
                     raise ValueError(
                         f'[{self.name}] Index mismatch at tval={tval} '
-                        f'\nupstream[0] names={_base_nm} sample={_base_sample}, '
-                        f'\nupstream[{qi}] names={_oth_nm} sample={_oth_sample}, '
+                        f'\nupstream[0] names={_base_nm} sample(len={len(base_idx)})={_base_sample}, '
+                        f'\nupstream[{qi}] names={_oth_nm} sample(len={len(other_df.index)})={_oth_sample}, '
                         f'\nbase_only({len(diff_only_base)})={_only_base_sample}, '
-                        f'\nother_only({len(diff_only_other)})={_only_oth_sample}'
+                        f'\nother_only({len(diff_only_other)})={_only_oth_sample} '
+                        f'\ndtype: {base_idx.dtypes=} {other_df.index.dtypes=} '
+                        f'\nunique: {base_idx.is_unique=} {other_df.index.is_unique=}'
+                        f'\nduplicated: {dup_base=} {dup_oth=}'
                     )
         return pd.concat(df_list, axis=1)
 
@@ -702,4 +707,5 @@ class MultiInputNode(mp.Process):
                 raise ValueError(f'[{self.name}] Missing output cols: {miss_o}')
             filtered = output_frame.df[self.output_columns]
             output_frame = Frame3D(filtered)
+        output_frame = output_frame.reset_index()
         return output_frame

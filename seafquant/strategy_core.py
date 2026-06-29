@@ -253,3 +253,17 @@ def _process_close_trade(
                        trade_value, commission,
                        signal_value=signal_value, hfq_price=p_hfq)
         del ctx['positions'][key]
+
+
+def _process_delist_trade(ctx: dict, date, dc: int, sid: str, sname: str, maturing_keys: list) -> None:
+    """退市处理：所有持仓全部平仓，信号无效。"""
+    for key in maturing_keys:
+        pos = ctx['positions'][key]
+        actual_shares = pos['n_initial']  # 退市时不考虑复权，按锚定股数卖出
+        trade_value = 0.0
+        commission = 0.0
+        ctx['cash'] += (trade_value - commission)
+        _log_trade(ctx, date, sid, sname, 'sell', actual_shares, 0.0,
+                    trade_value, commission,
+                    signal_value=0.0, hfq_price=0.0)
+        del ctx['positions'][key]

@@ -40,6 +40,7 @@ def _make_random_f3d(n_times: int = 200, n_stocks: int = 100, seed: int = 42) ->
         'high': (close_arr + np.abs(intraday_vol)).ravel(),
         'low': (close_arr - np.abs(intraday_vol)).ravel(),
         'close': close_arr.ravel(),
+        'vwap': (close_arr + rng.normal(0, 0.01, size=(n_times, n_stocks))).ravel(),
         'volume': rng.lognormal(15, 1.5, size=(n_times, n_stocks)).ravel().astype(np.int64),
         'turnover': rng.lognormal(-3, 1.0, size=(n_times, n_stocks)).ravel(),
         'market_cap': (close_arr * rng.lognormal(18, 2, size=(n_times, n_stocks))).ravel(),

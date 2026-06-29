@@ -52,6 +52,21 @@ class Frame3D:
             f'valid_data={valid_pct:.1f}%](\n{self._df!r}\n)'
         )
 
+    def reset_index(self) -> Frame3D:
+        if isinstance(self._df.index, pd.MultiIndex) and 'key' in self._df.index.names:
+            arrays = []
+            for name in self._df.index.names:
+                if name == 'key':
+                    # 对 key 层进行精度统一和截断
+                    arr = self._df.index.get_level_values(name).normalize().astype('datetime64[ns]')
+                else:
+                    # 保持其他层（如 code）原样
+                    arr = self._df.index.get_level_values(name)
+                arrays.append(arr)
+            # 重新构造 MultiIndex
+            self._df.index = pd.MultiIndex.from_arrays(arrays, names=self._df.index.names)
+        return self
+
     def last_key(self) -> int:
         return self._df.index.get_level_values(0).max()
 

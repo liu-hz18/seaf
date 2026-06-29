@@ -65,7 +65,7 @@ FACTOR_INPUT_COLUMNS: dict[str, list[str]] = {
     'trend_cs':         ['close', 'volume'],
     'counting':         ['close', 'turnover'],
     'interaction':      ['close', 'high', 'low', 'volume', 'turnover', 'market_cap'],
-    'precision':        ['close', 'high', 'low'],
+    'precision':        ['close', 'vwap'],
     'tspct':            ['open', 'high', 'low', 'close', 'volume', 'turnover'],
     'valuation':        ['close', 'peTTM', 'pbMRQ', 'psTTM', 'pcfNcfTTM'],
 }

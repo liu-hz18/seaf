@@ -661,6 +661,7 @@ class BaoStockDataCallable:
             'close_uq',
             'turn',
             'volume',
+            'amount',
             'peTTM',
             'pbMRQ',
             'psTTM',
@@ -676,6 +677,7 @@ class BaoStockDataCallable:
             'close_uq': np.nan,
             'turn': np.nan,
             'volume': np.nan,
+            'amount': np.nan,
             'market_cap': np.nan,  # TODO: baostock 没有市值信息
             'peTTM': np.nan,
             'pbMRQ': np.nan,
@@ -700,7 +702,10 @@ class BaoStockDataCallable:
             'high',
             'low',
             'close',
+            'close_uq',
             'turn',
+            'amount',
+            'volume',
             'peTTM',
             'pbMRQ',
             'psTTM',
@@ -731,6 +736,10 @@ class BaoStockDataCallable:
             else:
                 tradestatus.append(ts)
 
+        # 计算 market_cap(其实是流通市值) 和 vwap 属性 [停牌日期是 nan]
+        df['vwap'] = (df['amount'] / df['volume']) * (df['close'] / df['close_uq'])
+        df['market_cap'] = (df['volume'] / (df['turn'] / 100.0)) * df['close_uq']
+
         out_df = pd.DataFrame(
             {
                 'stock_name': df['name'].tolist(),
@@ -739,6 +748,7 @@ class BaoStockDataCallable:
                 'low': df['low'].values,
                 'close': df['close'].values,
                 'close_uq': df['close_uq'].values,
+                'vwap': df['vwap'].values,
                 # baostock turn 是百分比 → 除以 100 转为小数
                 'turnover': df['turn'].values / 100.0,
                 'volume': df['volume'].values,

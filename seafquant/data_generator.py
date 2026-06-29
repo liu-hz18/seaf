@@ -241,6 +241,7 @@ def generate_synthetic_data(
                 'low': low_t,
                 'close': close_t,
                 'close_uq': close_uq_t,
+                'vwap': (open_t + high_t + low_t + close_t) / 4,
                 'turnover': turnover_t,
                 'volume': volume_t,
                 'market_cap': mcap_t,
