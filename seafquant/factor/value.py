@@ -22,9 +22,9 @@ def compute_value_factors(name: str, idx: int, f3d: Frame3D, context) -> Frame3D
     close_2d = close.unstack(level='code').values
 
     # ---- 1-3: 基础价值 ----
-    df['factor_val_inv_price'] = 1.0 / close
+    df['factor_val_inv_price'] = np.where(close != 0, 1.0 / close, np.nan)
     df['factor_val_log_mcap'] = -np.log(np.where(mcap > 0, mcap, np.nan))
-    df['factor_val_mcap_to_price'] = mcap / close
+    df['factor_val_mcap_to_price'] = np.where(close != 0, mcap / close, np.nan)
 
     # ---- 4-6: 价格相对 MA 偏离 ----
     mas = rolling_mean_2d(close_2d, [20, 60, 120])
@@ -39,7 +39,7 @@ def compute_value_factors(name: str, idx: int, f3d: Frame3D, context) -> Frame3D
         df[f'factor_val_dd_{p}d'] = close / df[f'_max{p}'].replace(0, np.nan) - 1
 
     # ---- 9: 换手率倒数 ----
-    df['factor_val_turnover_yield'] = 1.0 / turnover
+    df['factor_val_turnover_yield'] = np.where(turnover != 0, 1.0 / turnover, np.nan)
 
     # ---- 10: Z-score 逆 ----
     df['factor_val_sharpe_inv'] = -f3d.ts_zscore('close', 60).df['close']

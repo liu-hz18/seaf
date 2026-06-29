@@ -43,10 +43,15 @@ def compute_valuation_factors(name: str, idx: int, f3d: Frame3D, context) -> Fra
 
     # ── 估值原始列 → 2D-array ──
     n_times = f3d.df.index.get_level_values('key').nunique()
-    ep_2d = (1.0 / df['peTTM'].values).reshape(n_times, -1)
-    bp_2d = (1.0 / df['pbMRQ'].values).reshape(n_times, -1)
-    sp_2d = (1.0 / df['psTTM'].values).reshape(n_times, -1)
-    cfp_2d = (1.0 / df['pcfNcfTTM'].values).reshape(n_times, -1)
+    # 估值乘数可能为 0（如亏损股 PE=0）→ 1/0 触发 divide by zero
+    _ep = df['peTTM'].values.astype(np.float64)
+    _bp = df['pbMRQ'].values.astype(np.float64)
+    _sp = df['psTTM'].values.astype(np.float64)
+    _cfp = df['pcfNcfTTM'].values.astype(np.float64)
+    ep_2d  = np.where(_ep  != 0, 1.0 / _ep,  np.nan).reshape(n_times, -1)
+    bp_2d  = np.where(_bp  != 0, 1.0 / _bp,  np.nan).reshape(n_times, -1)
+    sp_2d  = np.where(_sp  != 0, 1.0 / _sp,  np.nan).reshape(n_times, -1)
+    cfp_2d = np.where(_cfp != 0, 1.0 / _cfp, np.nan).reshape(n_times, -1)
     pe_2d = df['peTTM'].values.reshape(n_times, -1)
     pb_2d = df['pbMRQ'].values.reshape(n_times, -1)
     close_2d = df['close'].values.reshape(n_times, -1)

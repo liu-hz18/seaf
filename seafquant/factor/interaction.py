@@ -66,7 +66,7 @@ def compute_interaction_factors(name: str, idx: int, f3d: Frame3D, context) -> F
 
     # ---- 9-10: HL_range × vol_rank (日内振幅×量) ----
     # f = (H-L)/C · rank(V)
-    hl_range = (f3d.df['high'] - f3d.df['low']) / close
+    hl_range = (f3d.df['high'] - f3d.df['low']) / close.replace(0, np.nan)
     result = result.add_column('factor_inter_hl_vol_1d', hl_range * vol_rank)
     # f = (H-L)/C · rank(V) · r5
     result = result.add_column('factor_inter_hl_vol_5d',

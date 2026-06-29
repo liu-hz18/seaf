@@ -23,7 +23,7 @@ def compute_quality_merged_factors(name: str, idx: int, f3d: Frame3D, context) -
 
     ret_2d = df['_ret'].unstack(level='code').values
     close_2d = close.unstack(level='code').values
-    amp_2d = ((high - low) / close).unstack(level='code').values
+    amp_2d = ((high - low) / close.replace(0, np.nan)).unstack(level='code').values
 
     # ── Part A: 质量基础 19 ──
     rstd = rolling_std_2d(ret_2d, [20, 60, 120])

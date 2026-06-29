@@ -116,11 +116,10 @@ def rolling_std_2d(
     """多窗口滚动标准差 — 双 cumsum (value + value²)。"""
     n_times, n_stocks = arr.shape
 
-    arr_filled = np.nan_to_num(arr, nan=0.0)
-    # 防止大值平方溢出（如极端价格 × 换手率乘积）。
-    # 注意：下游因子节点接收 float32 数据，1e100 远超 float32 上限
-    # (~3.4e38)，clip 会触发 "overflow in cast"。
-    _fmax = np.finfo(arr_filled.dtype).max / 2
+    # 上游 node.py 将数据转 float32 → cumsum 及平方可能溢出。
+    # 统一转为 float64，clip 用 float64 安全界（为 N 步累加留余量）。
+    arr_filled = np.nan_to_num(arr, nan=0.0).astype(np.float64)
+    _fmax = np.finfo(np.float64).max / (2 * max(n_times, 1))
     arr_filled = np.clip(arr_filled, -_fmax, _fmax)
     valid = (~np.isnan(arr)).astype(np.float64)
 
