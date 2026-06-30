@@ -172,7 +172,7 @@ def strategy_fn(name: str, idx: int, f3d: Frame3D, context: dict) -> Frame3D:
     # 每组读取昨日缓存的交易计划，执行交易 on_bar
     for gctx in context['groups']:
         daily_plan = gctx['daily_plan']
-        if daily_plan:
+        if daily_plan is not None:
             _on_bar(
                 ctx=gctx, date=t_curr, daily_plan=daily_plan,
                 close_hfq=close_hfq_t, close_uq=close_uq_t,
