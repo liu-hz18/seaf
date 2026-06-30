@@ -805,7 +805,7 @@ class BaoStockDataCallable:
             if (db_start is None or db_end is None):
                 self.update_start_date = DEFAULT_DOWNLOAD_START_DATE
             else:
-                self.update_start_date = db_end
+                self.update_start_date = str(db_end)
 
         logging.info(
             f'backtest dates=[{self.start_date}, {self.end_date}], db={self.db_path}, update-dates=[{self.update_start_date}, {self.end_date}]'
