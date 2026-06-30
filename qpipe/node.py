@@ -351,7 +351,7 @@ class MultiInputNode(mp.Process):
                     # 的输出值（如持仓市值）不应被 z-score 破坏原始量纲。
                     numeric_cols = latest_frame.df.select_dtypes(include=['float', 'int']).columns.tolist()
                     if self.output_queues and self.apply_cs_zscore_to_output:
-                        latest_frame = latest_frame.cs_zscore_batch(numeric_cols, cp=False)
+                        latest_frame = latest_frame.cs_zscore_batch_trimmed(numeric_cols, cp=False)
                     # 检查 nan
                     logging.debug(
                         f'[{day_idx}][{ts}] NaN factors (length={latest_frame.df.shape}): '

@@ -233,6 +233,50 @@ class Frame3D:
             df[cols] = z.fillna(0.0)
         return Frame3D(df)
 
+    def cs_zscore_batch_trimmed(self, cols: list[str], cp: bool = True,
+                        trim: float = 0.01) -> Frame3D:
+        """批量截面截尾标准化：
+        1) 按 key 分组，剔除每组 top/bottom `trim` 分位后计算 mean/std；
+        2) 用该 mean/std 对原始（未截尾）数据做 (x-mean)/std；
+        3) std=0 或组内非 NaN 样本数 ≤ 2 时返回 0。
+        4) 增加校验：若组内非 NaN 样本数不足以支撑 trim 比例（如 trim=0.01 需至少 100 个样本），
+           则该组不进行截尾，直接使用原始数据计算统计量。
+        cp=False 时原地操作。trim=0.01 即剔除上下各 1%。
+        """
+        df = self._df.copy() if cp else self._df
+        key = df['key']
+        grp = df.groupby('key')[cols]
+
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', RuntimeWarning)
+            # 1. 统计各组每列的非 NaN 样本数，并广播到每一行
+            counts = grp.transform('count')
+            # 2. 判定是否满足截尾所需的最低样本量
+            # 例如 trim=0.01 表示剔除 1%，至少需要 100 个样本才能稳定剔除 1 个点
+            min_required = (1.0 / trim) if trim > 0 else 0
+            do_trim = counts >= min_required
+            # 3. 计算各组上下分位数（q_lo, q_hi）
+            q_lo = grp.transform(lambda s: np.nanquantile(s, trim))
+            q_hi = grp.transform(lambda s: np.nanquantile(s, 1.0 - trim))
+            # 4. 构造有效截尾掩码
+            # 条件1：数据本身非 NaN
+            # 条件2：要么满足截尾样本量且处于分位区间内，要么不满足样本量（保留全部非 NaN）
+            is_in_range = (df[cols] >= q_lo) & (df[cols] <= q_hi)
+            effective_mask = df[cols].notna() & (is_in_range | ~do_trim)
+            # 5. 将不在区间内或为 NaN 的值置为 NaN，用于计算截尾 mean/std
+            masked = df[cols].where(effective_mask)
+            # 6. 截尾后的 mean / std（按 key 分组）
+            mgrp = masked.groupby(key)
+            cs_mean = mgrp.transform('mean')
+            cs_std = mgrp.transform('std')
+
+        # 7. 用截尾 mean/std 对原始数据做 zscore
+        with np.errstate(divide='ignore', invalid='ignore'):
+            z = (df[cols] - cs_mean) / cs_std.replace(0, np.nan)
+            df[cols] = z.fillna(0.0)
+
+        return Frame3D(df)
+
     def cs_rank(self, col: str, cp: bool = True) -> Frame3D:
         """截面排名百分位（0~1），对每个 time 独立计算。
         使用 (rank-1)/(N-1) 公式，使得 min=0, max=1。
