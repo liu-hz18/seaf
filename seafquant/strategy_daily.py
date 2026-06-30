@@ -60,8 +60,14 @@ def _on_bar(
     for _, rows in daily_plan.iterrows():
         sid = rows['code']
         sname = rows['stock_name']
+        signal = rows['signal']
         if tradestatus_map.get(sid) is None:
-            _process_delist_trade(ctx, date, dc, sid, sname, rows['positions'])
+            if len(rows['positions']) > 0:
+                _process_delist_trade(ctx, date, dc, sid, sname, rows['positions'])
+            else:
+                _log_trade(ctx, date, dc, sid, sname, 'buy', 0, 0.0,
+                    0.0, 0.0,
+                    signal_value=signal, hfq_price=0.0, desc='开仓遇到退市')
 
     # 得到实际有效的计划
     daily_plan = daily_plan[daily_plan['code'].isin(tradestatus_map.keys())]
@@ -178,10 +184,9 @@ def _on_bar(
     # Step 5: 持仓快照
     for pos in ctx['positions'].values():
         sid = pos['stock_id']
-        actual_shares = _get_actual_shares(pos, f_today) if sid in f_today else 0.0
+        actual_shares = _get_actual_shares(pos, f_today) if sid in f_today else 0
         market_value = _get_position_value(pos, close_hfq)
         mkt_pct = market_value / total_equity if total_equity > 0 else 0.0
-        sig_info = signal.get(sid, {})
         ctx['day_positions'].append({
             'date': date,
             'day_counter': dc,
@@ -196,7 +201,7 @@ def _on_bar(
             'market_value_pct': mkt_pct,
             'p_uq': close_uq.get(sid, 0.0),
             'p_hfq': close_hfq.get(sid, 0.0),
-            'signal_value': sig_info.get('v', 0.0),
+            'signal_value': pos['signal_value'],
             'mature_dc': pos['mature_dc'],
             'entry_date': pos['entry_date'],
         })

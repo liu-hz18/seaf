@@ -119,7 +119,8 @@ def _log_trade(
 def _create_position(
     ctx: dict, stock_id: str, stock_name: str,
     dc: int, n_initial: float,
-    f_buy: float, date,
+    f_buy: float, date: str,
+    signal_value: float,
 ) -> None:
     ctx['positions'][(stock_id, dc)] = {
         'stock_id': stock_id,
@@ -129,6 +130,7 @@ def _create_position(
         'f_buy': f_buy,
         'mature_dc': dc + ctx['fwd'],
         'entry_date': date,
+        'signal_value': signal_value,
     }
 
 
@@ -151,7 +153,7 @@ def _process_delta_trade(
         _get_actual_shares(ctx['positions'][k], f_today) for k in maturing_keys
     )
     target_value = slice_capital * weight
-    target_shares = math.floor(target_value / p_uq / 100) * 100
+    target_shares = math.round(target_value / p_uq / 100) * 100
     delta = target_shares - old_shares
     precision = ctx.get('precision', 2)
 
@@ -199,8 +201,8 @@ def _process_delta_trade(
         del ctx['positions'][key]
 
     # 建立新持仓，即便是调仓而不是开仓或平仓
-    if target_shares > 0 and sid in f_today:
-        _create_position(ctx, sid, sname, dc, target_shares, f_today[sid], date)
+    if target_shares > 0:
+        _create_position(ctx, sid, sname, dc, target_shares, f_today[sid], date, signal_value)
 
 
 def _process_new_trade(
@@ -217,7 +219,7 @@ def _process_new_trade(
     slip_ticks = ctx['slip_ticks']
     target_value = slice_capital * weight
     trade_price = p_uq + slip_ticks * TICK_SIZE  # 考虑滑点
-    target_shares = math.floor(target_value / trade_price / 100) * 100
+    target_shares = math.round(target_value / trade_price / 100) * 100
     precision = ctx.get('precision', 2)
     if target_shares <= 0:
         return
@@ -227,7 +229,7 @@ def _process_new_trade(
         ctx['cash'] -= (trade_value + commission)
         _log_trade(ctx, date, dc, sid, sname, 'buy', target_shares, trade_price, trade_value, commission,
                    signal_value=signal_value, hfq_price=p_hfq, desc='开仓成功')
-        _create_position(ctx, sid, sname, dc, target_shares, f_today[sid], date)
+        _create_position(ctx, sid, sname, dc, target_shares, f_today[sid], date, signal_value)
     else:
         max_aff = max(0.0, ctx['cash'] - min_comm)
         buy_shares = math.floor(max_aff / trade_price / 100) * 100
@@ -239,7 +241,7 @@ def _process_new_trade(
                 _log_trade(ctx, date, dc, sid, sname, 'buy', buy_shares, trade_price,
                            trade_value, commission,
                            signal_value=signal_value, hfq_price=p_hfq, desc='部分开仓, 资金不足')
-                _create_position(ctx, sid, sname, dc, buy_shares, f_today[sid], date)
+                _create_position(ctx, sid, sname, dc, buy_shares, f_today[sid], date, signal_value)
             else:
                 _log_trade(ctx, date, dc, sid, sname, 'buy', buy_shares, trade_price,
                            0.0, 0.0,
@@ -289,5 +291,5 @@ def _process_delist_trade(ctx: dict, date, dc: int, sid: str, sname: str, maturi
         # ctx['cash'] += 0.0
         _log_trade(ctx, date, dc, sid, sname, 'sell', actual_shares, 0.0,
                     0.0, 0.0,
-                    signal_value=-100.0, hfq_price=0.0, desc='退市')
+                    signal_value=-100.0, hfq_price=0.0, desc='持仓过程遇到退市')
         del ctx['positions'][key]

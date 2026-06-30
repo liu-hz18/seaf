@@ -145,7 +145,7 @@ def strategy_fn(name: str, idx: int, f3d: Frame3D, context: dict) -> Frame3D:
         context['first_date'] = t_curr
     context['last_date'] = t_curr
 
-    origin_df = df
+    origin_df = df.copy()
     # 过滤 ST 股票（仅策略节点排除，模型训练/推理保留这些样本）
     # 如果一个股票在持仓期间成为 st，那么各组在其到达持仓期限之后，都会直接卖出。这里的过滤保证了这一点
     if 'isST' in df.columns:
