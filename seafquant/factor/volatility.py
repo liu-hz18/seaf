@@ -13,7 +13,7 @@ from seafquant.factor._perf import (
 )
 
 
-def compute_volatility_factors(name: str, idx: int, f3d: Frame3D, context) -> Frame3D:
+def compute_volatility_factors(name: str, idx: int, f3d: Frame3D, context: dict) -> Frame3D:
     """计算 33 个波动率+日内因子 — 向量化 v2。"""
     result = f3d.copy()
     close, high, low, open_p = (

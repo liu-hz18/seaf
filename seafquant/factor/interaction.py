@@ -10,7 +10,7 @@ from qpipe.frame3d import Frame3D
 from seafquant.factor._perf import rolling_std_2d
 
 
-def compute_interaction_factors(name: str, idx: int, f3d: Frame3D, context) -> Frame3D:
+def compute_interaction_factors(name: str, idx: int, f3d: Frame3D, context: dict) -> Frame3D:
     """计算 16 个交互因子 — 向量化 v3。"""
     result = f3d.copy()
     close = f3d.df['close']

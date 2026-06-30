@@ -47,7 +47,7 @@ def _udr(arr, window):
     return out
 
 
-def compute_quality_pa_factors(name: str, idx: int, f3d: Frame3D, context) -> Frame3D:
+def compute_quality_pa_factors(name: str, idx: int, f3d: Frame3D, context: dict) -> Frame3D:
     result = f3d.copy()
     high, low = f3d.df['high'], f3d.df['low']
     ret = f3d.ts_pct_change('close', 1).df['close']

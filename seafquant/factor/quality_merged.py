@@ -16,7 +16,7 @@ from seafquant.factor._perf import (
 )
 
 
-def compute_quality_merged_factors(name: str, idx: int, f3d: Frame3D, context) -> Frame3D:
+def compute_quality_merged_factors(name: str, idx: int, f3d: Frame3D, context: dict) -> Frame3D:
     close, high, low = f3d.df['close'], f3d.df['high'], f3d.df['low']
     ret = f3d.ts_pct_change('close', 1).df['close']
     df = f3d.df; df['_ret'] = ret

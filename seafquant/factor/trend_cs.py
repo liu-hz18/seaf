@@ -16,7 +16,7 @@ from seafquant.factor._perf import (
 )
 
 
-def compute_trend_cs_factors(name: str, idx: int, f3d: Frame3D, context) -> Frame3D:
+def compute_trend_cs_factors(name: str, idx: int, f3d: Frame3D, context: dict) -> Frame3D:
     result = f3d.copy()
     close = f3d.df['close']
     df = result.df

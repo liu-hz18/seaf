@@ -9,8 +9,6 @@ TSPCT 因子 — 时序百分位排名因子（40 个）。优化 v2：2D-array 
 
 from __future__ import annotations
 
-from typing import Any
-
 import numpy as np
 from numpy.lib.stride_tricks import sliding_window_view
 
@@ -67,7 +65,7 @@ def _ts_rank_pct_batch(
     return results
 
 
-def compute_tspct_factors(name: str, idx: int, f3d: Frame3D, ctx: Any = None) -> Frame3D:
+def compute_tspct_factors(name: str, idx: int, f3d: Frame3D, context: dict) -> Frame3D:
     """计算 40 个时序百分位排名因子 — 向量化 v2。
 
     对每个源列 × 每个窗口，批量计算 rolling rank percentile。

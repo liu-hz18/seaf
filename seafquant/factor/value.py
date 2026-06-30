@@ -10,7 +10,7 @@ from qpipe.frame3d import Frame3D
 from seafquant.factor._perf import rolling_max_2d, rolling_mean_2d
 
 
-def compute_value_factors(name: str, idx: int, f3d: Frame3D, context) -> Frame3D:
+def compute_value_factors(name: str, idx: int, f3d: Frame3D, context: dict) -> Frame3D:
     """计算 16 个价值因子 — 向量化 v2。"""
     result = f3d.copy()
     close = f3d.df['close']

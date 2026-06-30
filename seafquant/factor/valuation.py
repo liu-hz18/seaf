@@ -36,7 +36,7 @@ def _ts_rank_pct(arr: np.ndarray, window: int) -> np.ndarray:
 
 # ── 主函数 ──
 
-def compute_valuation_factors(name: str, idx: int, f3d: Frame3D, context) -> Frame3D:
+def compute_valuation_factors(name: str, idx: int, f3d: Frame3D, context: dict) -> Frame3D:
     """计算 32 个估值因子。"""
     result = f3d.copy()
     df = result.df

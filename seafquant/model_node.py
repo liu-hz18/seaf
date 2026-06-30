@@ -219,7 +219,7 @@ def _log_feature_importance(
 # =============================================================================
 # 主入口：model_train_predict
 # =============================================================================
-def model_train_predict(name: str, idx: int, f3d: Frame3D, context: Any) -> Frame3D:
+def model_train_predict(name: str, idx: int, f3d: Frame3D, context: dict) -> Frame3D:
     """模型训练与预测主函数 — 编排层。
 
     f3d 包含 window 天的数据（因子列 + close 列）。

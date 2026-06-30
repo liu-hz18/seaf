@@ -10,7 +10,7 @@ from qpipe.frame3d import Frame3D
 from seafquant.factor._perf import rolling_mean_2d, rolling_std_2d
 
 
-def compute_liquidity_factors(name: str, idx: int, f3d: Frame3D, context) -> Frame3D:
+def compute_liquidity_factors(name: str, idx: int, f3d: Frame3D, context: dict) -> Frame3D:
     """计算 32 个流动性+规模因子 — 向量化 v2。"""
     result = f3d.copy()
     turnover, volume, close, mcap = (

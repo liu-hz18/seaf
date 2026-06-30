@@ -12,7 +12,7 @@ from seafquant.factor._perf import rolling_mean_2d, rolling_std_2d
 EPS = 1e-8
 
 
-def compute_momentum_factors(name: str, idx: int, f3d: Frame3D, context) -> Frame3D:
+def compute_momentum_factors(name: str, idx: int, f3d: Frame3D, context: dict) -> Frame3D:
     """计算 32 个动量+反转因子 — 向量化 v3。"""
     result = f3d.copy()
     close, open_p, high, low = (f3d.df['close'], f3d.df['open'],

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from seafquant.factor.counting import compute_counting_factors
 from seafquant.factor.interaction import compute_interaction_factors
@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     from qpipe.frame3d import Frame3D
 
 
-FACTOR_REGISTRY: dict[str, Callable[[str, int, Frame3D, Any], Frame3D]] = {
+FACTOR_REGISTRY: dict[str, Callable[[str, int, Frame3D, dict], Frame3D]] = {
     'momentum':         compute_momentum_factors,
     'volatility':       compute_volatility_factors,
     'liquidity':        compute_liquidity_factors,

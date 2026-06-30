@@ -116,7 +116,7 @@ def _tillnow_dd_2d(price: np.ndarray, window: int) -> np.ndarray:
     return out
 
 
-def compute_counting_factors(name: str, idx: int, f3d: Frame3D, context) -> Frame3D:
+def compute_counting_factors(name: str, idx: int, f3d: Frame3D, context: dict) -> Frame3D:
     """计算 17 个计数因子 — v4 numba。"""
     result = f3d.copy()
     close = f3d.df['close']

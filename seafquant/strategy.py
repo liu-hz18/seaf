@@ -66,7 +66,7 @@ def _rank_into_groups(
 # =============================================================================
 # 主入口：strategy_fn
 # =============================================================================
-def strategy_fn(name: str, idx: int, f3d: Frame3D, context: Any) -> Frame3D:
+def strategy_fn(name: str, idx: int, f3d: Frame3D, context: dict) -> Frame3D:
     """策略节点主函数 — 每个 frame 包含 window=1 天的数据。
 
     f3d 包含：
@@ -85,7 +85,7 @@ def strategy_fn(name: str, idx: int, f3d: Frame3D, context: Any) -> Frame3D:
     # ---- context 初始化 ----
     context.setdefault('num_groups', 10)
     context.setdefault('fwd', 20)
-    context.setdefault('initial_cash', 10_000_000.0)
+    context.setdefault('initial_cash', 1000_0000.0)
     context.setdefault('commission_rate', 0.0005)
     context.setdefault('min_commission', 5.0)
     context.setdefault('groups', None)
@@ -106,29 +106,6 @@ def strategy_fn(name: str, idx: int, f3d: Frame3D, context: Any) -> Frame3D:
         ]
 
     df = f3d.df.copy()
-    origin_df = df
-
-    # 过滤 ST 和停牌股票（仅策略节点排除，模型训练/推理保留这些样本）
-    # if 'tradestatus' in df.columns:
-    #     df = df[df['tradestatus'] == 1]
-    if 'isST' in df.columns:
-        df = df[df['isST'] == 0]
-    # 指定 prefix 以方便排除创业板、科创版
-    if not context['include_star']:
-        CODE_PREFIXS = (
-            'sh.600',
-            'sh.601',
-            'sh.603',
-            'sh.605',  # 沪市主板
-            'sz.000',
-            'sz.001',
-            'sz.002',
-            'sz.003',
-            'sz.004',  # 深市主板
-        )  # tuple type
-        code_series = pd.Series(df.index.get_level_values('code'), index=df.index)
-        df = df[code_series.str.startswith(CODE_PREFIXS, na=False)]
-
     times = sorted(df.index.get_level_values('key').unique())
 
     # 空帧守卫：三道过滤器（tradestatus/isST/CODE_PREFIXS）叠加后
@@ -162,61 +139,63 @@ def strategy_fn(name: str, idx: int, f3d: Frame3D, context: Any) -> Frame3D:
         df = df.loc[times[-1]]
         times = [times[-1]]
 
-    # T-1 和 T
+    # 获得时间: T-1 和 T
     t_curr = times[-1]
     if context['first_date'] is None:
         context['first_date'] = t_curr
     context['last_date'] = t_curr
 
+    origin_df = df
+    # 过滤 ST 股票（仅策略节点排除，模型训练/推理保留这些样本）
+    # 如果一个股票在持仓期间成为 st，那么各组在其到达持仓期限之后，都会直接卖出。这里的过滤保证了这一点
+    if 'isST' in df.columns:
+        df = df[df['isST'] == 0]
+    # 指定 prefix 以方便排除创业板、科创版
+    if not context['include_star']:
+        CODE_PREFIXS = (
+            'sh.600', 'sh.601', 'sh.603', 'sh.605',  # 沪市主板
+            'sz.000', 'sz.001', 'sz.002', 'sz.003', 'sz.004',  # 深市主板
+        )  # tuple type
+        code_series = pd.Series(df.index.get_level_values('code'), index=df.index)
+        df = df[code_series.str.startswith(CODE_PREFIXS, na=False)]
+
     # NOTE: 提供信息类的应该用原始 df, 以提供更完整的信息；只有次日交易计划需要用到过滤后的 df
-    # T 日的价格（纯 name 索引 Series → dict ）
+    # T 日的价格 (纯 name 索引 Series → dict)
     close_uq_t = origin_df.xs(t_curr, level='key')['close_uq'].to_dict()
     close_hfq_t = origin_df.xs(t_curr, level='key')['close'].to_dict()
 
-    # 股票名映射（artifact 导出用）
+    # 股票名映射 (artifact 导出用)
     stock_name_map = origin_df.xs(t_curr, level='key')['stock_name'].to_dict()
-    # 当日 tradestatus
+    # 当日 tradestatus 处理停牌和涨跌停
     tradestatus_map = origin_df.xs(t_curr, level='key')['tradestatus'].to_dict()
 
-    # ---- T 日信号分组 + 每组独立 on_bar ----
-    # T 日收盘收到 signal_T → 存储为 pending；
-    # 同时执行 pending（signal_{T-1}），用 T 日不复权价撮合。
-    signal_curr = df.xs(t_curr, level='key')['pred_signal']
+    # 每组读取昨日缓存的交易计划，执行交易 on_bar
+    for gctx in context['groups']:
+        daily_plan = gctx['daily_plan']
+        if daily_plan:
+            _on_bar(
+                ctx=gctx, date=t_curr, daily_plan=daily_plan,
+                close_hfq=close_hfq_t, close_uq=close_uq_t,
+                tradestatus_map=tradestatus_map,
+            )
+
+    # T 日信号分组 + 生成次日交易计划 + 缓存每组计划
+    signal_curr = df.xs(t_curr, level='key')['pred_signal']  # 信号按照过滤后的 dataframe 给出，也就是只包含主板的非st股票
     group_signals = _rank_into_groups(signal_curr, context['num_groups'])
     for gctx in context['groups']:
         gid = gctx['group_id']
-        sig = group_signals.get(gid, {})
-        _on_bar(gctx, t_curr, sig, close_uq_t, close_hfq_t, tradestatus_map, stock_name_map)
-
-    # ---- 生成次日交易计划（T 日收盘后可立即给出） ----
-    for gctx in context['groups']:
-        gid = gctx['group_id']
-        sig = group_signals.get(gid, {})
-        if sig and gctx['pending_signal']:
-            dc = gctx['day_counter']
-            plan_df = _generate_daily_plan(
-                gctx,
-                t_curr,
-                dc,
-                gctx['pending_signal'],
-                close_uq_t,
-                close_hfq_t,
-                stock_name_map,
-            )
-            if not plan_df.empty:
-                gctx['daily_plan'] = plan_df
+        sig = group_signals.get(gid, {})  # {stock_id: {'w': equal_weight, 'v': float(signal_value)}}
+        day_counter = gctx['day_counter']  # 最初是 0，在本函数结尾每次 +1
+        plan_df = _generate_daily_plan(
+            ctx=gctx, date=t_curr, dc=day_counter, signal=sig,
+            close_hfq=close_hfq_t, close_uq=close_uq_t, stock_name_map=stock_name_map,
+        )
+        gctx['daily_plan'] = plan_df
 
     run_id = context.get('mlflow_run_id', '')
     # ---- MLflow 逐日指标 ----
     if run_id:
-        mlflow_log_metrics(
-            run_id,
-            f'{name}',
-            {
-                'active_stocks': len(df),
-            },
-            step=idx,
-        )
+        mlflow_log_metrics(run_id, f'{name}', {'active_stocks': len(df)}, step=idx)
         for gctx in context['groups']:
             if gctx['nav_log']:
                 last_nav = gctx['nav_log'][-1]
@@ -225,14 +204,14 @@ def strategy_fn(name: str, idx: int, f3d: Frame3D, context: Any) -> Frame3D:
                     run_id,
                     f'{name}.g{gctx["group_id"]}',
                     {
-                        'nav': last_nav.get('nav', last_nav.get('total_equity', 0) / ic),
-                        'value': last_nav.get('value', last_nav['total_equity']),
+                        'nav': last_nav['nav'],
+                        'value': last_nav['value'],
                         'cash': last_nav['cash'],
-                        'drawdown': last_nav.get('drawdown', 0.0),
-                        'cumsum_fee': last_nav.get('cumsum_fee', 0.0),
+                        'drawdown': last_nav['drawdown'],
+                        'cumsum_fee': last_nav['cumsum_fee'],
                         'position_value': last_nav['position_value'],
-                        'n_positions': float(last_nav['n_positions']),
-                        'turnover': last_nav.get('turnover', 0.0),
+                        'n_positions': last_nav['n_positions'],
+                        'turnover': last_nav['turnover'],
                     },
                     step=idx,
                 )
@@ -272,7 +251,6 @@ def strategy_fn(name: str, idx: int, f3d: Frame3D, context: Any) -> Frame3D:
                                  today_trades,
                                  artifact_subdir=f'{base}/trade',
                                  filename=f'trade_{date_str}.csv')
-                gctx['day_trades'].clear()
             # position: 当日 buffer 直接 dump
             if gctx['day_positions']:
                 today_positions = pd.DataFrame(gctx['day_positions'])
@@ -280,7 +258,6 @@ def strategy_fn(name: str, idx: int, f3d: Frame3D, context: Any) -> Frame3D:
                                  today_positions,
                                  artifact_subdir=f'{base}/position',
                                  filename=f'position_{date_str}.csv')
-                gctx['day_positions'].clear()
             # daily_plan: 当日（直接覆盖，无需存列表）
             plan_df = gctx['daily_plan']
             if plan_df is not None and not plan_df.empty:
@@ -293,7 +270,7 @@ def strategy_fn(name: str, idx: int, f3d: Frame3D, context: Any) -> Frame3D:
                     filename=f'daily_plan_{date_str}.csv',
                 )
 
-    if idx % 50 == 0:
+    if idx % 20 == 0:
         navs = [g['nav_log'][-1]['total_equity'] if g['nav_log'] else 0 for g in context['groups']]
         logging.info(
             f'[{idx}][{t_curr}] '
@@ -315,6 +292,15 @@ def strategy_fn(name: str, idx: int, f3d: Frame3D, context: Any) -> Frame3D:
                 group_mv[sid] = group_mv.get(sid, 0.0) + pos['n_initial'] * (phfq / pos['f_buy'])
         data[col] = [group_mv.get(s, 0.0) for s in stocks_sorted]
     latest_mi = pd.MultiIndex.from_product([[t_curr], stocks_sorted], names=['key', 'code'])
+
+    # 日期计数器 += 1
+    for gctx in context['groups']:
+        gctx['day_counter'] += 1
+        if gctx['day_positions']:
+            gctx['day_positions'].clear()
+        if gctx['day_trades']:
+            gctx['day_trades'].clear()
+
     return Frame3D(pd.DataFrame(data, index=latest_mi))
 
 

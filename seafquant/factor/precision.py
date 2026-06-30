@@ -12,7 +12,7 @@ from seafquant.factor._perf import rolling_mean_2d, rolling_std_2d
 EPS: float = 1e-8
 
 
-def compute_precision_factors(name: str, idx: int, f3d: Frame3D, context) -> Frame3D:
+def compute_precision_factors(name: str, idx: int, f3d: Frame3D, context: dict) -> Frame3D:
     """计算 12 个精度相关因子 — 向量化 v2。"""
     result = f3d.copy()
     close = f3d.df['close']

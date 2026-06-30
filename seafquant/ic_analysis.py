@@ -28,7 +28,7 @@ from qpipe.utils import mlflow_log_metrics
 CLIP_PERCENT = 1
 
 
-def ic_analysis_fn(name: str, idx: int, f3d: Frame3D, context: Any) -> Frame3D:
+def ic_analysis_fn(name: str, idx: int, f3d: Frame3D, context: dict) -> Frame3D:
     """每日 IC 计算函数。
 
     f3d 包含 window 天的数据（pred_signal 列 + close 列）。
