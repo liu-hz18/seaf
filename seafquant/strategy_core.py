@@ -41,10 +41,13 @@ def _init_group_context(
         'pending_signal': None,  # T-1 日信号 {sid: weight}，待 T 日执行
         'day_counter': 0,
         # 输出日志
-        'trade_log': [],
-        'position_log': [],
+        'day_trades': [],       # 当日交易记录（每日重置）
+        'day_positions': [],    # 当日持仓快照（每日重置）
+        'n_trades': 0,          # 累计交易次数
+        'n_buys': 0,            # 累计买入次数
+        'n_sells': 0,           # 累计卖出次数
         'nav_log': [],
-        'daily_plans': [],      # 每日交易计划 DataFrame 列表
+        'daily_plan': None,     # 当日交易计划 DataFrame（每日覆盖）
     }
 
 
@@ -91,7 +94,7 @@ def _log_trade(
     signal_value: float = 0.0,
     hfq_price: float = 0.0,
 ) -> None:
-    ctx['trade_log'].append({
+    ctx['day_trades'].append({
         'date': date,
         'code': stock_id,
         'stock_name': stock_name,
@@ -103,6 +106,11 @@ def _log_trade(
         'signal_value': round(signal_value, 4),
         'hfq_price': round(hfq_price, ctx.get('precision', 2)),
     })
+    ctx['n_trades'] += 1
+    if action == 'buy':
+        ctx['n_buys'] += 1
+    elif action == 'sell':
+        ctx['n_sells'] += 1
 
 
 def _create_position(

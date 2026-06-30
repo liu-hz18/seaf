@@ -204,7 +204,7 @@ def strategy_fn(name: str, idx: int, f3d: Frame3D, context: Any) -> Frame3D:
                 stock_name_map,
             )
             if not plan_df.empty:
-                gctx['daily_plans'].append(plan_df)
+                gctx['daily_plan'] = plan_df
 
     run_id = context.get('mlflow_run_id', '')
     # ---- MLflow 逐日指标 ----
@@ -265,49 +265,33 @@ def strategy_fn(name: str, idx: int, f3d: Frame3D, context: Any) -> Frame3D:
         for gctx in context['groups']:
             gid = gctx['group_id']
             base = f'strategy/{name}_g{gid}'
-            # trade_log: 仅今日
-            if gctx['trade_log']:
-                today_trades = [t for t in gctx['trade_log'] if str(t['date'])[:10] == date_str]
-                if today_trades:
-                    today_trades = pd.DataFrame(today_trades)
-                    logging.debug(f'[{idx}][{t_curr}][trade][g{gid}] {today_trades}')
-                    _export_artifact(
-                        run_id,
-                        '',
-                        f'trade_{date_str}',
-                        today_trades,
-                        artifact_subdir=f'{base}/trade',
-                        filename=f'trade_{date_str}.csv',
-                    )
-            # position_log: 仅今日
-            if gctx['position_log']:
-                today_positions = [
-                    p for p in gctx['position_log'] if str(p['date'])[:10] == date_str
-                ]
-                if today_positions:
-                    today_positions = pd.DataFrame(today_positions)
-                    logging.debug(f'[{idx}][{t_curr}][position][g{gid}] {today_positions}')
-                    _export_artifact(
-                        run_id,
-                        '',
-                        f'position_{date_str}',
-                        today_positions,
-                        artifact_subdir=f'{base}/position',
-                        filename=f'position_{date_str}.csv',
-                    )
-            # daily_plans: 今日（最近追加的一个）
-            if gctx['daily_plans']:
-                plan_df = gctx['daily_plans'][-1]
-                logging.debug(f'[{idx}][{t_curr}][plan][g{gid}] {plan_df}')
-                if not plan_df.empty:
-                    _export_artifact(
-                        run_id,
-                        '',
-                        f'daily_plan_{date_str}',
-                        plan_df,
-                        artifact_subdir=f'{base}/daily_plans',
-                        filename=f'daily_plan_{date_str}.csv',
-                    )
+            # trade: 当日 buffer 直接 dump，无需扫描累积列表
+            if gctx['day_trades']:
+                today_trades = pd.DataFrame(gctx['day_trades'])
+                _export_artifact(run_id, '', f'trade_{date_str}',
+                                 today_trades,
+                                 artifact_subdir=f'{base}/trade',
+                                 filename=f'trade_{date_str}.csv')
+                gctx['day_trades'].clear()
+            # position: 当日 buffer 直接 dump
+            if gctx['day_positions']:
+                today_positions = pd.DataFrame(gctx['day_positions'])
+                _export_artifact(run_id, '', f'position_{date_str}',
+                                 today_positions,
+                                 artifact_subdir=f'{base}/position',
+                                 filename=f'position_{date_str}.csv')
+                gctx['day_positions'].clear()
+            # daily_plan: 当日（直接覆盖，无需存列表）
+            plan_df = gctx['daily_plan']
+            if plan_df is not None and not plan_df.empty:
+                _export_artifact(
+                    run_id,
+                    '',
+                    f'daily_plan_{date_str}',
+                    plan_df,
+                    artifact_subdir=f'{base}/daily_plans',
+                    filename=f'daily_plan_{date_str}.csv',
+                )
 
     if idx % 50 == 0:
         navs = [g['nav_log'][-1]['total_equity'] if g['nav_log'] else 0 for g in context['groups']]
@@ -379,8 +363,9 @@ def strategy_epilogue(name: str, idx: int, context: dict[str, Any] | None) -> No
         dd = (cummax - nav_series) / cummax
         max_dd = float(np.max(dd)) if len(dd) > 0 else 0.0
 
-        n_trades = len(gctx['trade_log'])
-        n_buys = sum(1 for t in gctx['trade_log'] if t['action'] == 'buy')
+        n_trades = gctx['n_trades']
+        n_buys = gctx['n_buys']
+        n_sells = gctx['n_sells']
 
         # ---- 平均换手率 ----
         turnovers = [
@@ -395,7 +380,7 @@ def strategy_epilogue(name: str, idx: int, context: dict[str, Any] | None) -> No
             f'ann_vol={ann_vol:.2%}, nav_ann_vol={nav_ann_vol:.2%}, '
             f'sharpe={sharpe:.2f}, max_dd={max_dd:.2%}, '
             f'avg_turnover={avg_turnover:.4%}, '
-            f'trades={n_trades} ({n_buys} buys)'
+            f'trades={n_trades} ({n_buys} buys, {n_sells} sells)'
         )
 
         # ---- MLflow 指标 ----

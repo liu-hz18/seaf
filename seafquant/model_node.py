@@ -341,7 +341,19 @@ def model_train_predict(name: str, idx: int, f3d: Frame3D, context: Any) -> Fram
             context['days_since_train'] = 0
             return _empty_result(n_stocks, df.loc[latest_t].index, key=latest_t)
 
-        # 4. 构建 wrapper
+        # 4. 构建 wrapper — 先释放旧模型，避免 GPU/CPU tensor 堆积
+        old = context.pop('trained_wrapper', None)
+        if old is not None:
+            if hasattr(old, '_model') and old._model is not None:
+                del old._model
+            del old
+            import gc
+            gc.collect()
+            if context.get('model_type') == 'mlp':
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+
         wrapper_cls = WRAPPER_REGISTRY[model_type]
         wrapper = wrapper_cls(context)  # 每次训练重新构建模型
 
@@ -390,6 +402,11 @@ def model_train_predict(name: str, idx: int, f3d: Frame3D, context: Any) -> Fram
             f'train_mse={train_mse:.3f}, train_npic={train_npic:.3f}, '
             f'predict_day={latest_t}'
         )
+
+        # 训练数据 X (N×F 大矩阵) 仅在训练阶段使用，用后立即释放
+        del X, y
+        import gc
+        gc.collect()
 
     # ========================================================================
     # 预测阶段

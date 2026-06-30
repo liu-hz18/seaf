@@ -16,9 +16,9 @@ from seafquant.strategy_core import (
     _get_actual_shares,
     _get_position_value,
     _process_close_trade,
+    _process_delist_trade,
     _process_delta_trade,
     _process_new_trade,
-    _process_delist_trade,
 )
 
 # =============================================================================
@@ -51,7 +51,6 @@ def _on_bar(
     day_trades: list[dict] = []
     buy_value = sell_value = 0.0
     if ctx['pending_signal'] is not None:
-        n_trades_before = len(ctx['trade_log'])
         sig = ctx['pending_signal']  # {sid: {'w': weight, 'v': signal_value}}
         maturing: dict[str, list] = defaultdict(list)
         for key, pos in list(ctx['positions'].items()):
@@ -98,7 +97,7 @@ def _on_bar(
                 )
 
         # 累加当日新增手续费
-        day_trades = ctx['trade_log'][n_trades_before:]
+        day_trades = ctx['day_trades']
         buy_value = sum(t['value'] for t in day_trades if t['action'] == 'buy')
         sell_value = sum(t['value'] for t in day_trades if t['action'] == 'sell')
         for t in day_trades:
@@ -141,7 +140,7 @@ def _on_bar(
         mkt_pct = market_value / total_equity if total_equity > 0 else 0.0
         sig_info = signal.get(sid, {})
         sname = (stock_name_map or {}).get(sid, '')
-        ctx['position_log'].append({
+        ctx['day_positions'].append({
             'date': date,
             'day_counter': dc,
             'code': sid,
