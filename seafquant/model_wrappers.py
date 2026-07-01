@@ -421,10 +421,12 @@ class MLPWrapper(BaseWrapper):
         self._weight_decay: float = context.get('mlp_weight_decay', 1e-2)
         self._batch_size: int = context.get('batch_size', 128)
         self._use_residual: int = context.get('mlp_use_residual', False)
+        self._swa_decay: float = context.get('mlp_swa_decay', 0.999)
         self._epochs: int = 100
         self._patience: int = 5
 
-        self._model: Any = None
+        self._model: torch.nn.Module = None
+        self._swa_model: torch.optim.swa_utils.AveragedModel = None
         self._input_dim: int = 0
         self._cv_epoch_stats: list[dict] = []
 
@@ -471,16 +473,24 @@ class MLPWrapper(BaseWrapper):
         y_val: np.ndarray | None = None,
         record_val_loss: bool = False,
     ) -> dict[str, float]:
+
+        def custom_ema_avg_fn(averaged_param, current_param, num_averaged):
+            alpha = self._swa_decay
+            return alpha * averaged_param + (1 - alpha) * current_param
+
         torch = self._torch
         if self._model is None:
             self._model = self._build_network(X.shape[1])
+            self._swa_model = torch.optim.swa_utils.AveragedModel(self._model, avg_fn=custom_ema_avg_fn)
             self._input_dim = X.shape[1]
 
         model = self._model
+        swa_model = self._swa_model
         optimizer = torch.optim.AdamW(
             model.parameters(), lr=self._lr, betas=(0.9, 0.98), weight_decay=self._weight_decay
         )
         loss_fn = self._loss.torch_fn()
+        swa_model.eval()
 
         X_t = torch.tensor(X, dtype=torch.float32)
         y_t = torch.tensor(y.reshape(-1, 1), dtype=torch.float32)
@@ -524,29 +534,31 @@ class MLPWrapper(BaseWrapper):
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
                 optimizer.step()
+                swa_model.update_parameters(model)
                 total_loss += loss.item() * len(idx)
 
             train_loss = total_loss / n
 
+            eval_model = swa_model if swa_model is not None else model
             val_loss = float('nan')
             val_loss_list = []
             if X_val_t is not None:
-                model.eval()
+                eval_model.eval()
                 with torch.no_grad():
                     n_eval = len(X_val_t)
                     eval_batch_size = min(n_eval, self._batch_size * 4)
                     for i in range(0, n_eval, eval_batch_size):
                         x_val_batch = X_val_t[i : i + eval_batch_size].to(self._device)
                         y_val_batch = y_val_t[i : i + eval_batch_size].to(self._device)
-                        val_pred = model(x_val_batch)
+                        val_pred = eval_model(x_val_batch)
                         val_loss = loss_fn(val_pred, y_val_batch).item()
                         val_loss_list.append(val_loss)
                 val_loss = np.mean(val_loss_list) if val_loss_list else float('nan')
-                # TODO: best_epoch 应该取最高的三个epoch表现的中位数？
+
                 improved = val_loss < best_loss
                 if improved:
                     best_loss = val_loss
-                    best_state = copy.deepcopy(model.state_dict())
+                    best_state = copy.deepcopy(eval_model.state_dict())
                     best_epoch = ep
                     patience_counter = 0
                 else:
@@ -558,7 +570,7 @@ class MLPWrapper(BaseWrapper):
                 break
 
         if best_state is not None:
-            model.load_state_dict(best_state)
+            eval_model.load_state_dict(best_state)
 
         if record_val_loss:
             self._cv_epoch_stats.append(
@@ -585,11 +597,18 @@ class MLPWrapper(BaseWrapper):
         self._model.eval()
         X_t = torch.tensor(X, dtype=torch.float32)
         preds: list[np.ndarray] = []
+
+        model = self._model
+        swa_model = self._swa_model
+        eval_model = swa_model if swa_model is not None else model
+        eval_model.eval()
+
         with torch.no_grad():
             eval_batch_size = min(len(X_t), self._batch_size * 4)
             for i in range(0, len(X_t), eval_batch_size):
                 batch = X_t[i : i + eval_batch_size].to(self._device)
-                preds.append(self._model(batch).cpu().numpy().ravel())
+                preds.append(eval_model(batch).cpu().numpy().ravel())
+
         return np.concatenate(preds)
 
     def cv_fit_predict(
