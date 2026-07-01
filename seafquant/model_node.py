@@ -278,7 +278,7 @@ def model_train_predict(name: str, idx: int, f3d: Frame3D, context: dict) -> Fra
     # 训练阶段
     # ========================================================================
     if should_train:
-        from scipy.stats import pearsonr
+        from scipy.stats import pearsonr, skew, kurtosis  # 延迟导入
 
         logging.info(
             f'[{idx}] ===== RETRAIN START ===== '
@@ -310,6 +310,8 @@ def model_train_predict(name: str, idx: int, f3d: Frame3D, context: dict) -> Fra
                 'label_std': float(np.nanstd(y)),
                 'label_min': float(np.nanmin(y)),
                 'label_max': float(np.nanmax(y)),
+                'label_skew': float(skew(y.flatten(), nan_policy='omit')),
+                'label_kurt': float(kurtosis(y.flatten(), fisher=True, nan_policy='omit')),
             },
             step=idx,
         )
