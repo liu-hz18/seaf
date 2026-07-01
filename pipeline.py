@@ -78,6 +78,12 @@ def main() -> None:
         help='Model training batch size',
     )
     parser.add_argument(
+        '--swa-decay',
+        type=float,
+        default=0.999,
+        help='Model SWA decay',
+    )
+    parser.add_argument(
         '--loss',
         type=str,
         default='mse',
@@ -268,6 +274,7 @@ def main() -> None:
         'start_date': args.start_date,
         'precision': args.precision,
         'mlp_use_residual': args.use_residual,
+        'mlp_swa_decay': args.swa_decay,
         'mlp_hidden': [512, 512, 256, 32],
         'loss': args.loss,
     }
