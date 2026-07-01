@@ -125,8 +125,15 @@ class BaoStockDataCallable:
         max_stocks:   限制下载股票数量 (None = 全部).
         mlflow_run_id: MLflow run ID，用于指标记录.
         """
+        # baostock 每日 18:00 之后可以获取当天的数据
+        now_utc8 = pd.Timestamp.now(tz='Asia/Shanghai')
+        if now_utc8.hour < 18:
+            baostock_end_date = (now_utc8 - pd.Timedelta(days=1)).strftime('%Y-%m-%d')
+        else:
+            baostock_end_date = now_utc8.strftime('%Y-%m-%d')
+
         self.start_date = start_date
-        self.end_date = end_date or pd.Timestamp.now().strftime('%Y-%m-%d')
+        self.end_date = end_date or baostock_end_date
         self.update_start_date = update_start_date
         self.db_path = db_path
         self.mlflow_run_id = mlflow_run_id
@@ -135,7 +142,6 @@ class BaoStockDataCallable:
         self.update_db = update_db
 
     # ── MLflow 辅助 ──────────────────────────────────────────
-
     def _mlflow_log(self, metrics: dict[str, float], step: int = 0) -> None:
         """安全写入 MLflow 指标。
 
@@ -379,7 +385,7 @@ class BaoStockDataCallable:
         _signal.signal(_signal.SIGINT, _on_interrupt)
 
         # ── 主循环 ────────────────────────────────────────────
-        # _last_fetched_df: pd.DataFrame | None = None
+        _day_now = str(trading_days[-1])[:10]
         for day_idx, day in enumerate(trading_days):
             if _stop_flag.is_set() or _api_calls >= MAX_DAILY_CALLS:
                 logging.error(f'[{day_idx}][{day}] Stopped. {_stop_flag.is_set()=} {_api_calls=}')
@@ -401,12 +407,10 @@ class BaoStockDataCallable:
             # ② 年边界切分 + 完整性预检 → 生成下载任务
             #    day_now = 最新有数据可用的交易日 (18:00 前用 T-1)
             trade_day_str = str(day)[:10]
-            _now = pd.Timestamp.now()
             # NOTE: 这个 day_now 设置为当年年底就可以，
             # 因为我们的 stock_df 是按照 STOCK_LIST_INTERVAL 更新的，
             # 只要保证 数据获取长度 > STOCK_LIST_INTERVAL 即可，不然也是浪费 api 调用次数
             # 如果是最后一年，再利用 trading_days 列表进行计算
-            _day_now = str(trading_days[-1])[:10] if _now.hour >= 18 else str(trading_days[-2])[:10]
             next_trade_day = (
                 trading_days[day_idx + STOCK_LIST_INTERVAL]
                 if day_idx + STOCK_LIST_INTERVAL < len(trading_days)
@@ -805,7 +809,7 @@ class BaoStockDataCallable:
             if (db_start is None or db_end is None):
                 self.update_start_date = DEFAULT_DOWNLOAD_START_DATE
             else:
-                self.update_start_date = db_end
+                self.update_start_date = str(db_end)
 
         logging.info(
             f'backtest dates=[{self.start_date}, {self.end_date}], db={self.db_path}, update-dates=[{self.update_start_date}, {self.end_date}]'

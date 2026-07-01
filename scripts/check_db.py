@@ -9,9 +9,9 @@ pd.set_option('display.max_colwidth', 20)
 pd.set_option('display.width', 1024)
 
 DB_PATH = 'quant_stock.duckdb'
-code = 'sz.000993'
-chunk_start = '2008-05-29'
-chunk_end = '2008-05-29'
+code = 'sh.600753'
+chunk_start = '2008-06-11'
+chunk_end = '2008-07-22'
 
 con = duckdb.connect(DB_PATH, read_only=True, config={'threads': 16})
 # con.execute("PRAGMA memory_limit='2GB'")
@@ -34,7 +34,7 @@ print(rows)
 rows['vwap'] = (rows['amount'] / rows['volume']) * (rows['close'] / rows['close_uq'])
 rows['market_cap'] = (rows['volume'] / (rows['turn'] / 100.0)) * rows['close_uq']
 
-print(rows[['code', 'close', 'close_uq', 'vwap', 'market_cap']].head(10))
+print(rows[['code', 'close', 'close_uq', 'vwap', 'market_cap']])
 
 # columns = [desc[0] for desc in rows.description]
 # print(columns)

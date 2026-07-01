@@ -80,9 +80,9 @@ def _on_bar(
     # 平仓
     for _, rows in close_plans.iterrows():
         sid = rows['code']
+        sname = rows['stock_name']
+        signal = rows['signal']
         if tradestatus_map[sid]:
-            sname = rows['stock_name']
-            signal = rows['signal']
             # target_weight = rows['target_weight']
             _process_close_trade(
                 ctx, date, dc, sid, sname, rows['positions'], close_uq, f_today,
@@ -98,9 +98,9 @@ def _on_bar(
     # 减仓
     for _, rows in reduce_plans.iterrows():
         sid = rows['code']
+        sname = rows['stock_name']
+        signal = rows['signal']
         if tradestatus_map[sid]:
-            sname = rows['stock_name']
-            signal = rows['signal']
             target_weight = rows['target_weight']
             _process_delta_trade(
                 ctx, date, dc, sid, sname, target_weight, slice_capital,
@@ -116,9 +116,9 @@ def _on_bar(
     # 加仓
     for _, rows in add_plans.iterrows():
         sid = rows['code']
+        sname = rows['stock_name']
+        signal = rows['signal']
         if tradestatus_map[sid]:
-            sname = rows['stock_name']
-            signal = rows['signal']
             target_weight = rows['target_weight']
             _process_delta_trade(
                 ctx, date, dc, sid, sname, target_weight, slice_capital,
@@ -134,9 +134,9 @@ def _on_bar(
     # 开仓
     for _, rows in open_plans.iterrows():
         sid = rows['code']
+        sname = rows['stock_name']
+        signal = rows['signal']
         if tradestatus_map[sid]:
-            sname = rows['stock_name']
-            signal = rows['signal']
             target_weight = rows['target_weight']
             _process_new_trade(
                 ctx, date, dc, sid, sname, target_weight, slice_capital, close_uq, f_today,
@@ -192,7 +192,7 @@ def _on_bar(
             'day_counter': dc,
             'code': sid,
             'stock_name': pos['stock_name'],
-            'batch_dc': pos['batch_dc'],
+            'entry_day_count': pos['entry_day_count'],
             'n_initial': pos['n_initial'],
             'f_buy': pos['f_buy'],
             'f_today': f_today.get(sid),
@@ -211,7 +211,7 @@ def _on_bar(
 # 次日交易计划生成
 # =============================================================================
 def _generate_daily_plan(
-    ctx: dict, date, dc: int,
+    ctx: dict, date: str,
     signal: dict[str, dict[str, float]],
     close_uq: dict[str, float],
     close_hfq: dict[str, float],
@@ -225,7 +225,14 @@ def _generate_daily_plan(
     返回 DataFrame 列：
         date, group_id, stock_id, action, target_value, weight, signal_value, order
     """
-    dc_tomorrow = dc + 1
+    dc_tomorrow = ctx['day_counter'] + 1
+
+    # Step 1: 今日的复权因子 F_T = hfq / uq
+    f_today: dict[str, float] = {}
+    for sid, puq in close_uq.items():
+        phfq = close_hfq.get(sid, 0.0)
+        if puq > 0 and phfq > 0:
+            f_today[sid] = phfq / puq
 
     # 收集所有的到期持仓 (持仓是按交易管理的)，按股票id分组
     maturing: dict[str, list] = defaultdict(list)
@@ -245,9 +252,11 @@ def _generate_daily_plan(
 
     # ---- 1. 纯卖：到期且不在新信号中 → 全部平仓 (order=0) ----
     for sid in mat_sids - sig_sids:
+        current_share = sum(
+            _get_actual_shares(ctx['positions'][k], f_today) for k in maturing[sid]
+        )
         current_val = sum(
-            _get_position_value(ctx['positions'][k], close_hfq)
-            for k in maturing[sid]
+            _get_position_value(ctx['positions'][k], close_hfq) for k in maturing[sid]
         )
         current_val = round(current_val, precision)
         plans.append({
@@ -258,6 +267,7 @@ def _generate_daily_plan(
             'stock_name': sn_map.get(sid, ''),
             'type': "平仓",
             'action': 'sell',
+            'current_share': current_share,
             'delta_value_planned': current_val,
             'current_value': current_val,
             'target_value_planned': 0.0,
@@ -272,6 +282,9 @@ def _generate_daily_plan(
         sw = signal[sid]['w']
         sv = signal[sid]['v']
         target_val = slice_capital * sw
+        current_share = sum(
+            _get_actual_shares(ctx['positions'][k], f_today) for k in maturing[sid]
+        )
         current_val = sum(
             _get_position_value(ctx['positions'][k], close_hfq)
             for k in maturing[sid]
@@ -290,6 +303,7 @@ def _generate_daily_plan(
             'stock_name': sn_map.get(sid, ''),
             'type': '减仓' if action == 'sell' else '加仓',
             'action': action,
+            'current_share': current_share,
             'delta_value_planned': round(abs(delta), precision),
             'current_value': current_val,
             'target_value_planned': target_val,
@@ -313,6 +327,7 @@ def _generate_daily_plan(
             'stock_name': sn_map.get(sid, ''),
             'type': "开仓",
             'action': 'buy',
+            'current_share': 0,
             'delta_value_planned': target_val,
             'current_value': 0.0,
             'target_value_planned': target_val,

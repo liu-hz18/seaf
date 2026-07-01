@@ -430,6 +430,7 @@ def model_train_predict(name: str, idx: int, f3d: Frame3D, context: dict) -> Fra
             'pred_signal_min': float(np.min(pred_signal)),
             'pred_signal_max': float(np.max(pred_signal)),
             'pred_signal_skew': float(pd.Series(pred_signal).skew()),
+            'pred_signal_kurt': float(pd.Series(pred_signal).kurt()),
         },
         step=idx,
     )
@@ -441,7 +442,8 @@ def model_train_predict(name: str, idx: int, f3d: Frame3D, context: dict) -> Fra
         f'std={float(np.std(pred_signal)):.4f}, '
         f'min={float(np.min(pred_signal)):.4f}, '
         f'max={float(np.max(pred_signal)):.4f}, '
-        f'skew={float(pd.Series(pred_signal).skew()):.4f}'
+        f'skew={float(pd.Series(pred_signal).skew()):.4f}, '
+        f'kurt={float(pd.Series(pred_signal).kurt()):.4f}'
     )
 
     signal_col = context.get('signal_col', 'pred_signal')

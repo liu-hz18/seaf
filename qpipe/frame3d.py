@@ -244,8 +244,8 @@ class Frame3D:
         cp=False 时原地操作。trim=0.01 即剔除上下各 1%。
         """
         df = self._df.copy() if cp else self._df
-        key = df['key']
-        grp = df.groupby('key')[cols]
+        key = df.index.get_level_values('key')  # MultiIndex: 'key' 是索引层级名
+        grp = df.groupby(key, sort=False)[cols]
 
         with warnings.catch_warnings():
             warnings.simplefilter('ignore', RuntimeWarning)
@@ -266,7 +266,7 @@ class Frame3D:
             # 5. 将不在区间内或为 NaN 的值置为 NaN，用于计算截尾 mean/std
             masked = df[cols].where(effective_mask)
             # 6. 截尾后的 mean / std（按 key 分组）
-            mgrp = masked.groupby(key)
+            mgrp = masked.groupby(key, sort=False)
             cs_mean = mgrp.transform('mean')
             cs_std = mgrp.transform('std')
 
