@@ -417,7 +417,7 @@ def model_train_predict(name: str, idx: int, f3d: Frame3D, context: dict) -> Fra
 
     nan_rows = np.any(np.isnan(X_latest), axis=1)
     if nan_rows.any():
-        logging.warning(f'[{idx}] {nan_rows.sum()}/{len(X_latest)} stocks NaN features, filled=0')
+        logging.warning(f'[{idx}] {nan_rows.sum()}/{len(X_latest)} stocks have some NaN features, filled=0')
         X_latest = np.nan_to_num(X_latest, nan=0.0, posinf=0.0, neginf=0.0)
 
     pred_raw = wrapper.predict(X_latest)

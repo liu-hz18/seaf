@@ -4,7 +4,8 @@ lightgbm==4.6.0
 mlflow==3.14.0
 mlflow_skinny==3.14.0
 mlflow_tracing==3.14.0
-torch==2.12.1+cu132
+torch==2.12.1+cu130
+torchvision==0.27.1+cu130
 pytest
 numba
 numpy

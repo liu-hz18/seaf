@@ -534,9 +534,10 @@ class MLPWrapper(BaseWrapper):
                 model.eval()
                 with torch.no_grad():
                     n_eval = len(X_val_t)
-                    for i in tqdm(range(0, n_eval, batch_size), desc='Validation'):
-                        x_val_batch = X_val_t[i : i + batch_size].to(self._device)
-                        y_val_batch = y_val_t[i : i + batch_size].to(self._device)
+                    eval_batch_size = min(n_eval, self._batch_size * 4)
+                    for i in range(0, n_eval, eval_batch_size):
+                        x_val_batch = X_val_t[i : i + eval_batch_size].to(self._device)
+                        y_val_batch = y_val_t[i : i + eval_batch_size].to(self._device)
                         val_pred = model(x_val_batch)
                         val_loss = loss_fn(val_pred, y_val_batch).item()
                         val_loss_list.append(val_loss)
