@@ -261,7 +261,7 @@ def _generate_daily_plan(
         current_val = round(current_val, precision)
         plans.append({
             'date': date,
-            'operation_dc': dc_tomorrow,
+            'planned_dc': dc_tomorrow,
             'group_id': ctx['group_id'],
             'code': sid,
             'stock_name': sn_map.get(sid, ''),
@@ -297,7 +297,7 @@ def _generate_daily_plan(
         action = 'sell' if delta < 0 else 'buy'
         plans.append({
             'date': date,
-            'operation_dc': dc_tomorrow,
+            'planned_dc': dc_tomorrow,
             'group_id': ctx['group_id'],
             'code': sid,
             'stock_name': sn_map.get(sid, ''),
@@ -321,7 +321,7 @@ def _generate_daily_plan(
         target_val = round(target_val, precision)
         plans.append({
             'date': date,
-            'operation_dc': dc_tomorrow,
+            'planned_dc': dc_tomorrow,
             'group_id': ctx['group_id'],
             'code': sid,
             'stock_name': sn_map.get(sid, ''),

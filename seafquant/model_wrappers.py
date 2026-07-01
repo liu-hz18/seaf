@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from tqdm import tqdm
 import copy
 import logging
 import warnings
@@ -502,7 +503,7 @@ class MLPWrapper(BaseWrapper):
             perm = torch.randperm(n)
             total_loss = 0.0
             model.train()
-            for i in range(0, n, batch_size):
+            for i in tqdm(range(0, n, batch_size), desc=f"Epoch {ep + 1}/{epochs}"):
                 idx = perm[i : i + batch_size]
                 x_batch = X_t[idx].to(self._device)
                 y_batch = y_t[idx].to(self._device)
@@ -524,7 +525,7 @@ class MLPWrapper(BaseWrapper):
                 model.eval()
                 with torch.no_grad():
                     n_eval = len(X_val_t)
-                    for i in range(0, n_eval, batch_size):
+                    for i in tqdm(range(0, n_eval, batch_size), desc="Validation"):
                         x_val_batch = X_val_t[i : i + batch_size].to(self._device)
                         y_val_batch = y_val_t[i : i + batch_size].to(self._device)
                         val_pred = model(x_val_batch)
