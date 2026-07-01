@@ -33,7 +33,7 @@ GenFunc = Callable[[], Iterator[tuple[int, Frame3D]]]  # 实际是 Iterator[Fram
 
 MEM_CLEARING_INTEVAL = 20
 TIMEING_INTEVAL = 20
-TIME_LOGGING_INTEVAL = 30  # second
+TIME_LOGGING_INTEVAL = 60  # second
 
 
 class SourceNode(mp.Process):

@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-from tqdm import tqdm
 import copy
 import logging
 import warnings
@@ -12,6 +11,7 @@ from abc import ABC, abstractmethod
 from typing import Any
 
 import numpy as np
+from tqdm import tqdm
 
 _EPS: float = 1e-8
 
@@ -21,19 +21,20 @@ _EPS: float = 1e-8
 # =============================================================================
 class LossFunction(ABC):
     """损失函数抽象协议：LGBM custom objective / PyTorch loss / early stopping 方向。"""
+
     import torch
+
     name: str = ''
     lower_is_better: bool = True  # False for IC-like (higher = better)
 
     @abstractmethod
-    def lgbm_objective(
-        self, preds: np.ndarray, train_data: Any
-    ) -> tuple[np.ndarray, np.ndarray]:
+    def lgbm_objective(self, preds: np.ndarray, train_data: Any) -> tuple[np.ndarray, np.ndarray]:
         """LGBM custom objective: return (grad, hess) per sample."""
 
     def torch_fn(self) -> torch.nn.Module:
         """返回 PyTorch nn.Module loss（训练用）。"""
         import torch
+
         return torch.nn.MSELoss()
 
 
@@ -41,17 +42,17 @@ class MSELossFn(LossFunction):
     """均方误差 — 默认。"""
 
     import torch
+
     name = 'mse'
     lower_is_better = True
 
-    def lgbm_objective(
-        self, preds: np.ndarray, train_data: Any
-    ) -> tuple[np.ndarray, np.ndarray]:
+    def lgbm_objective(self, preds: np.ndarray, train_data: Any) -> tuple[np.ndarray, np.ndarray]:
         labels = train_data.get_label()
         return np.asarray(preds - labels, dtype=float), np.ones_like(preds, dtype=float)
 
     def torch_fn(self) -> torch.nn.Module:
         import torch
+
         return torch.nn.MSELoss()
 
 
@@ -66,9 +67,7 @@ class ICPearsonLossFn(LossFunction):
     name = 'ic'
     lower_is_better = False
 
-    def lgbm_objective(
-        self, preds: np.ndarray, train_data: Any
-    ) -> tuple[np.ndarray, np.ndarray]:
+    def lgbm_objective(self, preds: np.ndarray, train_data: Any) -> tuple[np.ndarray, np.ndarray]:
         labels = train_data.get_label()
         n = len(preds)
         preds = np.asarray(preds, dtype=float)
@@ -83,7 +82,7 @@ class ICPearsonLossFn(LossFunction):
         r = np.mean(z * t)
 
         grad = -(t - r * z) / (n * std_p)
-        hess = np.full(n, 1.0 / (n * std_p ** 2))
+        hess = np.full(n, 1.0 / (n * std_p**2))
         return grad.astype(float), hess.astype(float)
 
     def torch_fn(self):
@@ -225,10 +224,7 @@ class RidgeWrapper(_SklearnWrapper):
                 f'[ridge] Loss "{self._loss.name}" not supported by Ridge; '
                 f'falling back to MSE (ridge is L2-regularized least squares).'
             )
-        return Ridge(
-            alpha=context.get('ridge_alpha', 42),
-            random_state=context.get('seed', 42)
-        )
+        return Ridge(alpha=context.get('ridge_alpha', 42), random_state=context.get('seed', 42))
 
     def _raw_importance(self) -> np.ndarray | None:
         try:
@@ -251,11 +247,16 @@ class _ResidualMLP:
     - GELU：平滑激活，梯度处处非零，适合 IC 损失
     - Pre-Norm：层归一化在前，稳定深层训练
     """
+
     EXPANSION: int = 4  # FFN 膨胀比
 
     def __init__(
-        self, nn: Any, input_dim: int, hidden_dims: list[int],
-        dropout: float, device: Any,
+        self,
+        nn: Any,
+        input_dim: int,
+        hidden_dims: list[int],
+        dropout: float,
+        device: Any,
     ) -> None:
         self.nn = nn
 
@@ -353,8 +354,11 @@ class _ResidualMLP:
         if self.input_proj is not None:
             sd['input_proj'] = self.input_proj.state_dict()
         for i, b in enumerate(self.blocks):
-            sd[f'block_{i}'] = {k: v.state_dict() for k, v in b.items()
-                               if hasattr(v, 'state_dict') and v is not None}
+            sd[f'block_{i}'] = {
+                k: v.state_dict()
+                for k, v in b.items()
+                if hasattr(v, 'state_dict') and v is not None
+            }
         sd['head'] = self.head.state_dict()
         return sd
 
@@ -400,7 +404,7 @@ class MLPWrapper(BaseWrapper):
         self._torch = torch
         self._device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-        logging.info(f"device: {self._device}")
+        logging.info(f'device: {self._device}')
         # 可重入性：设置 torch 随机种子
         torch_seed: int = context.get('seed', 42)
         torch.manual_seed(torch_seed)
@@ -418,15 +422,13 @@ class MLPWrapper(BaseWrapper):
         self._batch_size: int = context.get('batch_size', 128)
         self._use_residual: int = context.get('mlp_use_residual', False)
         self._epochs: int = 100
-        self._patience: int = 10
+        self._patience: int = 5
 
         self._model: Any = None
         self._input_dim: int = 0
         self._cv_epoch_stats: list[dict] = []
 
-        logging.info(
-            f'[mlp] loss={self._loss.name}, lower_is_better={self._loss.lower_is_better}'
-        )
+        logging.info(f'[mlp] loss={self._loss.name}, lower_is_better={self._loss.lower_is_better}')
 
     # ---- 网络构建 ----
     def _build_network(self, input_dim: int) -> Any:
@@ -435,7 +437,11 @@ class MLPWrapper(BaseWrapper):
 
         if self._use_residual:
             return _ResidualMLP(
-                nn, input_dim, self._hidden_layers, self._dropout, self._device,
+                nn,
+                input_dim,
+                self._hidden_layers,
+                self._dropout,
+                self._device,
             )
 
         # fallback：简单 MLP（无残差连接）
@@ -478,15 +484,15 @@ class MLPWrapper(BaseWrapper):
 
         X_t = torch.tensor(X, dtype=torch.float32)
         y_t = torch.tensor(y.reshape(-1, 1), dtype=torch.float32)
-        logging.info(f"{X_t=}(shape={X_t.shape})\n{y_t=}(shape={y_t.shape})")
+        logging.info(f'{X_t=}(shape={X_t.shape})\n{y_t=}(shape={y_t.shape})')
 
         if X_val is not None and y_val is not None:
             X_val_t = torch.tensor(X_val, dtype=torch.float32)
             y_val_t = torch.tensor(y_val.reshape(-1, 1), dtype=torch.float32)
-            logging.info(f"{X_val_t=}(shape={X_val_t.shape})\n{y_val_t=}(shape={y_val_t.shape})")
+            logging.info(f'{X_val_t=}(shape={X_val_t.shape})\n{y_val_t=}(shape={y_val_t.shape})')
         else:
             X_val_t = y_val_t = None
-            logging.info(f"{X_val_t=} {y_val_t=}")
+            logging.info(f'{X_val_t=} {y_val_t=}')
 
         n = len(X_t)
         epoch_losses: list[dict] = []
@@ -503,7 +509,10 @@ class MLPWrapper(BaseWrapper):
             perm = torch.randperm(n)
             total_loss = 0.0
             model.train()
-            for i in tqdm(range(0, n, batch_size), desc=f"Epoch {ep + 1}/{epochs}"):
+            for i in tqdm(
+                range(0, n, batch_size),
+                desc=f'Epoch {ep + 1}/{epochs}, pat {patience_counter}/{self._patience}',
+            ):
                 idx = perm[i : i + batch_size]
                 x_batch = X_t[idx].to(self._device)
                 y_batch = y_t[idx].to(self._device)
@@ -525,7 +534,7 @@ class MLPWrapper(BaseWrapper):
                 model.eval()
                 with torch.no_grad():
                     n_eval = len(X_val_t)
-                    for i in tqdm(range(0, n_eval, batch_size), desc="Validation"):
+                    for i in tqdm(range(0, n_eval, batch_size), desc='Validation'):
                         x_val_batch = X_val_t[i : i + batch_size].to(self._device)
                         y_val_batch = y_val_t[i : i + batch_size].to(self._device)
                         val_pred = model(x_val_batch)
@@ -551,11 +560,13 @@ class MLPWrapper(BaseWrapper):
             model.load_state_dict(best_state)
 
         if record_val_loss:
-            self._cv_epoch_stats.append({
-                'best_epoch': best_epoch,
-                'best_val_loss': float(best_loss),
-                'final_epoch': epoch_losses[-1]['epoch'],
-            })
+            self._cv_epoch_stats.append(
+                {
+                    'best_epoch': best_epoch,
+                    'best_val_loss': float(best_loss),
+                    'final_epoch': epoch_losses[-1]['epoch'],
+                }
+            )
 
         return {
             'train_loss': epoch_losses[-1]['train_loss'],
@@ -581,14 +592,20 @@ class MLPWrapper(BaseWrapper):
         return np.concatenate(preds)
 
     def cv_fit_predict(
-        self, X_tr: np.ndarray, y_tr: np.ndarray, X_val: np.ndarray,
+        self,
+        X_tr: np.ndarray,
+        y_tr: np.ndarray,
+        X_val: np.ndarray,
         y_val: np.ndarray | None = None,
     ) -> tuple[np.ndarray, dict[str, float]]:
         if y_val is None:
             y_val = np.zeros(len(X_val))
         metrics = self._train_epochs(
-            X_tr, y_tr, self._epochs,
-            X_val=X_val, y_val=y_val,
+            X_tr,
+            y_tr,
+            self._epochs,
+            X_val=X_val,
+            y_val=y_val,
             record_val_loss=True,
         )
         return self.predict(X_val), metrics
@@ -600,7 +617,7 @@ class MLPWrapper(BaseWrapper):
             logging.info(
                 f'[mlp] CV best epochs={best_epochs}, '
                 f'median={self._epochs}, '
-                f'val_losses={[f"{s["best_val_loss"]:.4f}" for s in self._cv_epoch_stats]}'
+                f'val_losses={[f"{s['best_val_loss']:.4f}" for s in self._cv_epoch_stats]}'
             )
         self._model = None
         self._cv_epoch_stats = []
