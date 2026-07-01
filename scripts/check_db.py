@@ -1,11 +1,17 @@
+import sys
+import pandas as pd
 import duckdb
 
-# TODO: 解决访问为 None 的问题
+sys.stdout.reconfigure(encoding='utf-8')
+pd.set_option('display.max_rows', 10)
+pd.set_option('display.max_columns', 50)
+pd.set_option('display.max_colwidth', 20)
+pd.set_option('display.width', 1024)
 
 DB_PATH = 'quant_stock.duckdb'
-code = 'sh.600000'
-chunk_start = '2026-06-29'
-chunk_end = '2026-06-29'
+code = 'sz.000993'
+chunk_start = '2008-05-29'
+chunk_end = '2008-05-29'
 
 con = duckdb.connect(DB_PATH, read_only=True, config={'threads': 16})
 # con.execute("PRAGMA memory_limit='2GB'")
@@ -20,8 +26,8 @@ con = duckdb.connect(DB_PATH, read_only=True, config={'threads': 16})
 
 rows = con.execute(
     "SELECT code, name, date, close, close_uq, turn, volume, amount, tradestatus, isST FROM hot_daily_stock "
-    "WHERE \"date\" >= ? AND \"date\" <= ? ORDER BY code, date",
-    [chunk_start, chunk_end],
+    "WHERE \"date\" >= ? AND \"date\" <= ? AND code = ? ORDER BY code, date",
+    [chunk_start, chunk_end, code],
 ).df()
 print(rows)
 
