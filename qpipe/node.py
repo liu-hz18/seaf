@@ -88,7 +88,6 @@ class SourceNode(mp.Process):
                 if self.snapshot_interval > 0 and idx > 0 and idx % self.snapshot_interval == 0:
                     run_id = self.context.get('mlflow_run_id', '')
                     time_str = str(max_key)[:10] if hasattr(max_key, '__str__') else str(max_key)
-                    snapshot_dataframe(run_id, self.name, frame.df, 'in', time_str)
                     snapshot_dataframe(run_id, self.name, latest_f3d.df, 'out', time_str)
                     logging.info(
                         f'snapshot idx={idx}: in={frame.df.shape}, out={latest_f3d.df.shape}'
@@ -339,7 +338,7 @@ class MultiInputNode(mp.Process):
                         and day_idx > 0
                         and day_idx % self.snapshot_interval == 0
                     ):
-                        snapshot_dataframe(run_id_s, self.name, concated_window_frame.df, 'in', ts)
+                        snapshot_dataframe(run_id_s, self.name, concated_window_frame.df, 'in', ts, gzip=True)
 
                     # 执行节点计算
                     output_frame = self._call_func(

@@ -410,7 +410,7 @@ class MLPWrapper(BaseWrapper):
         loss_name = context.get('loss', 'mse')
         self._loss: LossFunction = LOSS_REGISTRY.get(loss_name, MSELossFn())
 
-        self._hidden_layers: list[int] = context.get('mlp_hidden', [256, 256, 256, 32])
+        self._hidden_layers: list[int] = context.get('mlp_hidden', [512, 512, 256, 32])
         self._dropout: float = context.get('mlp_dropout', 0.5)
         self._lr: float = context.get('mlp_lr', 1e-3)
         self._weight_decay: float = context.get('mlp_weight_decay', 1e-2)

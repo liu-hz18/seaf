@@ -157,6 +157,7 @@ def snapshot_dataframe(
     snapshot_type: str,
     time_key: str,
     artifact_subdir: str = 'snapshots',
+    gzip: bool = False,
 ) -> None:
     """将 DataFrame 保存为 CSV 并上传到 MLflow artifact。
 
@@ -184,7 +185,7 @@ def snapshot_dataframe(
         tmp_dir = tempfile.mkdtemp(prefix='snap_')
         tmp_path = os.path.join(tmp_dir, filename)
         try:
-            df.to_csv(tmp_path)
+            df.to_csv(tmp_path, compression='gzip' if gzip else None)
             mlflow.log_artifact(tmp_path, artifact_path=f'{artifact_subdir}/{node_name}', run_id=run_id)
         finally:
             with suppress(Exception):

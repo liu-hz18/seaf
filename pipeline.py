@@ -74,7 +74,7 @@ def main() -> None:
     parser.add_argument(
         '--batch-size',
         type=int,
-        default=128,
+        default=256,
         help='Model training batch size',
     )
     parser.add_argument(
@@ -131,7 +131,7 @@ def main() -> None:
     parser.add_argument(
         '--snapshot-interval',
         type=int,
-        default=100,
+        default=250,
         help='Snapshot input/output every N calls (0=disabled)',
     )
     args = parser.parse_args()
@@ -268,7 +268,7 @@ def main() -> None:
         'start_date': args.start_date,
         'precision': args.precision,
         'mlp_use_residual': args.use_residual,
-        'mlp_batch_size': 128,
+        'mlp_hidden': [512, 512, 256, 32],
         'loss': args.loss,
     }
     all_signal_qs = []
