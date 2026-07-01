@@ -37,7 +37,7 @@ def _init_group_context(
         'cash': initial_cash,
         'peak_nav': 1.0,
         'cumsum_fee': 0.0,
-        'positions': {},        # (sid, batch_dc) → dict
+        'positions': {},        # (sid, entry_day_count) → dict
         'pending_signal': None,  # T-1 日信号 {sid: weight}，待 T 日执行
         'day_counter': 0,
         # 输出日志
@@ -65,7 +65,7 @@ def _get_actual_shares(pos: dict, f_today: dict[str, float]) -> int:
     ft = f_today.get(pos['stock_id'])
     if ft is None or pos['f_buy'] <= 0:
         return 0.0
-    return math.round(pos['n_initial'] * (ft / pos['f_buy']))
+    return round(pos['n_initial'] * (ft / pos['f_buy']))
 
 
 def _get_position_value(pos: dict, close_hfq: dict[str, float]) -> float:
@@ -126,10 +126,10 @@ def _create_position(
         'stock_id': stock_id,
         'stock_name': stock_name,
         'entry_day_count': dc,
+        'entry_date': date,
         'n_initial': n_initial,
         'f_buy': f_buy,
         'mature_dc': dc + ctx['fwd'],
-        'entry_date': date,
         'signal_value': signal_value,
     }
 
@@ -153,7 +153,7 @@ def _process_delta_trade(
         _get_actual_shares(ctx['positions'][k], f_today) for k in maturing_keys
     )
     target_value = slice_capital * weight
-    target_shares = math.round(target_value / p_uq / 100) * 100
+    target_shares = round(target_value / p_uq / 100) * 100
     delta = target_shares - old_shares
     precision = ctx.get('precision', 2)
 
@@ -219,7 +219,7 @@ def _process_new_trade(
     slip_ticks = ctx['slip_ticks']
     target_value = slice_capital * weight
     trade_price = p_uq + slip_ticks * TICK_SIZE  # 考虑滑点
-    target_shares = math.round(target_value / trade_price / 100) * 100
+    target_shares = round(target_value / trade_price / 100) * 100
     precision = ctx.get('precision', 2)
     if target_shares <= 0:
         return

@@ -3,9 +3,9 @@ import duckdb
 # TODO: 解决访问为 None 的问题
 
 DB_PATH = 'quant_stock.duckdb'
-code = 'sh.600000'
-chunk_start = '2026-06-29'
-chunk_end = '2026-06-29'
+code = 'sh.600753'
+chunk_start = '2008-06-11'
+chunk_end = '2008-07-22'
 
 con = duckdb.connect(DB_PATH, read_only=True, config={'threads': 16})
 # con.execute("PRAGMA memory_limit='2GB'")
@@ -20,15 +20,15 @@ con = duckdb.connect(DB_PATH, read_only=True, config={'threads': 16})
 
 rows = con.execute(
     "SELECT code, name, date, close, close_uq, turn, volume, amount, tradestatus, isST FROM hot_daily_stock "
-    "WHERE \"date\" >= ? AND \"date\" <= ? ORDER BY code, date",
-    [chunk_start, chunk_end],
+    "WHERE \"date\" >= ? AND \"date\" <= ? AND code = ? ORDER BY code, date",
+    [chunk_start, chunk_end, code],
 ).df()
 print(rows)
 
 rows['vwap'] = (rows['amount'] / rows['volume']) * (rows['close'] / rows['close_uq'])
 rows['market_cap'] = (rows['volume'] / (rows['turn'] / 100.0)) * rows['close_uq']
 
-print(rows[['code', 'close', 'close_uq', 'vwap', 'market_cap']].head(10))
+print(rows[['code', 'close', 'close_uq', 'vwap', 'market_cap']])
 
 # columns = [desc[0] for desc in rows.description]
 # print(columns)

@@ -128,6 +128,10 @@ def strategy_fn(name: str, idx: int, f3d: Frame3D, context: dict) -> Frame3D:
         )
         return Frame3D(placeholder_df)
 
+    # update groups' day counter
+    for gctx in context['groups']:
+        gctx['day_counter'] = idx
+
     # 理论上 window=1 时 len(times)==1，但多路上游在 IPO/退市边界
     # 经过 concat_frames(axis=1) 后可能产生多余 time key（pandas 拼接行为）。
     # 此时保守取最新时间片，并结合日志排底层根因。
@@ -185,9 +189,8 @@ def strategy_fn(name: str, idx: int, f3d: Frame3D, context: dict) -> Frame3D:
     for gctx in context['groups']:
         gid = gctx['group_id']
         sig = group_signals.get(gid, {})  # {stock_id: {'w': equal_weight, 'v': float(signal_value)}}
-        day_counter = gctx['day_counter']  # 最初是 0，在本函数结尾每次 +1
         plan_df = _generate_daily_plan(
-            ctx=gctx, date=t_curr, dc=day_counter, signal=sig,
+            ctx=gctx, date=t_curr, signal=sig,
             close_hfq=close_hfq_t, close_uq=close_uq_t, stock_name_map=stock_name_map,
         )
         gctx['daily_plan'] = plan_df
@@ -295,7 +298,6 @@ def strategy_fn(name: str, idx: int, f3d: Frame3D, context: dict) -> Frame3D:
 
     # 日期计数器 += 1
     for gctx in context['groups']:
-        gctx['day_counter'] += 1
         if gctx['day_positions']:
             gctx['day_positions'].clear()
         if gctx['day_trades']:
