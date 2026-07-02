@@ -49,12 +49,17 @@ def compute_stats(context: dict, pred_df: pd.DataFrame, buy_df: pd.DataFrame, se
     stock_name_vec = sell_df.loc[codes, 'stock_name'].values
 
     # close 为 0（退市/停牌）时 log 报除零
+    # with np.errstate(divide='ignore', invalid='ignore'):
+    #     log_sell = np.log(close_sell)
+    #     log_buy = np.log(close_buy)
+    # log_sell[close_sell <= 0] = np.nan
+    # log_buy[close_buy <= 0] = np.nan
+    # fwd_ret = log_sell - log_buy
+    # NOTE: 使用简单收益率符合截面预期超额收益率的定义
     with np.errstate(divide='ignore', invalid='ignore'):
-        log_sell = np.log(close_sell)
-        log_buy = np.log(close_buy)
-    log_sell[close_sell <= 0] = np.nan
-    log_buy[close_buy <= 0] = np.nan
-    fwd_ret = log_sell - log_buy
+        fwd_ret = close_sell / close_buy - 1.0
+    fwd_ret[close_sell <= 0] = np.nan
+    fwd_ret[close_buy <= 0] = np.nan
 
     # 全量 cs_excess（默认全 NaN；valid 子集在 IC 计算块中填充）
     cs_excess_full = np.full(n_codes, np.nan, dtype=float)
@@ -146,14 +151,13 @@ def ic_analysis_fn(name: str, idx: int, f3d: Frame3D, context: dict) -> Frame3D:
     context.setdefault('rank_ic_history', [])
     context.setdefault('cumsum_pearson_ic', 0.0)
     context.setdefault('cumsum_rank_ic', 0.0)
-    context.setdefault('cumsum_raw_ret_std', 0.0)
     context.setdefault('cumsum_vol_pearson_ic', 0.0)
     # 主板统计量
     context.setdefault('pearson_ic_history_main', [])
     context.setdefault('rank_ic_history_main', [])
     context.setdefault('cumsum_pearson_ic_main', 0.0)
     context.setdefault('cumsum_rank_ic_main', 0.0)
-    context.setdefault('cumsum_raw_ret_std_main', 0.0)
+    context.setdefault('cumsum_vol_pearson_ic_main', 0.0)
     fwd = context.get('fwd', 20)
 
     df = f3d.df.copy()
@@ -193,30 +197,28 @@ def ic_analysis_fn(name: str, idx: int, f3d: Frame3D, context: dict) -> Frame3D:
     context['rank_ic_history'].append(stats_all['rank_ic'])
     context['cumsum_pearson_ic'] += stats_all['pearson_ic']
     context['cumsum_rank_ic'] += stats_all['rank_ic']
-    context['cumsum_raw_ret_std'] += stats_all['raw_ret_std']
-    context['cumsum_vol_pearson_ic'] += stats_all['pearson_ic'] * stats_all['raw_ret_std']
+    simple_excess_ret = stats_all['pearson_ic'] * stats_all['raw_ret_std']
+    context['cumsum_vol_pearson_ic'] += np.log(1. + simple_excess_ret)  # 简单收益率转化为对数收益率，可以累加
     # 主板统计量
     context['pearson_ic_history_main'].append(stats_main['pearson_ic'])
     context['rank_ic_history_main'].append(stats_main['rank_ic'])
     context['cumsum_pearson_ic_main'] += stats_main['pearson_ic']
     context['cumsum_rank_ic_main'] += stats_main['rank_ic']
-    context['cumsum_raw_ret_std_main'] += stats_all['raw_ret_std']
+    simple_excess_ret = stats_main['pearson_ic'] * stats_main['raw_ret_std']
+    context['cumsum_vol_pearson_ic_main'] += np.log(1. + simple_excess_ret)  # 简单收益率转化为对数收益率，可以累加
 
     # 理论 top-bottom 对数净值差（逐日）NOTE: 这个数字比真实的持仓净值滞后 fwd 天
     num_groups = context.get('num_groups', 10)
-    cc = context['day_count']
     theo_log_nav_spread, theo_log_nav_spread_main = 0.0, 0.0
-    if cc > 0 and num_groups >= 2:
+    if num_groups >= 2:
         from scipy.stats import norm  # 延迟导入
         phi_inv = float(norm.ppf(1.0 / num_groups))
         phi_val = float(norm.pdf(phi_inv))
-        mean_ret_std = context['cumsum_raw_ret_std'] / cc
         theo_log_nav_spread = (
-            2.0 * num_groups * phi_val * mean_ret_std * context['cumsum_pearson_ic'] / (fwd-1)  # NOTE: we actually hold fwd-1 days
+            2.0 * num_groups * phi_val * context['cumsum_vol_pearson_ic'] / (fwd-1)  # NOTE: we actually hold fwd-1 days
         )
-        mean_ret_std_main = context['cumsum_raw_ret_std_main'] / cc
         theo_log_nav_spread_main = (
-            2.0 * num_groups * phi_val * mean_ret_std_main * context['cumsum_pearson_ic_main'] / (fwd-1)  # NOTE: we actually hold fwd-1 days
+            2.0 * num_groups * phi_val * context['cumsum_vol_pearson_ic_main'] / (fwd-1)  # NOTE: we actually hold fwd-1 days
         )
 
     # ---- MLflow 逐日记录 ----
@@ -246,6 +248,7 @@ def ic_analysis_fn(name: str, idx: int, f3d: Frame3D, context: dict) -> Frame3D:
             'main.raw_ret_kurt': stats_main['raw_ret_kurt'],
             'main.theo_log_nav_spread': theo_log_nav_spread_main,
             'main.cumsum_pearson_ic': context['cumsum_pearson_ic_main'],
+            'main.cumsum_vol_pearson_ic': context['cumsum_vol_pearson_ic_main'],
             'main.cumsum_rank_ic': context['cumsum_rank_ic_main'],
         }, step=idx)
 
@@ -336,35 +339,31 @@ def ic_epilogue(name: str, idx: int, context: dict[str, Any] | None) -> None:
     print_ic_summary(idx, 'main', first_day, last_day, context['rank_ic_history_main'], context['pearson_ic_history_main'])
 
     # ---- 全指 理论 top-bottom 对数净值差（逐日已记录，此处仅汇总日志） ----
-    cc = context.get('day_count', 0)
-    cumsum_raw = context.get('cumsum_raw_ret_std', 0.0)
-    cumsum_p = context.get('cumsum_pearson_ic', 0.0)
+    cumsum_vol_p = context.get('cumsum_vol_pearson_ic', 0.0)
+    cumsum_pic = context.get('cumsum_pearson_ic', 0.0)
     num_groups = context.get('num_groups', 10)
-    if cc > 0 and cumsum_raw > 0 and num_groups >= 2:
+    if num_groups >= 2:
         from scipy.stats import norm  # 延迟导入
-        mean_ret_std = cumsum_raw / cc
         phi_val = float(norm.pdf(norm.ppf(1.0 / num_groups)))
-        final_theo = 2.0 * num_groups * phi_val * mean_ret_std * cumsum_p / (fwd-1)  # NOTE: we actually hold fwd-1 days
+        final_theo = 2.0 * num_groups * phi_val * cumsum_vol_p / (fwd-1)  # NOTE: we actually hold fwd-1 days
         logging.info(
             f'[{idx}][all]  Final theoretical log NAV spread: {final_theo:.6f} '
-            f'(N={num_groups}, mean_ret_std={mean_ret_std:.6f}, '
-            f'cumsum_pearson_ic={cumsum_p:.4f})'
+            f'(N={num_groups}, cumsum_vol_pearson_ic={cumsum_vol_p:.6f}, '
+            f'cumsum_pearson_ic={cumsum_pic:.4f})'
         )
 
     # ---- 主板 理论 top-bottom 对数净值差（逐日已记录，此处仅汇总日志） ----
-    cc = context.get('day_count', 0)
-    cumsum_raw = context.get('cumsum_raw_ret_std_main', 0.0)
-    cumsum_p = context.get('cumsum_pearson_ic_main', 0.0)
+    cumsum_vol_p = context.get('cumsum_vol_pearson_ic_main', 0.0)
+    cumsum_pic = context.get('cumsum_pearson_ic_main', 0.0)
     num_groups = context.get('num_groups', 10)
-    if cc > 0 and cumsum_raw > 0 and num_groups >= 2:
+    if num_groups >= 2:
         from scipy.stats import norm  # 延迟导入
-        mean_ret_std = cumsum_raw / cc
         phi_val = float(norm.pdf(norm.ppf(1.0 / num_groups)))
-        final_theo = 2.0 * num_groups * phi_val * mean_ret_std * cumsum_p / (fwd-1)  # NOTE: we actually hold fwd-1 days
+        final_theo = 2.0 * num_groups * phi_val * cumsum_vol_p / (fwd-1)  # NOTE: we actually hold fwd-1 days
         logging.info(
             f'[{idx}][main]  Final theoretical log NAV spread: {final_theo:.6f} '
-            f'(N={num_groups}, mean_ret_std={mean_ret_std:.6f}, '
-            f'cumsum_pearson_ic={cumsum_p:.4f})'
+            f'(N={num_groups}, cumsum_vol_pearson_ic={cumsum_vol_p:.6f}, '
+            f'cumsum_pearson_ic={cumsum_pic:.4f})'
         )
 
     logging.info(f'[{idx}] ======================================')

@@ -87,14 +87,19 @@ def _prepare_training_data(
         close_buy = df.loc[cs_mask_buy, 'close'].values
         close_sell = df.loc[cs_mask_sell, 'close'].values
 
-        with np.errstate(divide='ignore', invalid='ignore'):
-            log_sell = np.log(close_sell)
-            log_buy = np.log(close_buy)
         # NOTE: 因为 model 节点是 right alignment padding, 而且窗口比较长，所以在准备训练样本时，
         # 会有一部分标的还没有上市，也就是 close 列还是 nan。我们保留这部分样本的 label 为 nan，以免进入训练环节
-        log_sell[close_sell <= 0] = np.nan
-        log_buy[close_buy <= 0] = np.nan
-        fwd_ret = log_sell - log_buy
+        # with np.errstate(divide='ignore', invalid='ignore'):
+        #     log_sell = np.log(close_sell)
+        #     log_buy = np.log(close_buy)
+        # log_sell[close_sell <= 0] = np.nan
+        # log_buy[close_buy <= 0] = np.nan
+        # fwd_ret = log_sell - log_buy
+        # NOTE: 使用简单收益率符合截面预期超额收益率的定义
+        with np.errstate(divide='ignore', invalid='ignore'):
+            fwd_ret = close_sell / close_buy - 1.0
+        fwd_ret[close_sell <= 0] = np.nan
+        fwd_ret[close_buy <= 0] = np.nan
 
         # clip labels
         # fwd=20 的情况下，股价最高可以翻 1.1^20 = 6.72 倍；1.2^20 = 38.3 倍

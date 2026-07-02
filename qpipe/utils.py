@@ -182,6 +182,8 @@ def snapshot_dataframe(
         import mlflow
         mlflow.set_tracking_uri('sqlite:///mlruns.db')
         filename = f'{node_name}_{snapshot_type}_{time_key}.csv'
+        if gzip:
+            filename += '.gz'
         tmp_dir = tempfile.mkdtemp(prefix='snap_')
         tmp_path = os.path.join(tmp_dir, filename)
         try:

@@ -31,6 +31,7 @@ EpilogueFunc = Callable[[[str, int, dict | None], Any], None]
 # Source 生成器函数签名：无参，yield Frame3D
 GenFunc = Callable[[], Iterator[tuple[int, Frame3D]]]  # 实际是 Iterator[Frame3D]，但 pickle 兼容需要宽松类型
 
+QUEUE_TIMEOUT_SECONDS = 180
 MEM_CLEARING_INTEVAL = 20
 TIMEING_INTEVAL = 20
 TIME_LOGGING_INTEVAL = 60  # second
@@ -56,6 +57,7 @@ class SourceNode(mp.Process):
         self.gen_func = gen_func
         self.output_queues = output_queues
         self.output_queue_names = output_queue_names or []
+        self.output_queue_alive = [True] * len(output_queues)
         self.stop_signal = stop_signal
         self.context = context if context is not None else {}
         self.epilogue_fn = epilogue_fn
@@ -93,8 +95,15 @@ class SourceNode(mp.Process):
                         f'snapshot idx={idx}: in={frame.df.shape}, out={latest_f3d.df.shape}'
                     )
 
-                for outq in self.output_queues:
-                    outq.put((idx, latest_f3d))
+                for qid, outq in enumerate(self.output_queues):
+                    try:
+                        if self.output_queue_alive[qid]:
+                            # NOTE: 如果队列满了，并且超时，就会抛出异常
+                            outq.put((idx, latest_f3d), timeout=QUEUE_TIMEOUT_SECONDS)
+                    except Exception as e:
+                        logging.error(f'[{idx}] Failed to put to output queue: {e}\nWe cancel queue-{qid}', exc_info=True)
+                        self.output_queue_alive[qid] = False
+                        continue
 
                 # ---- MLflow: 记录源节点输出队列大小 ----
                 run_id = self.context.get('mlflow_run_id', '')
@@ -119,16 +128,23 @@ class SourceNode(mp.Process):
         except Exception as e:
             logging.error(f'Exception in SourceNode: {e}', exc_info=True)
         finally:
-            for outq in self.output_queues:
-                with suppress(Exception):
-                    outq.put(self.stop_signal, timeout=1.0)
-                # with suppress(Exception):
-                #     outq.cancel_join_thread()
+            for qid, outq in enumerate(self.output_queues):
+                try:
+                    if self.output_queue_alive[qid]:
+                        outq.put(self.stop_signal, timeout=QUEUE_TIMEOUT_SECONDS)
+                    # outq.close()
+                    # outq.cancel_join_thread() # NOTE: 不应该开启，否则进程无法退出
+                except Exception as e:
+                    logging.error(f'[{idx}] Failed to put stop signal to output queue: {e}', exc_info=True)
+                    self.output_queue_alive[qid] = False
+                    continue
+
             if self.epilogue_fn is not None:
                 try:
                     self.epilogue_fn(self.name, idx, self.context)
                 except Exception as e:
                     logging.error(f'[{idx}] Epilogue error in {self.name}: {e}', exc_info=True)
+
             for handler in logging.getLogger().handlers:
                 with suppress(Exception):
                     handler.flush()
@@ -170,6 +186,7 @@ class MultiInputNode(mp.Process):
         self.input_queues = input_queues
         self.output_queues = output_queues
         self.output_queue_names = output_queue_names or []
+        self.output_queue_alive = [True] * len(output_queues)
         self.window = window
         self.min_periods = min_periods
         self.input_columns = input_columns or []
@@ -398,8 +415,14 @@ class MultiInputNode(mp.Process):
                     window_tail_index += 1
 
                     # 输出 (idx, latest_frame) 元组 — idx 就是当前 frame_list 的时间 day_idx
-                    for outq in self.output_queues:
-                        outq.put((day_idx, latest_frame))
+                    for qid, outq in enumerate(self.output_queues):
+                        try:
+                            if self.output_queue_alive[qid]:
+                                outq.put((day_idx, latest_frame), timeout=QUEUE_TIMEOUT_SECONDS)
+                        except Exception as e:
+                            logging.error(f'[{day_idx}] Failed to put to output queue: {e}\nWe cancel queue-{qid}', exc_info=True)
+                            self.output_queue_alive[qid] = False
+                            continue
 
                     queue_sizes = {
                         f'outq_{qi}': outq.qsize() for qi in range(len(self.output_queues))
@@ -466,16 +489,23 @@ class MultiInputNode(mp.Process):
             # 向输出队列放入 stop_signal（非阻塞）。
             # 先 cancel_join_thread 防止进程退出时 queue finalizer 因 feeder 线程
             # 阻塞在管道 I/O 上而 hang（Windows spawn 模式下常见）。
-            for outq in self.output_queues:
-                with suppress(Exception):
-                    outq.put(self.stop_signal, timeout=1.0)
-                # with suppress(Exception):
-                #     outq.cancel_join_thread()  # NOTE: 不应该开启，否则进程无法退出
+            for qid, outq in enumerate(self.output_queues):
+                try:
+                    if self.output_queue_alive[qid]:
+                        outq.put(self.stop_signal, timeout=QUEUE_TIMEOUT_SECONDS)
+                    # outq.close()
+                    # outq.cancel_join_thread() # NOTE: 不应该开启，否则进程无法退出
+                except Exception as e:
+                    logging.error(f'[{day_idx}] Failed to put stop signal to output queue: {e}', exc_info=True)
+                    self.output_queue_alive[qid] = False
+                    continue
+
             if self.epilogue_fn is not None:
                 try:
                     self.epilogue_fn(self.name, day_idx, self.context)
                 except Exception as e:
                     logging.error(f'[{day_idx}] Epilogue error in {self.name}: {e}', exc_info=True)
+
             # 显式刷新日志和 stdout，防止 Windows 管道未关闭导致 WaitForSingleObject 不返回
             for handler in logging.getLogger().handlers:
                 with suppress(Exception):
