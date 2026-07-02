@@ -1,6 +1,7 @@
 import sys
-import pandas as pd
+
 import duckdb
+import pandas as pd
 
 sys.stdout.reconfigure(encoding='utf-8')
 pd.set_option('display.max_rows', 10)
